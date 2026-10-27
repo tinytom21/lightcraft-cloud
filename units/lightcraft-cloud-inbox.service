@@ -1,0 +1,11 @@
+# Cheap inbox poll: lists <remote>/inbox and starts lightcraft-cloud.service only if phone edits are waiting.
+# Triggered by lightcraft-cloud-inbox.timer.
+# Install: systemctl --user daemon-reload && systemctl --user enable --now lightcraft-cloud-inbox.timer
+[Unit]
+Description=LightCraft cloud inbox check (starts a sync when phone edits wait)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/lc-cloud inbox-check
+Nice=10

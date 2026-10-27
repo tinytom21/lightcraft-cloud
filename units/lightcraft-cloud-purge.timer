@@ -1,0 +1,11 @@
+# Weekly. Not enabled by default: systemctl --user enable --now lightcraft-cloud-purge.timer
+[Unit]
+Description=Weekly LightCraft cloud history purge
+
+[Timer]
+OnCalendar=Sun 04:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

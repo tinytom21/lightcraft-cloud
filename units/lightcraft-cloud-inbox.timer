@@ -1,0 +1,12 @@
+# Every 2 minutes. Not enabled by default: systemctl --user enable --now lightcraft-cloud-inbox.timer
+[Unit]
+Description=LightCraft cloud inbox check every 2 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+RandomizedDelaySec=15
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

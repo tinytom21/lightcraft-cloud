@@ -1,0 +1,14 @@
+# Run a sync ~30 s after the photo folder changes (the 15-minute timer remains as fallback).
+# Install: systemctl --user daemon-reload && systemctl --user enable --now lightcraft-cloud-watch.service
+[Unit]
+Description=LightCraft cloud file watcher (sync shortly after photo changes)
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/lc-cloud-watch
+Restart=on-failure
+RestartSec=60
+Nice=10
+
+[Install]
+WantedBy=default.target

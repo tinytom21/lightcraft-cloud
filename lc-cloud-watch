@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# lc-cloud-watch: trigger a lightcraft-cloud sync shortly after the photo folder changes.
+# The 15-minute timer stays as a fallback (it also picks up phone edits from the remote inbox).
+#
+# Usage: lc-cloud-watch [--config FILE]
+# Env:   LC_WATCH_CMD    command to run (default: systemctl --user start lightcraft-cloud.service)
+#        LC_WATCH_QUIET  quiet window in seconds before syncing (default 30)
+#        LC_WATCH_MAX    max wait from first event in seconds (default 300)
+set -u
+
+config="$HOME/.config/lightcraft-cloud/config.toml"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --config) config="${2:?--config needs a file}"; shift 2 ;;
+        *) echo "usage: $0 [--config FILE]" >&2; exit 2 ;;
+    esac
+done
+cmd="${LC_WATCH_CMD:-systemctl --user start lightcraft-cloud.service}"
+quiet="${LC_WATCH_QUIET:-30}"
+maxwait="${LC_WATCH_MAX:-300}"
+
+# Line 1: source (~ expanded); following lines: exclude patterns.
+mapfile -t cfg < <(python3 - "$config" <<'PY'
+import sys, os, tomllib
+with open(sys.argv[1], "rb") as f:
+    d = tomllib.load(f)
+print(os.path.expanduser(d["source"]))
+for x in d.get("exclude", []):
+    print(x)
+PY
+) || exit 1
+[ "${#cfg[@]}" -ge 1 ] || { echo "no source in $config" >&2; exit 1; }
+source_dir="${cfg[0]%/}"
+exclude=("${cfg[@]:1}")
+
+relevant() {  # $1 = full event path; true if it should trigger a sync
+    local rel="${1#"$source_dir"/}" part pat
+    [[ "${rel##*/}" == .* ]] && return 1          # temp/hidden files
+    local IFS=/
+    local -a parts=($rel)
+    unset 'parts[${#parts[@]}-1]'                  # directory components only
+    for part in "${parts[@]}"; do
+        for pat in "${exclude[@]}"; do
+            # shellcheck disable=SC2254
+            case "$part" in $pat) return 1 ;; esac
+        done
+    done
+    return 0
+}
+
+# NOTE: with -r, files copied into a brand-new folder before inotifywait has added the
+# watch for it can be missed; the 15-minute timer covers that.
+exec {fd}< <(exec inotifywait -m -r -q -e close_write,moved_to,moved_from,create,delete \
+    --format '%w%f' "$source_dir")
+ipid=$!
+trap 'kill "$ipid" 2>/dev/null' EXIT
+
+while true; do
+    # Wait for the first relevant event (blocking). Events that arrive while the sync
+    # runs stay buffered in the pipe and are picked up here -> another round.
+    IFS= read -r -u "$fd" line || { echo "inotifywait exited, stopping" >&2; exit 1; }
+    relevant "$line" || continue
+    count=1
+    first=$EPOCHSECONDS
+    while true; do
+        left=$(( maxwait - (EPOCHSECONDS - first) ))
+        [ "$left" -gt "$quiet" ] && left=$quiet
+        [ "$left" -le 0 ] && break
+        IFS= read -r -t "$left" -u "$fd" line
+        rc=$?
+        if [ "$rc" -eq 0 ]; then
+            relevant "$line" && count=$((count + 1))  # only relevant events reset the window
+        elif [ "$rc" -gt 128 ]; then
+            break                                       # quiet window elapsed
+        else
+            echo "inotifywait exited, stopping" >&2; exit 1
+        fi
+    done
+    echo "change seen ($count events), syncing"
+    bash -c "$cmd" || echo "sync command failed (exit $?), continuing"
+done

@@ -1,0 +1,8 @@
+# Desktop notification when lightcraft-cloud.service or lightcraft-cloud-purge.service fails (via OnFailure=).
+[Unit]
+Description=Notify that the LightCraft cloud publisher failed
+
+[Service]
+Type=oneshot
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+ExecStart=/usr/bin/notify-send "LightCraft cloud" "Publisher failed - see: journalctl --user -u lightcraft-cloud"

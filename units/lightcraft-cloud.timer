@@ -1,0 +1,12 @@
+# Every 15 minutes. Not enabled by default: systemctl --user enable --now lightcraft-cloud.timer
+[Unit]
+Description=LightCraft cloud publisher every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

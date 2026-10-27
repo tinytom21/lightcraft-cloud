@@ -1,0 +1,15 @@
+# Copy to ~/.config/lightcraft-cloud/config.toml (or pass --config FILE / set LC_CLOUD_CONFIG).
+# Every key is optional; the values shown are examples, defaults are noted.
+
+source = "~/Pictures/Photos"             # folder to publish (default "~/Pictures/Photos")
+remote = "myremote:LightCraft Cloud"     # rclone remote:path (default "gdrive:LightCraft Cloud")
+exclude = ["exported", "Thumbnails"]     # folder-name patterns (fnmatch, case-sensitive) to skip, at any depth
+pair_primary = "jpeg"                    # for RAW+JPEG pairs, which file is the primary: "jpeg" or "raw"
+max_delete = 50                          # refuse if more source photos than this vanished since the last run
+device_history_days = 30                 # purge-history removes history/ and inbox-done/ older than this
+thumb_px = 512                           # long edge of the phone thumbnails
+notify = true                            # desktop notification when phone edits were applied
+# state_dir = "~/.local/state/lightcraft-cloud"   # scratch library, db, logs; must not be under ~/Pictures
+# rclone = "/usr/bin/rclone"             # default: rclone from PATH, else ~/.local/bin/rclone
+# lightcraft_cli = "/path/to/lightcraft-cli"      # default: run the Flatpak ai.storyteller.lightcraft
+# photo_backup = "restic"                # command that answers `snapshots --latest 1 --json` (purge-history)

@@ -1,0 +1,10 @@
+# Delete cloud history/inbox-done folders older than device_history_days, only if a recent restic backup exists.
+[Unit]
+Description=LightCraft cloud history purge
+OnFailure=lightcraft-cloud-notify.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/lc-cloud purge-history
+Nice=10
+IOSchedulingClass=idle

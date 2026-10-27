@@ -1,0 +1,14 @@
+# Publish the photo folder to the cloud remote for the LightCraft phone app. Triggered by lightcraft-cloud.timer.
+# Install: systemctl --user daemon-reload && systemctl --user enable --now lightcraft-cloud.timer
+[Unit]
+Description=LightCraft cloud publisher (rclone sync + phone edits)
+After=network-online.target
+Wants=network-online.target
+OnFailure=lightcraft-cloud-notify.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/lc-cloud sync
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=2h
