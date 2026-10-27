@@ -108,6 +108,14 @@ class Manifest(unittest.TestCase):
 
 
 class Inbox(unittest.TestCase):
+    def test_notify_message(self):
+        self.assertEqual(lc.notify_message(1, ["2024/Trip"], "Photos"),
+                         "1 phone edit applied in 2024/Trip — in LightCraft run Synchronize Folder on this folder")
+        self.assertEqual(lc.notify_message(2, [".", "B"], "Photos"),
+                         "2 phone edits applied in Photos, B — in LightCraft run Synchronize Folder on these folders")
+        self.assertIn("A, B, C and 1 more", lc.notify_message(4, ["A", "B", "C", "D"], "Photos"))
+        self.assertEqual(lc.notify_message(3, [], "Photos"), "3 phone edits applied — in LightCraft run Synchronize Folder")
+
     def test_parse(self):
         p = lc.parse_inbox_name(f"phone/{ID}-20261027T022310Z-{'b' * 16}.xmp")
         self.assertEqual((p["device"], p["id"], p["stamp"], p["base"]), ("phone", ID, "20261027T022310Z", "b" * 16))
@@ -278,6 +286,7 @@ class InboxAlternate(Tmp):
              mock.patch.object(lc, "rclone_lsjson", lambda *a, **k: [{"Path": name}]):
             s = lc.process_inbox(cfg, st, False)
         self.assertEqual((s["applied"], s["rejected"]), (1, 0), s)
+        self.assertEqual(s["folders"], ["A"])
         self.assertEqual((src / "A/x.xmp").read_bytes(), xmp)          # the raw's own sidecar
         self.assertEqual((src / "A/x.JPG.xmp").read_bytes(), b"<oldj/>")
         st.db.close()

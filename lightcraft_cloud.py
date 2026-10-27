@@ -691,8 +691,8 @@ def write_atomic(path, data):
 
 
 def process_inbox(cfg, st, dry):
-    """Returns dict(applied, kept, rejected, noop, items[list of str])."""
-    summary = {"applied": 0, "kept": 0, "rejected": 0, "noop": 0, "items": []}
+    """Returns dict(applied, kept, rejected, noop, items[list of str], folders[folders with applied edits])."""
+    summary = {"applied": 0, "kept": 0, "rejected": 0, "noop": 0, "items": [], "folders": []}
     items = rclone_lsjson(cfg, f"{cfg.remote}/inbox", ["--include", "*.xmp"])
     if not items:
         return summary
@@ -767,6 +767,9 @@ def process_inbox(cfg, st, dry):
             cur[rel] = (inbox_hash, p["epoch"])
             scan_cache[rel] = (target, inbox_hash, p["epoch"])
             summary["applied"] += 1
+            folder = str(Path(target).parent)
+            if folder not in summary["folders"]:
+                summary["folders"].append(folder)
         else:
             save_history(cfg, target, data, tag)
             summary["kept"] += 1
@@ -807,10 +810,20 @@ def find_target_sidecar(cfg, rel):
     return target[rel]
 
 
-def notify(cfg, n):
+def notify_message(n, folders, source_name):
+    edits = "1 phone edit" if n == 1 else f"{n} phone edits"
+    names = [source_name if f in ("", ".") else f for f in folders]
+    if not names:
+        return f"{edits} applied — in LightCraft run Synchronize Folder"
+    shown = ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
+    which = "this folder" if len(names) == 1 else "these folders"
+    return f"{edits} applied in {shown} — in LightCraft run Synchronize Folder on {which}"
+
+
+def notify(cfg, n, folders=()):
     if not cfg.notify or n <= 0:
         return
-    msg = f"{n} phone edits applied — in LightCraft run Synchronize Folder"
+    msg = notify_message(n, list(folders), cfg.source.name)
     env = dict(os.environ)
     env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{os.getuid()}/bus")
     try:
@@ -947,7 +960,7 @@ def sync(cfg, dry):
         st.set("last_result", "ok" if not failed else f"ok, {len(failed)} photos failed")
         st.set("last_counts", json.dumps({k: len(v) for k, v in plan.items()} | {"photos": len(photos)}))
         st.commit()
-        notify(cfg, inbox["applied"])
+        notify(cfg, inbox["applied"], inbox.get("folders", ()))
         log("sync done in %.1fs" % (utcnow() - t0).total_seconds())
         return {"plan": plan, "inbox": inbox}
 
