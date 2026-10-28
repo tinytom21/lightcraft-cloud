@@ -68,7 +68,7 @@ Backup-dir files get a `.HHMMSS` suffix before the extension (`photo.153012.jpg`
      deletion on one side is kept unless the other side changed the property too.
    * `xmp:MetadataDate`, `xmp:ModifyDate` and `xmp:CreatorTool` come from the newer side and are never conflicts.
    * `lc:settings` (JSON) is merged the same way leaf by leaf through nested objects. Lists (masks, spots, ...) are one
-     value, and so are the sections `crop`, `geometry`, `curve` and `profile`: if both sides changed anything inside one
+     value, and so are the sections `crop`, `geometry`, `curve`, `profile` and `wb`: if both sides changed anything inside one
      of them, the newer side's whole section wins.
    The merged file is the PC's document with the changed properties spliced in: foreign properties (darktable,
    Lightroom `crs:`, ...), namespace prefixes, the `xpacket` wrapper and the layout stay as they were. The replaced PC

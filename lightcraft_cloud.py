@@ -468,7 +468,7 @@ NS_XMP = "http://ns.adobe.com/xap/1.0/"
 NS_LC = "http://ns.lightcraft.app/lc/1.0/"
 SETTINGS = (NS_LC, "settings")
 HOUSEKEEPING = {(NS_XMP, "MetadataDate"), (NS_XMP, "ModifyDate"), (NS_XMP, "CreatorTool")}  # from the newer side
-ATOMIC_SECTIONS = {"crop", "geometry", "curve", "profile"}  # lc:settings sections merged as a whole
+ATOMIC_SECTIONS = {"crop", "geometry", "curve", "profile", "wb"}  # lc:settings sections merged as a whole
 MISSING = object()  # an absent property or setting; it counts as a value, so a deletion can win
 
 START_TAG = re.compile(rb"""<[^\s/>]+(?:\s+[^\s=/>]+\s*=\s*(?:"[^"]*"|'[^']*'))*\s*/?>""")

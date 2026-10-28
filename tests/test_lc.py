@@ -283,7 +283,8 @@ class SidecarMerge(unittest.TestCase):
         edits = {"crop": [("crop.geometry.angle", 5.0), ("crop.aspect", "3:2")],
                  "geometry": [("geometry.rotate", 2.0), ("geometry.scale", 90.0)],
                  "curve": [("curve.lights", 10.0), ("curve.darks", -10.0)],
-                 "profile": [("profile.amount", 50.0), ("profile.id", "lc.mono")]}
+                 "profile": [("profile.amount", 50.0), ("profile.id", "lc.mono")],
+                 "wb": [("wb.temp", 5200), ("wb.tint", 12)]}
         for section, (a, b_) in edits.items():
             base = sidecar()
             pc, ph = sidecar(with_settings(a)), sidecar(with_settings(b_))

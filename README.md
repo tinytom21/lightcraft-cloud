@@ -82,8 +82,8 @@ manual Flatpak override is needed.
 When you edit a photo on the PC while the phone edits the same photo, `lc-cloud` does not throw one edit away. It
 merges them setting by setting, using the sidecar version the phone started from as the common ancestor: what only the
 phone changed comes from the phone, what only the PC changed stays, and a setting both changed goes to the newer edit
-(the sync log lists these, e.g. `inbox: ... -> merge (1 conflict: lc:settings/light/exposure)`). Crop, geometry, curve and
-profile are merged as a whole, and so is any list (masks, spots, ...). Other apps' properties in the sidecar
+(the sync log lists these, e.g. `inbox: ... -> merge (1 conflict: lc:settings/light/exposure)`). Crop, geometry, curve,
+profile and white balance are merged as a whole, and so is any list (masks, spots, ...). Other apps' properties in the sidecar
 (darktable, Lightroom, ...), namespace prefixes and the XMP packet wrapper are kept as they are. The notification then reads
 e.g. "2 phone edits applied (1 merged with PC changes) in 2024/Trip", and the replaced PC sidecar and the phone's edit both
 go to the local history (`<state_dir>/history/<date>/`).
