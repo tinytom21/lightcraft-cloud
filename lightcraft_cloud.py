@@ -22,6 +22,7 @@ import sys
 import tomllib
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from xml.parsers import expat
 
 VERSION = "0.1.0"
 FORMAT = 1
@@ -233,9 +234,10 @@ def find_sidecars(photos, files):
     return existing, target
 
 
-def scan_source(root, now=None, exclude=()):
+def scan_source(root, now=None, exclude=(), versions=None):
     """Returns (entries, unstable). entries: {rel: dict(size, mtime_ns, sidecar, sidecar_hash, sidecar_mtime_ns,
-    sidecar_target)}, unstable: set of relpaths (photo or sidecar) modified < STABLE_SECS ago."""
+    sidecar_target)}, unstable: set of relpaths (photo or sidecar) modified < STABLE_SECS ago.
+    versions: the sidecar version store (a folder) to keep every stable sidecar's bytes in; None writes nothing."""
     now = now if now is not None else utcnow().timestamp()
     allf, photos = {}, []
     for rel, ab, st in walk_source(root, exclude):
@@ -259,9 +261,13 @@ def scan_source(root, now=None, exclude=()):
                 unstable.add(sc)
             try:
                 with open(sab, "rb") as f:
-                    e["sidecar_hash"] = sha16(f.read())
+                    data = f.read()
             except OSError:
                 e["sidecar"] = None
+            else:
+                e["sidecar_hash"] = sha16(data)
+                if versions and sc not in unstable:  # (a file still being written may never be published)
+                    store_version(versions, data, e["sidecar_hash"])
         entries[p] = e
     return entries, unstable
 
@@ -427,10 +433,17 @@ def validate_xmp(data):
     return None
 
 
-def decide(base, cur_version, inbox_epoch, local_epoch, inbox_hash=None):
+def phone_is_newer(inbox_epoch, local_epoch):
+    """Newest wins, comparing the inbox stamp with the PC sidecar's mtime; ties go to the PC."""
+    return local_epoch is None or inbox_epoch > local_epoch
+
+
+def decide(base, cur_version, inbox_epoch, local_epoch, inbox_hash=None, can_merge=False):
     """Conflict policy. base: sidecar version the phone started from or 'none'. cur_version: sha16 of the
     current PC sidecar or None. local_epoch: when the PC sidecar was last written (mtime) or None.
-    Returns (action, reason): action in 'apply' | 'keep' | 'noop'."""
+    can_merge: the caller has the `base` version, so a conflict can be merged setting by setting.
+    Returns (action, reason): action in 'apply' | 'keep' | 'noop' | 'merge'. 'merge' only comes with can_merge;
+    the caller tries merge_sidecars and, if that gives up, asks again without can_merge."""
     if inbox_hash is not None and inbox_hash == cur_version:
         return "noop", "identical to current sidecar"
     if cur_version is None and base == "none":
@@ -440,9 +453,411 @@ def decide(base, cur_version, inbox_epoch, local_epoch, inbox_hash=None):
     if cur_version is None:
         return "apply", "PC sidecar is gone; phone edit restores it"
     # conflict: PC sidecar changed (or phone started from nothing while the PC has one)
-    if local_epoch is None or inbox_epoch > local_epoch:
+    if can_merge:
+        return "merge", "conflict: PC sidecar changed since the phone's version"
+    if phone_is_newer(inbox_epoch, local_epoch):
         return "apply", "conflict: phone edit is newer; PC version kept in history"
     return "keep", "conflict: PC sidecar is newer; phone edit kept in history"
+
+
+# ---------------------------------------------------------------- sidecar merge
+
+NS_RDF = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+NS_XML = "http://www.w3.org/XML/1998/namespace"
+NS_XMP = "http://ns.adobe.com/xap/1.0/"
+NS_LC = "http://ns.lightcraft.app/lc/1.0/"
+SETTINGS = (NS_LC, "settings")
+HOUSEKEEPING = {(NS_XMP, "MetadataDate"), (NS_XMP, "ModifyDate"), (NS_XMP, "CreatorTool")}  # from the newer side
+ATOMIC_SECTIONS = {"crop", "geometry", "curve", "profile"}  # lc:settings sections merged as a whole
+MISSING = object()  # an absent property or setting; it counts as a value, so a deletion can win
+
+START_TAG = re.compile(rb"""<[^\s/>]+(?:\s+[^\s=/>]+\s*=\s*(?:"[^"]*"|'[^']*'))*\s*/?>""")
+ATTR_AT = re.compile(rb"""(\s+)([^\s=/>]+)\s*=\s*("[^"]*"|'[^']*')""")
+XML_DECL_ENC = re.compile(rb"""(?:\xef\xbb\xbf)?\s*<\?xml[^>]*\sencoding\s*=\s*["']([^"']+)""")
+
+
+class MergeFail(Exception):
+    """These documents cannot be merged; the caller falls back to newest-wins."""
+
+
+class XAttr:
+    """An attribute with the byte spans of its text: whitespace before the name, the value, the closing quote."""
+    def __init__(self, raw, uri, value):
+        self.raw, self.uri, self.local, self.value = raw, uri, raw.rpartition(":")[2], value
+        self.ws = self.vstart = self.vend = self.end = self.quote = None
+
+
+class XNode:
+    """An element of a parsed sidecar with its byte spans, so edits can be spliced into the original text."""
+    def __init__(self, name, uri, attrs, decls, scope, start):
+        self.name, self.uri, self.local = name, uri, name.rpartition(":")[2]
+        self.attrs, self.decls, self.scope, self.start = attrs, decls, scope, start  # decls: declared here; scope: in force here
+        self.kids, self.text = [], []
+        # filled in once the tag is read: end of the start tag, <a/>?, offset of '</', end of the element
+        self.open_end = self.selfclose = self.close = self.end = None
+
+
+def ns_uri(scope, qname, is_element):
+    pfx = qname.rpartition(":")[0]
+    if not pfx:
+        return scope.get("", "") if is_element else ""  # unprefixed attributes have no namespace
+    if pfx not in scope:
+        raise MergeFail(f"unbound prefix {pfx}")
+    return scope[pfx]
+
+
+def parse_spans(data):
+    """Parse an XMP document (UTF-8) into XNodes carrying byte spans. Raises MergeFail / expat.ExpatError."""
+    low = data.lower()
+    if len(data) >= MAX_XMP_BYTES or b"<!doctype" in low or b"<!entity" in low:
+        raise MergeFail("too large, or has a DTD")
+    enc = XML_DECL_ENC.match(data)
+    if enc and enc.group(1).lower() not in (b"utf-8", b"utf8"):
+        raise MergeFail("not UTF-8")
+    data.decode("utf-8")
+    stack, roots = [], []
+    p = expat.ParserCreate()
+    p.ordered_attributes = True
+
+    def start(name, flat):
+        pairs = list(zip(flat[::2], flat[1::2]))
+        decls = {(k[6:] if k != "xmlns" else ""): v for k, v in pairs if k == "xmlns" or k.startswith("xmlns:")}
+        scope = {**(stack[-1].scope if stack else {"xml": NS_XML}), **decls}
+        attrs = [XAttr(k, ns_uri(scope, k, False), v) for k, v in pairs if k != "xmlns" and not k.startswith("xmlns:")]
+        node = XNode(name, ns_uri(scope, name, True), attrs, decls, scope, p.CurrentByteIndex)
+        tag = START_TAG.match(data, node.start)
+        if not tag:
+            raise MergeFail("unreadable start tag")
+        node.open_end = tag.end()
+        node.selfclose = data[node.open_end - 2:node.open_end] == b"/>"
+        found = {m.group(2).decode(): m for m in ATTR_AT.finditer(data, node.start + len(name.encode()) + 1, node.open_end)}
+        for a in attrs:
+            m = found.get(a.raw)
+            if m is None:
+                raise MergeFail("unreadable attribute")
+            a.ws, a.vstart, a.vend, a.end, a.quote = m.start(1), m.start(3) + 1, m.end(3) - 1, m.end(3), m.group(3)[:1]
+        (stack[-1].kids if stack else roots).append(node)
+        stack.append(node)
+
+    def end(name):
+        node = stack.pop()
+        if node.selfclose:  # expat reports the end of an <a/> after the tag
+            node.close = node.end = node.open_end
+        else:
+            node.close = p.CurrentByteIndex
+            node.end = data.index(b">", node.close) + 1
+
+    p.StartElementHandler = start
+    p.EndElementHandler = end
+    p.CharacterDataHandler = lambda s: stack[-1].text.append(s) if stack else None
+    p.Parse(data, True)
+    if len(roots) != 1:
+        raise MergeFail("not a single XML document")
+    return roots[0]
+
+
+def canon(node):
+    """What an element means, independent of prefixes, attribute order and indentation."""
+    attrs = tuple(sorted((a.uri, a.local, a.value) for a in node.attrs))
+    return node.uri, node.local, attrs, "".join(node.text).strip(), tuple(canon(k) for k in node.kids)
+
+
+class Prop:
+    """One rdf:Description property, written as an attribute or as a child element. Compared by `value`: a
+    plain text value reads the same either way."""
+    def __init__(self, doc, desc, node=None, attr=None):
+        self.doc, self.desc, self.node, self.attr = doc, desc, node, attr
+        if attr is not None:
+            self.key, self.name, self.text = (attr.uri, attr.local), attr.raw, attr.value
+        else:
+            self.key, self.name = (node.uri, node.local), node.name
+            self.text = "".join(node.text) if not node.kids and not node.attrs else None
+        self.value = ("t", self.text.strip()) if self.text is not None else ("x", canon(node))
+
+
+class XDoc:
+    def __init__(self, data):
+        self.data = data
+        root = parse_spans(data)
+        self.descs, todo = [], [root]
+        while todo:
+            n = todo.pop()
+            if (n.uri, n.local) == (NS_RDF, "Description"):
+                self.descs.append(n)
+            else:
+                todo.extend(reversed(n.kids))
+        self.props = {}
+        for d in self.descs:
+            found = [Prop(self, d, attr=a) for a in d.attrs if a.uri not in (NS_RDF, NS_XML)]
+            found += [Prop(self, d, node=k) for k in d.kids]
+            for pr in found:
+                if pr.key in self.props:
+                    raise MergeFail(f"property {pr.name} appears twice")
+                self.props[pr.key] = pr
+
+
+def canon_json(x):
+    return json.dumps(x, sort_keys=True, separators=(",", ":"))
+
+
+def same_json(a, b):
+    return a is b if MISSING in (a, b) else canon_json(a) == canon_json(b)
+
+
+def merge_json(b, p, m, path, phone_newer, conflicts):
+    """Three-way merge of lc:settings values (PC p, phone m, common ancestor b). Dicts merge key by key, except
+    the atomic sections; everything else (numbers, strings, lists) is a single value."""
+    if same_json(p, m) or same_json(m, b):
+        return p
+    if same_json(p, b):
+        return m
+    if (isinstance(p, dict) and isinstance(m, dict) and (isinstance(b, dict) or b is MISSING)
+            and not (len(path) == 1 and path[0] in ATOMIC_SECTIONS)):
+        b = {} if b is MISSING else b
+        out = {}
+        for k in [*p, *(k for k in m if k not in p)]:
+            v = merge_json(b.get(k, MISSING), p.get(k, MISSING), m.get(k, MISSING), path + (k,), phone_newer, conflicts)
+            if v is not MISSING:
+                out[k] = v
+        return out
+    conflicts.append(path)
+    return m if phone_newer else p
+
+
+def dumps_like(raw, obj, attr=False):
+    """JSON text for obj laid out like the existing text raw: compact, with spaces, or indented."""
+    s = raw.strip()
+    kw = {"ensure_ascii": False, "separators": (",", ":")}
+    if "\n" in s and not attr:
+        m = re.search(r"\n([ \t]+)\S", s)
+        kw = {"ensure_ascii": False, "indent": ("\t" if m.group(1)[0] == "\t" else len(m.group(1))) if m else 2}
+    elif re.match(r'\{\s*"(?:[^"\\]|\\.)*"\s*:\s', s):
+        kw["separators"] = (", ", ": ")
+    return raw[:len(raw) - len(raw.lstrip())] + json.dumps(obj, **kw) + raw[len(raw.rstrip()):]
+
+
+def esc_text(s):
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\r", "&#13;").encode()
+
+
+def esc_attr(s, quote=b'"'):
+    s = s.replace("&", "&amp;").replace("<", "&lt;").replace("\t", "&#9;").replace("\n", "&#10;").replace("\r", "&#13;")
+    return s.replace(quote.decode(), "&quot;" if quote == b'"' else "&apos;").encode()
+
+
+def xmlns_decl(pfx, uri):
+    return b" xmlns%s=\"%s\"" % (b":" + pfx.encode() if pfx else b"", esc_attr(uri))
+
+
+def used_prefixes(node, out):
+    out.add(node.name.rpartition(":")[0])  # "" = default namespace
+    out.update(a.raw.rpartition(":")[0] for a in node.attrs if a.uri not in ("", NS_XML))
+    for k in node.kids:
+        used_prefixes(k, out)
+    return out
+
+
+class Splice:
+    """Edits to the PC document, spliced into its original bytes: everything not touched (xpacket wrapper, XML
+    declaration, comments, foreign properties, indentation, prefixes) stays byte for byte."""
+    def __init__(self, doc):
+        self.doc, self.ops, self.added = doc, [], {}  # added: {prefix: uri} declared on the first Description
+        self.expanded = False  # the first Description was <.../> and has been opened up for new child elements
+
+    def put(self, start, end, text, last=False):
+        """Replace data[start:end] (an insertion when start == end). Edits at the same place keep their order."""
+        self.ops.append((start, end, 1 << 30 if last else len(self.ops), text))
+
+    def result(self):
+        out, pos = [], 0
+        for start, end, _, text in sorted(self.ops):
+            if start < pos:
+                raise MergeFail("overlapping edits")
+            out += [self.doc.data[pos:start], text]
+            pos = end
+        return b"".join(out + [self.doc.data[pos:]])
+
+    def scope(self):
+        return {**self.doc.descs[0].scope, **self.added}
+
+    def set_text(self, pp, text):
+        a, n = pp.attr, pp.node
+        if a is not None:
+            self.put(a.vstart, a.vend, esc_attr(text, a.quote))
+        elif n.selfclose:
+            self.put(n.open_end - 2, n.open_end, b">" + esc_text(text) + b"</" + n.name.encode() + b">")
+        else:
+            self.put(n.open_end, n.close, esc_text(text))
+
+    def remove(self, pp):
+        if pp.attr is not None:
+            self.put(pp.attr.ws, pp.attr.end, b"")
+            return
+        data, s = self.doc.data, pp.node.start
+        while s > 0 and data[s - 1] in b" \t":
+            s -= 1
+        if s > 0 and data[s - 1] == 10:  # take the whole line
+            s -= 2 if data[s - 2:s - 1] == b"\r" else 1
+        self.put(s, pp.node.end, b"")
+
+    def element(self, mp, scope):
+        """The phone's property as element text that is valid where the PC's `scope` applies: prefixes the PC
+        binds differently (or not at all) are declared on the element itself."""
+        if mp.attr is not None:  # plain attribute value to be written as an element
+            pfx = mp.attr.raw.rpartition(":")[0]
+            if not pfx:
+                raise MergeFail("cannot write a namespace-less attribute as an element")
+            decl = b"" if scope.get(pfx) == mp.key[0] else xmlns_decl(pfx, mp.key[0])
+            name = mp.attr.raw.encode()
+            return b"<" + name + decl + b">" + esc_text(mp.text) + b"</" + name + b">"
+        n = mp.node
+        decl = b""
+        for pfx in sorted(used_prefixes(n, set())):
+            want = n.scope.get(pfx, "" if not pfx else None)
+            if want is not None and pfx not in n.decls and scope.get(pfx, "") != want:
+                decl += xmlns_decl(pfx, want)
+        k = len(n.name.encode()) + 1
+        return mp.doc.data[n.start:n.start + k] + decl + mp.doc.data[n.start + k:n.end]
+
+    def add(self, mp):
+        """Add the phone's property to the first Description of the PC document."""
+        d, data = self.doc.descs[0], self.doc.data
+        if mp.attr is not None:
+            scope, uri = self.scope(), mp.key[0]
+            pfx = mp.attr.raw.rpartition(":")[0]
+            at = d.open_end - (2 if d.selfclose else 1)  # before the '>' (or '/>') of the start tag
+            name = mp.attr.raw
+            if uri and scope.get(pfx) != uri:
+                have = [p for p, u in scope.items() if u == uri and p]
+                if have:
+                    name = have[0] + ":" + mp.attr.local
+                elif pfx not in scope:
+                    self.added[pfx] = uri
+                    self.put(at, at, xmlns_decl(pfx, uri))
+                else:
+                    raise MergeFail(f"prefix {pfx} is bound differently in the PC sidecar")
+            self.put(at, at, b" " + name.encode() + b'="' + esc_attr(mp.text) + b'"')
+            return
+        raw = self.element(mp, self.scope())
+        if d.kids:  # after the last property, indented like it
+            last = d.kids[-1]
+            i = last.start
+            while i > 0 and data[i - 1] in b" \t\r\n":
+                i -= 1
+            sep = data[i:last.start] if b"\n" in data[i:last.start] else b""
+            self.put(last.end, last.end, sep + raw)
+            return
+        i = d.start
+        while i > 0 and data[i - 1] in b" \t":
+            i -= 1
+        indent = data[i:d.start] if i > 0 and data[i - 1] == 10 else None
+        outer, inner = (b"", b"") if indent is None else (b"\n" + indent, b"\n" + indent + b"  ")
+        if d.selfclose and not self.expanded:
+            self.expanded = True
+            self.put(d.open_end - 2, d.open_end, b">")
+            self.put(d.open_end, d.open_end, outer + b"</" + d.name.encode() + b">", last=True)
+        self.put(d.open_end, d.open_end, inner + raw)
+
+    def take(self, pp, mp):
+        """Make the PC's property pp (None: absent) read like the phone's mp (None: absent)."""
+        if mp is None:
+            self.remove(pp)
+        elif pp is None:
+            self.add(mp)
+        elif pp.text is not None and mp.text is not None:
+            self.set_text(pp, mp.text)
+        elif pp.node is not None:
+            self.put(pp.node.start, pp.node.end, self.element(mp, pp.desc.scope))
+        else:
+            self.remove(pp)
+            self.add(mp)
+
+
+def three_way(b, p, m):
+    """Which side's value a property takes: 'pc', 'phone', or None for a conflict (both changed it)."""
+    if p == m or m == b:
+        return "pc"
+    return "phone" if p == b else None
+
+
+def settings_of(doc):
+    pr = doc.props.get(SETTINGS)
+    if pr is None:
+        return None
+    obj = json.loads(pr.text) if pr.text is not None else None
+    if not isinstance(obj, dict):
+        raise MergeFail("lc:settings is not a JSON object")
+    return obj
+
+
+def prop_cmp(key, pr):
+    """What a property means, for the final self-check (lc:settings by its JSON, not its layout)."""
+    if pr is None:
+        return MISSING
+    if key == SETTINGS:
+        try:
+            return "json", canon_json(json.loads(pr.text))
+        except (TypeError, ValueError):
+            return "bad", pr.value
+    return pr.value
+
+
+def _merge_sidecars(base, pc, phone, phone_newer):
+    B, P, M = XDoc(base), XDoc(pc), XDoc(phone)
+    if not (B.descs and P.descs and M.descs):
+        raise MergeFail("no rdf:Description")
+    sb, sp, sm = settings_of(B), settings_of(P), settings_of(M)
+    if sb is None and (sp is not None or sm is not None):
+        raise MergeFail("the base has no lc:settings")
+    if sp is not None and sm is not None and any(sp.get(k) != sm.get(k) for k in ("version", "process")):
+        raise MergeFail("lc:settings version or process differ")
+    conflicts, plan = [], {}  # plan: property -> 'pc' | 'phone' | merged lc:settings dict
+    keys = dict.fromkeys([*P.props, *M.props, *B.props])  # PC's order first
+    for key in keys:
+        bp, pp, mp = B.props.get(key), P.props.get(key), M.props.get(key)
+        if key in HOUSEKEEPING:  # the newer side's value, when it has one; never a conflict
+            plan[key] = "phone" if mp is not None and (phone_newer or pp is None) else "pc"
+        elif key == SETTINGS and sb is not None and sp is not None and sm is not None:
+            leaves = []
+            plan[key] = merge_json(sb, sp, sm, (), phone_newer, leaves)
+            conflicts += [pp.name + "".join("/" + k for k in path) for path in leaves]
+        else:
+            pick = three_way(*(x.value if x else MISSING for x in (bp, pp, mp)))
+            if pick is None:
+                conflicts.append((pp or mp or bp).name)
+                pick = "phone" if phone_newer else "pc"
+            plan[key] = pick
+    edit = Splice(P)
+    for key, what in plan.items():
+        pp, mp = P.props.get(key), M.props.get(key)
+        if isinstance(what, dict):
+            if not same_json(what, sp):
+                edit.set_text(pp, dumps_like(pp.text, what, attr=pp.attr is not None))
+        elif what == "phone" and (pp.value if pp else MISSING) != (mp.value if mp else MISSING):
+            edit.take(pp, mp)
+    out = edit.result()
+    # self-check: the result must mean exactly what the plan says (a bug here falls back to newest-wins)
+    want = {}
+    for key, what in plan.items():
+        src = P if what == "pc" else M
+        want[key] = ("json", canon_json(what)) if isinstance(what, dict) else prop_cmp(key, src.props.get(key))
+    if {k: prop_cmp(k, pr) for k, pr in XDoc(out).props.items()} != {k: v for k, v in want.items() if v is not MISSING}:
+        raise MergeFail("self-check: the result differs from the plan")
+    err = validate_xmp(out)
+    if err:
+        raise MergeFail(err)
+    return out, conflicts
+
+
+def merge_sidecars(base, pc, phone, phone_newer):
+    """Three-way merge, property by property, of two edits of the sidecar `base`: the PC's (`pc`) and the
+    phone's (`phone`). A property only one side changed takes that side's value; one both changed takes the
+    newer side's and is reported. Returns (merged bytes, conflicts) or None when the documents cannot be merged
+    safely (the caller then falls back to newest-wins). The result is the PC document with edits spliced in."""
+    try:
+        return _merge_sidecars(base, pc, phone, phone_newer)
+    except (MergeFail, expat.ExpatError, ValueError, RecursionError):
+        return None
 
 
 # ---------------------------------------------------------------- rclone
@@ -680,19 +1095,62 @@ def save_history(cfg, rel, data, tag):
     return d
 
 
-def write_atomic(path, data):
+def write_atomic(path, data, sync=True):
     path = Path(path)
     tmp = path.with_name(f".lightcraft-{secrets.token_hex(4)}.tmp")
     with open(tmp, "wb") as f:
         f.write(data)
-        f.flush()
-        os.fsync(f.fileno())
+        if sync:
+            f.flush()
+            os.fsync(f.fileno())
     os.replace(tmp, path)
 
 
+def versions_dir(cfg):
+    return cfg.state / "sidecar-versions"
+
+
+def store_version(folder, data, h=None):
+    """Keep the bytes of one sidecar version as <folder>/<sha16>.xmp (once), so a phone edit that names it as its
+    base can be merged against it later. No fsync: load_version checks the hash, so a torn file is just absent."""
+    h = h or sha16(data)
+    f = Path(folder) / f"{h}.xmp"
+    try:
+        if not f.exists():
+            f.parent.mkdir(parents=True, exist_ok=True)
+            write_atomic(f, data, sync=False)
+    except OSError as e:  # the store is a convenience: without a version, a conflict falls back to newest-wins
+        log(f"WARNING: cannot keep sidecar version {h}: {e}")
+
+
+def load_version(cfg, h):
+    """The stored sidecar version with this sha16, or None (never stored, purged, or damaged)."""
+    try:
+        data = (versions_dir(cfg) / f"{h}.xmp").read_bytes()
+    except OSError:
+        return None
+    return data if sha16(data) == h else None
+
+
+def purge_versions(cfg, cutoff_ts, keep):
+    """Delete stored sidecar versions last written before cutoff_ts, except the hashes in `keep` (the sidecars
+    the state database currently lists). Returns how many were removed."""
+    n = 0
+    d = versions_dir(cfg)
+    for f in (d.iterdir() if d.is_dir() else ()):  # (leftover temp files of an interrupted write go too)
+        try:
+            if not (f.suffix == ".xmp" and f.stem in keep) and f.stat().st_mtime < cutoff_ts:
+                f.unlink()
+                n += 1
+        except OSError:
+            pass
+    return n
+
+
 def process_inbox(cfg, st, dry):
-    """Returns dict(applied, kept, rejected, noop, items[list of str], folders[folders with applied edits])."""
-    summary = {"applied": 0, "kept": 0, "rejected": 0, "noop": 0, "items": [], "folders": []}
+    """Returns dict(applied, merged, kept, rejected, noop, items[list of str], folders[folders with applied or
+    merged edits])."""
+    summary = {"applied": 0, "merged": 0, "kept": 0, "rejected": 0, "noop": 0, "items": [], "folders": []}
     items = rclone_lsjson(cfg, f"{cfg.remote}/inbox", ["--include", "*.xmp"])
     if not items:
         return summary
@@ -734,6 +1192,9 @@ def process_inbox(cfg, st, dry):
         if err:
             reject(it, err)
             continue
+        inbox_hash = sha16(data)
+        if not dry:
+            store_version(versions_dir(cfg), data, inbox_hash)  # the phone's next edit may name this as its base
         row = by_id.get(p["id"])
         if row is None:
             reject(it, f"unknown photo id {p['id']}")
@@ -745,8 +1206,28 @@ def process_inbox(cfg, st, dry):
         sc_rel, sc_hash, sc_mtime = scan_cache[rel]
         if rel in cur:
             sc_hash, sc_mtime = cur[rel]
-        inbox_hash = sha16(data)
-        action, reason = decide(p["base"], sc_hash, p["epoch"], sc_mtime, inbox_hash)
+        # a conflict is merged setting by setting when the version the phone started from is still known
+        base_data = None
+        if sc_hash is not None and p["base"] not in ("none", sc_hash):
+            base_data = load_version(cfg, p["base"])
+        action, reason = decide(p["base"], sc_hash, p["epoch"], sc_mtime, inbox_hash, can_merge=base_data is not None)
+        merged = None
+        if action == "merge":
+            try:
+                pc_data = (cfg.source / sc_rel).read_bytes()
+                res = merge_sidecars(base_data, pc_data, data, phone_is_newer(p["epoch"], sc_mtime))
+            except Exception as e:  # a bug in the merge must never block the inbox
+                log(f"WARNING: merge of {it['Path']} failed ({type(e).__name__}: {e})")
+                res = None
+            if res is None:
+                action, reason = decide(p["base"], sc_hash, p["epoch"], sc_mtime, inbox_hash)
+            elif res[0] == pc_data:
+                action, reason = "noop", "merge changes nothing: the PC sidecar already has the phone's edits"
+            else:
+                merged, conflicts = res
+                n = len(conflicts)
+                shown = ", ".join(conflicts[:6]) + (f", +{n - 6} more" if n > 6 else "")
+                reason = f"{n} conflict{'s' if n != 1 else ''}" + (f": {shown}" if n else "")
         log(f"inbox: {it['Path']} -> {action} ({reason})")
         summary["items"].append(f"{action} {it['Path']}: {reason}")
         target = sc_rel or find_target_sidecar(cfg, rel)
@@ -756,17 +1237,22 @@ def process_inbox(cfg, st, dry):
             done(it)
             continue
         if dry:
-            summary["applied" if action == "apply" else "kept"] += 1
+            summary[{"apply": "applied", "merge": "merged"}.get(action, "kept")] += 1
             continue
         abs_t = cfg.source / target
-        if action == "apply":
+        if action in ("apply", "merge"):
             if abs_t.exists():
                 prev = abs_t.read_bytes()
                 save_history(cfg, target, prev, f"pc-{dt.datetime.fromtimestamp(abs_t.stat().st_mtime, dt.timezone.utc):%Y%m%dT%H%M%SZ}")
-            write_atomic(abs_t, data)
-            cur[rel] = (inbox_hash, p["epoch"])
-            scan_cache[rel] = (target, inbox_hash, p["epoch"])
-            summary["applied"] += 1
+            if merged is not None:
+                save_history(cfg, target, data, tag)
+            out = data if merged is None else merged
+            write_atomic(abs_t, out)
+            new_hash = sha16(out)
+            store_version(versions_dir(cfg), out, new_hash)
+            cur[rel] = (new_hash, p["epoch"])
+            scan_cache[rel] = (target, new_hash, p["epoch"])
+            summary["applied" if merged is None else "merged"] += 1
             folder = str(Path(target).parent)
             if folder not in summary["folders"]:
                 summary["folders"].append(folder)
@@ -810,20 +1296,22 @@ def find_target_sidecar(cfg, rel):
     return target[rel]
 
 
-def notify_message(n, folders, source_name):
+def notify_message(n, folders, source_name, merged=0):
+    """n: edits applied, merged ones included; merged: how many of them were merged with PC changes."""
     edits = "1 phone edit" if n == 1 else f"{n} phone edits"
+    edits += f" applied ({merged} merged with PC changes)" if merged else " applied"
     names = [source_name if f in ("", ".") else f for f in folders]
     if not names:
-        return f"{edits} applied — in LightCraft run Synchronize Folder"
+        return f"{edits} — in LightCraft run Synchronize Folder"
     shown = ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
     which = "this folder" if len(names) == 1 else "these folders"
-    return f"{edits} applied in {shown} — in LightCraft run Synchronize Folder on {which}"
+    return f"{edits} in {shown} — in LightCraft run Synchronize Folder on {which}"
 
 
-def notify(cfg, n, folders=()):
+def notify(cfg, n, folders=(), merged=0):
     if not cfg.notify or n <= 0:
         return
-    msg = notify_message(n, list(folders), cfg.source.name)
+    msg = notify_message(n, list(folders), cfg.source.name, merged)
     env = dict(os.environ)
     env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{os.getuid()}/bus")
     try:
@@ -884,10 +1372,11 @@ def sync(cfg, dry):
         # (1) inbox
         log("step 1/6: inbox")
         inbox = process_inbox(cfg, st, dry)
-        log(f"inbox: applied={inbox['applied']} kept-pc={inbox['kept']} rejected={inbox['rejected']} identical={inbox['noop']}")
+        log(f"inbox: applied={inbox['applied']} merged={inbox['merged']} kept-pc={inbox['kept']} "
+            f"rejected={inbox['rejected']} identical={inbox['noop']}")
         # (2) scan
         log("step 2/6: scan source")
-        entries, unstable = scan_source(cfg.source, exclude=cfg.exclude)
+        entries, unstable = scan_source(cfg.source, exclude=cfg.exclude, versions=None if dry else versions_dir(cfg))
         if not entries:
             raise Refuse(f"no photos found under {cfg.source}; refusing (unmounted?)")
         plan = diff_scan(entries, unstable, known)
@@ -960,7 +1449,7 @@ def sync(cfg, dry):
         st.set("last_result", "ok" if not failed else f"ok, {len(failed)} photos failed")
         st.set("last_counts", json.dumps({k: len(v) for k, v in plan.items()} | {"photos": len(photos)}))
         st.commit()
-        notify(cfg, inbox["applied"], inbox.get("folders", ()))
+        notify(cfg, inbox["applied"] + inbox["merged"], inbox.get("folders", ()), inbox["merged"])
         log("sync done in %.1fs" % (utcnow() - t0).total_seconds())
         return {"plan": plan, "inbox": inbox}
 
@@ -1030,6 +1519,9 @@ def cmd_purge(cfg, days):
                 rclone(cfg, ["purge", f"{cfg.remote}/{top}/{d}"])
                 n += 1
     log(f"purged {n} folders older than {days} days (cutoff {cutoff}); newest backup {age:.1f} h old")
+    keep = {r["sidecar_hash"] for r in State(cfg, readonly=True).files().values() if r["sidecar_hash"]}
+    nv = purge_versions(cfg, (utcnow() - dt.timedelta(days=days)).timestamp(), keep)
+    log(f"purged {nv} stored sidecar versions older than {days} days (versions of current sidecars are kept)")
 
 
 def cmd_inbox_check(cfg):

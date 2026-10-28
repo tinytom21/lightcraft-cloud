@@ -47,7 +47,7 @@ Enable what you want, e.g. `systemctl --user enable --now lightcraft-cloud.timer
 ```
 lc-cloud [--config FILE] sync [--dry-run]   publish originals, previews, thumbs and manifest; apply phone edits
 lc-cloud status                             last run, tracked photos, remote size, pending inbox files
-lc-cloud purge-history [--days N]           delete remote history/ and inbox-done/ folders older than N days
+lc-cloud purge-history [--days N]           delete remote history/ and inbox-done/ folders, and stored sidecar versions, older than N days
 lc-cloud inbox-check                        start a sync only if phone edits are waiting (used by the inbox timer)
 ```
 
@@ -68,7 +68,7 @@ See [config.example.toml](config.example.toml). All keys are optional.
 | `max_delete` | `50` | abort if more source photos vanished than this since the last run; also passed to `rclone --max-delete` |
 | `device_history_days` | `30` | age limit for `purge-history` |
 | `thumb_px` | `512` | thumbnail long edge |
-| `notify` | `true` | desktop notification when phone edits were applied |
+| `notify` | `true` | desktop notification when phone edits were applied or merged |
 | `state_dir` | `~/.local/state/lightcraft-cloud` | scratch library, state database, logs |
 | `rclone` | `rclone` from PATH, else `~/.local/bin/rclone` | rclone binary |
 | `lightcraft_cli` | unset | path to a `lightcraft-cli`; unset runs it through `flatpak run --command=lightcraft-cli ai.storyteller.lightcraft` |
@@ -76,6 +76,23 @@ See [config.example.toml](config.example.toml). All keys are optional.
 
 With the Flatpak, `lc-cloud` grants it `--filesystem=<source>:ro` and `--filesystem=<state_dir>` for each call, so no
 manual Flatpak override is needed.
+
+## Phone edits that meet PC edits
+
+When you edit a photo on the PC while the phone edits the same photo, `lc-cloud` does not throw one edit away. It
+merges them setting by setting, using the sidecar version the phone started from as the common ancestor: what only the
+phone changed comes from the phone, what only the PC changed stays, and a setting both changed goes to the newer edit
+(the sync log lists these, e.g. `inbox: ... -> merge (1 conflict: lc:settings/light/exposure)`). Crop, geometry, curve and
+profile are merged as a whole, and so is any list (masks, spots, ...). Other apps' properties in the sidecar
+(darktable, Lightroom, ...), namespace prefixes and the XMP packet wrapper are kept as they are. The notification then reads
+e.g. "2 phone edits applied (1 merged with PC changes) in 2024/Trip", and the replaced PC sidecar and the phone's edit both
+go to the local history (`<state_dir>/history/<date>/`).
+
+To have the ancestor at hand, `lc-cloud` keeps every sidecar version it publishes and every phone edit it receives in
+`<state_dir>/sidecar-versions/<sha16>.xmp` (a few KiB each). `purge-history` deletes versions older than the day limit,
+except those of sidecars currently in the library. If the ancestor is not there, or the two edits cannot be merged safely
+(different LightCraft engine versions, an unparsable file, ...), the newest edit wins as a whole file and the loser goes to
+the local history. Details: [FORMAT.md](FORMAT.md).
 
 ## Safety
 

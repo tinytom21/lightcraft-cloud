@@ -57,11 +57,31 @@ Backup-dir files get a `.HHMMSS` suffix before the extension (`photo.153012.jpg`
 ### Conflict policy
 1. `base` equals the current PC `sidecarVersion` (or `none` and the PC has no sidecar): **apply**.
 2. Content identical to the current sidecar: nothing to do.
-3. Otherwise (the PC sidecar changed since the phone's version): **newest wins**, comparing the inbox UTC stamp with the
-   PC sidecar's mtime; ties go to the PC. The loser is never lost: a replaced PC sidecar is copied to the PC's local
-   history first; a losing phone edit is saved there as `<path>.<device>.<stamp>.xmp`.
-4. Applying writes the sidecar atomically (temp file in the same folder + rename). Photo files are never modified.
-   The user then runs Synchronize Folder in LightCraft to pick up the new sidecar.
+3. Otherwise the PC sidecar changed since the phone's version. If the PC still has the sidecar version `base` names, it
+   **merges** the two edits three ways, setting by setting, so a phone edit and a PC edit of different things both
+   survive. The PC keeps every sidecar version it has published and every inbox file it has received, so `base` may
+   also be the hash of the phone's own previous edit. The merge works on the `rdf:Description` properties of the three
+   documents (base, PC, phone), each compared by namespace and name, written as attribute or child element alike:
+   * the same on both sides, or changed only by the phone: the phone's value; changed only on the PC: the PC's value
+   * changed differently on both sides: a conflict, and the **newer side wins** that one property (inbox UTC stamp vs.
+     PC sidecar mtime; ties go to the PC). Conflicts are logged. A property that is absent counts as a value, so a
+     deletion on one side is kept unless the other side changed the property too.
+   * `xmp:MetadataDate`, `xmp:ModifyDate` and `xmp:CreatorTool` come from the newer side and are never conflicts.
+   * `lc:settings` (JSON) is merged the same way leaf by leaf through nested objects. Lists (masks, spots, ...) are one
+     value, and so are the sections `crop`, `geometry`, `curve` and `profile`: if both sides changed anything inside one
+     of them, the newer side's whole section wins.
+   The merged file is the PC's document with the changed properties spliced in: foreign properties (darktable,
+   Lightroom `crs:`, ...), namespace prefixes, the `xpacket` wrapper and the layout stay as they were. The replaced PC
+   sidecar and the phone's edit both go to the PC's local history.
+4. When there is nothing to merge against or the merge is not safe, **newest wins** for the whole file, comparing the
+   inbox UTC stamp with the PC sidecar's mtime; ties go to the PC. The loser is never lost: a replaced PC sidecar is
+   copied to the PC's local history first; a losing phone edit is saved there as `<path>.<device>.<stamp>.xmp`. This
+   applies when: `base` is `none` while the PC has a sidecar, or is a version the PC does not have (never published,
+   or older than its history limit); the engine `version` or `process` in `lc:settings` differs between PC and phone;
+   a document or its JSON does not parse (or is not UTF-8, has a DTD, or lists a property twice); or `base` has no
+   `lc:settings` while a side has one.
+5. Applying (or merging) writes the sidecar atomically (temp file in the same folder + rename). Photo files are never
+   modified. The user then runs Synchronize Folder in LightCraft to pick up the new sidecar.
 
 ## Rules
 * PC is master. `originals/` and `mobile/` are written only by the publisher.
