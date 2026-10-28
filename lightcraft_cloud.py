@@ -1359,6 +1359,31 @@ def stage_preview_sizes(cfg):
     return {f.stem: f.stat().st_size for f in d.glob("*.lcsp")} if d.is_dir() else {}
 
 
+def publish_manifest(cfg, st, photos):
+    """Upload mobile/manifest.json unless the remote in use already has this exact photo list. Returns True if uploaded.
+    The local copy is what the remote has: it is replaced only after the upload worked, and the remote it went to
+    is recorded, so a failed upload or a changed `remote` in the config is retried instead of skipped."""
+    mpath = cfg.mobile / "manifest.json"
+    old = json.loads(mpath.read_text()) if mpath.exists() else None
+    sent_to = st.get("manifest_uploaded")
+    if sent_to == "1":  # written before the remote was recorded: it went to the remote in use then
+        sent_to = cfg.remote
+        st.set("manifest_uploaded", sent_to)
+    if old and old.get("photos") == photos and old.get("format") == FORMAT and sent_to == cfg.remote:
+        log("  manifest unchanged; not uploading")
+        return False
+    mpath.parent.mkdir(parents=True, exist_ok=True)
+    staged = mpath.with_name("manifest.json.new")
+    write_atomic(staged, json.dumps(manifest_doc(photos), indent=1).encode())
+    tmp = f"{cfg.remote}/mobile/manifest.json.tmp-{secrets.token_hex(4)}"
+    rclone(cfg, ["copyto", str(staged), tmp])
+    rclone(cfg, ["moveto", tmp, f"{cfg.remote}/mobile/manifest.json"])
+    os.replace(staged, mpath)
+    st.set("manifest_uploaded", cfg.remote)
+    log(f"  manifest uploaded ({len(photos)} photos)")
+    return True
+
+
 def sync(cfg, dry):
     global DRY
     DRY = dry
@@ -1433,18 +1458,7 @@ def sync(cfg, dry):
             log(f"  mobile/{sub}: {r}")
         # (6) manifest last
         log("step 6/6: manifest")
-        mpath = cfg.mobile / "manifest.json"
-        old = json.loads(mpath.read_text()) if mpath.exists() else None
-        if old and old.get("photos") == photos and old.get("format") == FORMAT and st.get("manifest_uploaded") == "1":
-            log("  manifest unchanged; not uploading")
-        else:
-            doc = manifest_doc(photos)
-            write_atomic(mpath, json.dumps(doc, indent=1).encode())
-            tmp = f"{cfg.remote}/mobile/manifest.json.tmp-{secrets.token_hex(4)}"
-            rclone(cfg, ["copyto", str(mpath), tmp])
-            rclone(cfg, ["moveto", tmp, f"{cfg.remote}/mobile/manifest.json"])
-            st.set("manifest_uploaded", "1")
-            log(f"  manifest uploaded ({len(photos)} photos)")
+        publish_manifest(cfg, st, photos)
         st.set("last_run", iso_utc(utcnow().timestamp()))
         st.set("last_result", "ok" if not failed else f"ok, {len(failed)} photos failed")
         st.set("last_counts", json.dumps({k: len(v) for k, v in plan.items()} | {"photos": len(photos)}))

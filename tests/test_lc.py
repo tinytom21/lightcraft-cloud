@@ -1026,6 +1026,69 @@ class DryRun(Tmp):
         self.assertFalse((self.t / "state").exists())
 
 
+class ManifestPublish(Tmp):
+    """Step 6: the manifest goes to the remote in use whenever that remote does not have this photo list."""
+    PHOTOS = [{"id": ID, "path": "A/one.jpg"}]
+
+    def cfg(self, remote):
+        cfgf = self.t / "c.toml"
+        cfgf.write_text(f'source = "{self.t}/src"\nremote = "{remote}"\nstate_dir = "{self.t}/state"\n')
+        return lc.Cfg(cfgf)
+
+    def publish(self, remote, photos=None, fail=False, calls=None):
+        cfg = self.cfg(remote)
+        st = lc.State(cfg)
+
+        def fake(c, args, check=True, input_bytes=None, capture=True):
+            if calls is not None:
+                calls.append(args)
+            if fail and args[0] == "moveto":
+                raise RuntimeError("boom")
+            return mock.Mock(returncode=0)
+        try:
+            with mock.patch.object(lc, "rclone", fake), contextlib.redirect_stdout(io.StringIO()):
+                return lc.publish_manifest(cfg, st, self.PHOTOS if photos is None else photos)
+        finally:
+            st.commit()
+            st.db.close()
+
+    def test_unchanged_list_is_uploaded_once(self):
+        calls = []
+        self.assertTrue(self.publish("r:A", calls=calls))
+        self.assertFalse(self.publish("r:A", calls=calls))
+        self.assertEqual([c[0] for c in calls], ["copyto", "moveto"])
+        self.assertEqual(calls[1][-1], "r:A/mobile/manifest.json")
+
+    def test_changed_list_is_uploaded(self):
+        self.assertTrue(self.publish("r:A"))
+        self.assertTrue(self.publish("r:A", photos=[]))
+
+    def test_a_new_remote_gets_the_manifest_although_the_list_is_unchanged(self):
+        self.assertTrue(self.publish("r:A"))
+        calls = []
+        self.assertTrue(self.publish("r:B", calls=calls))
+        self.assertEqual(calls[1][-1], "r:B/mobile/manifest.json")
+        self.assertFalse(self.publish("r:B"))
+
+    def test_a_failed_upload_is_retried(self):
+        self.assertTrue(self.publish("r:A"))
+        with self.assertRaises(RuntimeError):
+            self.publish("r:A", photos=[], fail=True)
+        self.assertTrue(self.publish("r:A", photos=[]))
+        self.assertFalse(self.publish("r:A", photos=[]))
+
+    def test_state_from_before_the_remote_was_recorded(self):
+        cfg = self.cfg("r:A")
+        (cfg.mobile).mkdir(parents=True)
+        (cfg.mobile / "manifest.json").write_text(json.dumps(lc.manifest_doc(self.PHOTOS)))
+        st = lc.State(cfg)
+        st.set("manifest_uploaded", "1")
+        st.commit()
+        st.db.close()
+        self.assertFalse(self.publish("r:A"))   # it went to the remote in use then
+        self.assertTrue(self.publish("r:B"))    # and a later switch is noticed
+
+
 class InboxCheck(Tmp):
     def run_check(self, stdout, returncode=0):
         cfgf = self.t / "c.toml"
