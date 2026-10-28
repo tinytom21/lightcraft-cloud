@@ -62,7 +62,7 @@ See [config.example.toml](config.example.toml). All keys are optional.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `source` | `~/Pictures/Photos` | folder to publish |
-| `remote` | `gdrive:LightCraft Cloud` | rclone `remote:path` |
+| `remote` | `gdrive:LightCraft Cloud` | rclone `remote:path`; a crypt remote works too (see "Encrypting the remote") |
 | `exclude` | `[]` | folder-name patterns (fnmatch, case-sensitive) skipped at any depth |
 | `pair_primary` | `"jpeg"` | which file of a RAW+JPEG pair is primary (`"jpeg"` or `"raw"`); the other becomes an alternate |
 | `max_delete` | `50` | abort if more source photos vanished than this since the last run; also passed to `rclone --max-delete` |
@@ -76,6 +76,127 @@ See [config.example.toml](config.example.toml). All keys are optional.
 
 With the Flatpak, `lc-cloud` grants it `--filesystem=<source>:ro` and `--filesystem=<state_dir>` for each call, so no
 manual Flatpak override is needed.
+
+## Encrypting the remote
+
+`lc-cloud` and the phone app reach the library only through rclone, so an rclone [`crypt`](https://rclone.org/crypt/)
+remote can encrypt everything on your side before it reaches the provider. Neither side has a setting for it: both open
+the crypt remote instead of the plain one, and [FORMAT.md](FORMAT.md) describes what you see through it. Publishing,
+thumbnails, previews, phone edits, the three-way merge and `purge-history` were tested through a crypt remote over a
+local folder and over Google Drive.
+
+### On the PC
+
+1. Create a new, empty folder on the provider for the encrypted tree, e.g. `LightCraft Cloud Encrypted`. Do not use the
+   folder of an existing plain library.
+2. Create the crypt remote with `rclone config` (`n`, name `lccrypt`, storage `crypt`) and answer:
+
+   | Option | Answer |
+   | --- | --- |
+   | `remote` | the plain remote and the new folder, e.g. `gdrive:LightCraft Cloud Encrypted` |
+   | `filename_encryption` | `standard` |
+   | `directory_name_encryption` | `true` |
+   | `password`, `password2` | `g` (generate); rclone shows each one once |
+
+   The same without prompts (`--obscure` stores the passwords the way rclone expects):
+
+   ```sh
+   rclone config create lccrypt crypt remote="gdrive:LightCraft Cloud Encrypted" \
+     filename_encryption=standard directory_name_encryption=true \
+     password="$(openssl rand -base64 32)" password2="$(openssl rand -base64 32)" --obscure
+   ```
+3. **Back up the passwords** (both) outside this PC, e.g. in a password manager: the ones rclone showed when it generated
+   them, or a copy of the `[lccrypt]` section of the rclone config (`rclone config file` shows where; the passwords in it are
+   obscured, not encrypted, so keep the copy private).
+   Without them nobody can read the cloud copy, you included. The PC holds the originals and is not affected: you lose only
+   the cloud copy, and recover by creating a new crypt remote and publishing to it again (see "Switching" below).
+4. Set `remote = "lccrypt:"` in `~/.config/lightcraft-cloud/config.toml`, then publish and check:
+
+   ```sh
+   lc-cloud sync --dry-run && lc-cloud sync
+   rclone lsf -R lccrypt: | head                          # originals/..., mobile/manifest.json: the FORMAT.md layout
+   rclone lsf -R "gdrive:LightCraft Cloud Encrypted" | head   # only random-looking names
+   ```
+
+`lc-cloud` runs `rclone` with its usual config lookup. For another config file, set `rclone` in `config.toml` to a small
+wrapper script that adds `--config FILE`, or set `RCLONE_CONFIG` for the systemd units. Keep the passwords in the rclone
+config, not inline in `remote` (a `:crypt,...:` connection string works, but `lc-cloud status` and error messages print `remote`).
+
+### On the phone
+
+Make the phone-only drive remote as described in the app's cloud-library guide, with `root_folder_id` set to the id of the
+**encrypted** folder (the one with the random names; its address ends in `/folders/<id>`):
+
+```sh
+rclone config create phone drive scope=drive root_folder_id=<id>
+```
+
+Then add a crypt section over it that has the same passwords as `lccrypt`. `rclone config show lccrypt` prints
+`*** ENCRYPTED ***` instead of the passwords, and the app cannot decrypt with that, so copy the section from the config file
+instead (use your remote's name for `lccrypt`):
+
+```sh
+umask 077
+{ rclone config show phone
+  echo
+  awk '/^\[/{p=($0=="[lccrypt]")} p' "$(rclone config file | tail -1)" | sed 's/^remote = .*/remote = phone:/'
+} > phone-rclone.conf
+```
+
+Copy `phone-rclone.conf` to the phone and, in the app, pick the remote `lccrypt:` (leave the folder empty), not `phone:`, which
+only holds encrypted names. The file now holds the Drive token **and the encryption key**: keep it private, and delete it from
+the PC and from wherever you transferred it (a share, a USB drive, a messenger) once the app has its own copy.
+
+### What is hidden
+
+- **Hidden from the provider:** the contents of every file (photos, sidecars with your edits, thumbnails, previews, the
+  manifest with paths, camera, lens and dates), and all file and folder names, including `originals`, `mobile`, `inbox`,
+  `history` and the phone names under `inbox/`.
+- **Still visible to it:** the number of files and folders and the folder structure; file sizes (each file is 32 bytes plus 16
+  per 64 KiB larger, under 0.1 % in the test) and modification times; when files change and from where you connect; that the
+  files are rclone crypt (each starts with `RCLONE\0\0`); name lengths to within 16 bytes.
+
+The provider's own previews, search and duplicate detection see only opaque files (Google Drive listed every file as
+`application/octet-stream`), and you cannot browse the library in its web interface.
+
+### Name length
+
+Encrypted names are longer: with the default `filename_encoding` (base32) a name of *n* bytes (UTF-8, so `Å` is 2) becomes
+`ceil(8 * 16 * (n div 16 + 1) / 5)` characters, and every folder level grows the same way. Measured:
+
+| Plain name | Encrypted name | `originals/2026/Home/<name>` | base32768: name / path |
+| --- | --- | --- | --- |
+| 12 bytes (`IMG_0101.JPG`) | 26 | 107 | 9 / 39 |
+| 53 bytes | 103 | 184 | 35 / 65 |
+| 143 bytes | 231 | 312 | 77 / 107 |
+| 144 bytes | 256 | 337 | 86 / 116 |
+
+Paths under `history/<date>/` add about 80 characters (`history/2026-10-28/originals/2026/Home/IMG_0101.003440.JPG` is
+187). `lc-cloud` keeps replaced and deleted files in `history/` with a 7-byte `.HHMMSS` suffix, so a name has to be at most
+136 bytes for the file to be replaceable.
+
+A backend with a 255-character name limit (OneDrive; local disks and most SFTP servers count 255 bytes) rejects a 144-byte
+name, or a 137-byte one when it has to go to `history/`. `lc-cloud sync` then stops at step 4 with `file name too long`: the
+other originals are uploaded, but no thumbnails, previews or manifest, until the name is shortened. OneDrive also limits paths
+to 400 characters. If you have long names or deep folders there, create the crypt remote with
+`filename_encoding = base32768` (an advanced option; it counts UTF-16 characters, 15 bits each, so by calculation names up to
+about 450 bytes fit). It cannot be changed later without publishing again, and it does not help on a local disk, which counts
+bytes (three per character). Google Drive accepted the 256-character names and the longest path of the test, 391 characters;
+the default encoding is fine there.
+
+### Switching an existing library
+
+Encryption belongs to the remote, so files already on the provider are not encrypted in place; you publish again to a new
+folder:
+
+1. Let the phone's waiting edits arrive: push them on the phone, then `lc-cloud sync` until `lc-cloud status` shows
+   `inbox: 0 pending`.
+2. Create the crypt remote over a new folder (above) and set `remote = "lccrypt:"`. Keep `state_dir`: it holds the thumbnails,
+   previews and the sidecar versions the merge needs.
+3. `lc-cloud sync` uploads originals, thumbnails, previews and the manifest to the new remote. It is a full upload, as long
+   as the first publish was.
+4. Give the phone the new config file and pick the new remote. It downloads thumbnails and previews again.
+5. When it works, delete the old plain folder (`rclone purge`); the new remote starts without the old `history/`.
 
 ## Phone edits that meet PC edits
 

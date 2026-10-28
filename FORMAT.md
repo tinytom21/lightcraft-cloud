@@ -15,6 +15,12 @@ thumbnails, downloads small smart previews to edit, and sends edits back. **The 
 ```
 Backup-dir files get a `.HHMMSS` suffix before the extension (`photo.153012.jpg`).
 
+**Encrypted remotes.** `<remote>` may be an rclone `crypt` remote (`filename_encryption = standard`,
+`directory_name_encryption = true`). The layout, names and files in this document are what rclone shows *through* the crypt
+remote: a client must open the crypt remote (e.g. `lccrypt:`), never the underlying folder, which holds only encrypted names
+and contents. Nothing in the format changes. Names are longer underneath (a 12-byte name is 26 characters, a 143-byte one is
+231); see "Encrypting the remote" in the README for name and path limits.
+
 ## manifest.json
 ```json
 {"format": 1, "generated": "2026-10-27T02:25:25Z", "publisher": "lightcraft-cloud 0.1.0",
