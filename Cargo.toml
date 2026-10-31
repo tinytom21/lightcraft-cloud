@@ -20,10 +20,18 @@ log = "0.4"
 # rclone's librclone, loaded at run time (ISC)
 libloading = "0.8"
 
-# Test-only: the upstream desktop app's engine, to drive the sync tests with real photos and sidecars.
+# LightCraft's engine (pinned release; no `sam` or `denoise` features: rendering only). The desktop app renders thumbnails and
+# smart previews with it; the sync crate uses it in tests only. The other crates are for generating test photos.
 lightcraft-engine = { git = "https://github.com/storytold/lightcraft", tag = "v0.15.0" }
 lightcraft-scenes = { git = "https://github.com/storytold/lightcraft", tag = "v0.15.0" }
+lightcraft-mcp = { git = "https://github.com/storytold/lightcraft", tag = "v0.15.0" }
 lightcraft-meta = { git = "https://github.com/storytold/lightcraft", tag = "v0.15.0" }
+lightcraft-raw = { git = "https://github.com/storytold/lightcraft", tag = "v0.15.0" }
+lightcraft-color = { git = "https://github.com/storytold/lightcraft", tag = "v0.15.0" }
+lightcraft-codecs = { git = "https://github.com/storytold/lightcraft", tag = "v0.15.0" }
+lightcraft-raster = { git = "https://github.com/storytold/lightcraft", tag = "v0.15.0" }
+
+toml = "1"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
