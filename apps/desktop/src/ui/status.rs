@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use egui::{Color32, RichText, Ui};
 
-use crate::appstate::{Activity, AppStatus, Notice, relative};
+use crate::appstate::{Activity, AppStatus, Notice, relative, upcoming};
 
 /// What the panel shows.
 pub struct StatusView<'a> {
@@ -98,7 +98,8 @@ pub fn show(ui: &mut Ui, v: &StatusView) {
             match (&s.next_sync, s.paused, s.configured) {
                 (_, _, false) => "after Setup".to_string(),
                 (_, true, _) => "paused (Sync now still works)".to_string(),
-                (Some(t), _, _) => relative(t, v.now),
+                (_, _, _) if matches!(s.activity, Activity::Syncing { .. }) => "now (syncing)".to_string(),
+                (Some(t), _, _) => upcoming(t, v.now),
                 (None, _, _) => "not scheduled".to_string(),
             },
         );

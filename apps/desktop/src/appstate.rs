@@ -192,6 +192,16 @@ pub fn relative(iso: &str, now: SystemTime) -> String {
     if future { format!("in {span}") } else { format!("{span} ago") }
 }
 
+/// For a time that is still to come: "now" once it has passed (or while it is being served), else "in 12 min". Never a time in
+/// the past: a sync that is running or overdue is happening now, not "3 min ago".
+pub fn upcoming(iso: &str, now: SystemTime) -> String {
+    match parse_rfc3339(iso) {
+        Some(t) if t > now => relative(iso, now),
+        Some(_) => "now".to_string(),
+        None => iso.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,5 +275,14 @@ mod tests {
         assert_eq!(relative("2026-10-29T12:00:00Z", now), "3 days ago");
         assert_eq!(relative("not a time", now), "not a time");
         let _ = Duration::ZERO;
+    }
+
+    #[test]
+    fn an_upcoming_time_never_reads_as_past() {
+        let now = parse_rfc3339("2026-11-01T12:00:00Z").unwrap();
+        assert_eq!(upcoming("2026-11-01T12:12:00Z", now), "in 12 min");
+        assert_eq!(upcoming("2026-11-01T11:57:00Z", now), "now");
+        assert_eq!(upcoming("2026-11-01T12:00:00Z", now), "now");
+        assert_eq!(upcoming("not a time", now), "not a time");
     }
 }

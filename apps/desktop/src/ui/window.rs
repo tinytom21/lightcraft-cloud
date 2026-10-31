@@ -2,7 +2,9 @@
 //! <tab>` in a process of its own, so a problem in a window cannot stop the background engine, and the window needs no
 //! channel to it: it reads `status.json` and writes the config file, which the app notices.
 
+use std::io::BufRead;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use crate::appstate::AppStatus;
@@ -29,8 +31,26 @@ impl Tab {
     }
 }
 
+/// Reads tab names ("status", "settings", one per line) from `input` until it ends: the app writes one to the open window's
+/// stdin when a tray click asks for a window that is already there. Each one sets `pending`, raises the window and repaints.
+/// The end of the input is not a request to close: a window started by hand has no app behind it.
+pub fn read_tab_requests(input: impl BufRead, pending: Arc<Mutex<Option<Tab>>>, ctx: egui::Context) {
+    for line in input.lines() {
+        let Ok(line) = line else { return };
+        if let Some(tab) = Tab::parse(line.trim()) {
+            *pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(tab);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            ctx.request_repaint();
+        }
+    }
+}
+
 struct Window {
     tab: Tab,
+    /// A tab asked for by the app (see [`read_tab_requests`]).
+    pending: Arc<Mutex<Option<Tab>>>,
+    /// The title still says "Set up ..." until the first save.
+    retitle: bool,
     settings: SettingsPanel,
     state_dir: PathBuf,
     status: Option<AppStatus>,
@@ -50,6 +70,11 @@ impl eframe::App for Window {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.refresh();
         ui.ctx().request_repaint_after(Duration::from_secs(1));
+        if let Some(t) = self.pending.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            if !self.setup_only {
+                self.tab = t;
+            }
+        }
         if !self.setup_only {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.tab, Tab::Status, "Status");
@@ -66,6 +91,10 @@ impl eframe::App for Window {
                 if self.settings.saved && self.setup_only {
                     self.setup_only = false;
                     self.tab = Tab::Status;
+                }
+                if self.settings.saved && self.retitle {
+                    self.retitle = false;
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title("LightCraft Cloud".into()));
                 }
             }
         });
@@ -93,6 +122,8 @@ pub fn run_window(tab: Tab, config_path: Option<PathBuf>) -> Result<(), String> 
     let title = if setup_only { "Set up LightCraft Cloud" } else { "LightCraft Cloud" };
     let mut win = Window {
         tab: if setup_only { Tab::Settings } else { tab },
+        pending: Arc::new(Mutex::new(None)),
+        retitle: setup_only,
         settings: SettingsPanel::new(form, remotes, env, setup_only),
         state_dir,
         status: None,
@@ -104,7 +135,17 @@ pub fn run_window(tab: Tab, config_path: Option<PathBuf>) -> Result<(), String> 
         viewport: egui::ViewportBuilder::default().with_title(title).with_inner_size([620.0, 640.0]).with_min_inner_size([480.0, 420.0]),
         ..eframe::NativeOptions::default()
     };
-    eframe::run_native(title, options, Box::new(|_cc| Ok(Box::new(win)))).map_err(|e| e.to_string())?;
+    let pending = win.pending.clone();
+    eframe::run_native(
+        title,
+        options,
+        Box::new(move |cc| {
+            let ctx = cc.egui_ctx.clone();
+            std::thread::spawn(move || read_tab_requests(std::io::stdin().lock(), pending, ctx));
+            Ok(Box::new(win))
+        }),
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -119,4 +160,19 @@ fn list_remotes(file: &File) -> Result<Vec<String>, String> {
     };
     let lib = config::find_librclone(file.librclone.as_deref())?;
     lightcraft_cloud_client::list_remotes(lib.as_deref(), &conf).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requests_set_the_tab_and_the_end_of_input_changes_nothing() {
+        let pending = Arc::new(Mutex::new(None));
+        read_tab_requests(std::io::Cursor::new("status\nnonsense\nsettings\n"), pending.clone(), egui::Context::default());
+        assert_eq!(*pending.lock().unwrap(), Some(Tab::Settings));
+        let pending = Arc::new(Mutex::new(None));
+        read_tab_requests(std::io::Cursor::new(""), pending.clone(), egui::Context::default());
+        assert_eq!(*pending.lock().unwrap(), None);
+    }
 }

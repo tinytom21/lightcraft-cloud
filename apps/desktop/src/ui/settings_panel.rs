@@ -1,7 +1,8 @@
 //! The Setup / Settings panel: edits a [`Form`]; saving is [`Form::save`].
 
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::time::{Duration, Instant};
 
 use egui::{Color32, RichText, Ui};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -22,18 +23,32 @@ pub trait FolderPicker {
     fn poll(&mut self) -> Option<PathBuf>;
 }
 
+/// How long a dialog is given before a new click may start over (the desktop's picker service can die and leave its thread
+/// waiting for ever; the abandoned thread is harmless). Long enough that a double click never opens two.
+const RESTART_AFTER: Duration = Duration::from_secs(5);
+
 #[derive(Default)]
 pub struct RfdPicker {
     rx: Option<Receiver<Option<PathBuf>>>,
+    since: Option<Instant>,
+}
+
+impl RfdPicker {
+    /// A sender for a new dialog, unless one was started less than `wait` ago and is still open; an older one is dropped.
+    fn begin(&mut self, now: Instant, wait: Duration) -> Option<Sender<Option<PathBuf>>> {
+        if self.rx.is_some() && self.since.is_some_and(|t| now.saturating_duration_since(t) < wait) {
+            return None;
+        }
+        let (tx, rx) = channel();
+        self.rx = Some(rx);
+        self.since = Some(now);
+        Some(tx)
+    }
 }
 
 impl FolderPicker for RfdPicker {
     fn start(&mut self, from: &str, parent: Option<&dyn Parent>) {
-        if self.rx.is_some() {
-            return;
-        }
-        let (tx, rx) = channel();
-        self.rx = Some(rx);
+        let Some(tx) = self.begin(Instant::now(), RESTART_AFTER) else { return };
         let from = crate::config::expand(from).ok().filter(|p| p.is_dir());
         // Built here, where the window handle is at hand; rfd's `FileDialog` is `Send` and only carries the raw window id.
         let mut d = rfd::FileDialog::new().set_title("Choose the photo folder");
@@ -202,5 +217,24 @@ impl SettingsPanel {
         for d in &self.done {
             ui.colored_label(Color32::from_rgb(0x2e, 0x9d, 0x5b), d);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stuck_dialog_can_be_started_over_but_a_double_click_cannot() {
+        let mut p = RfdPicker::default();
+        let t0 = Instant::now();
+        let wait = Duration::from_secs(5);
+        let old = p.begin(t0, wait).expect("first click starts");
+        assert!(p.begin(t0 + Duration::from_millis(300), wait).is_none());
+        let new = p.begin(t0 + Duration::from_secs(6), wait).expect("a later click starts over");
+        assert!(old.send(None).is_err(), "the old receiver was dropped");
+        new.send(Some(PathBuf::from("/x"))).unwrap();
+        assert_eq!(p.poll(), Some(PathBuf::from("/x")));
+        assert!(!p.waiting());
     }
 }

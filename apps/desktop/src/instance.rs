@@ -30,12 +30,18 @@ impl InstanceLock {
     }
 }
 
+/// Tests that start processes take this around the start, and tests of the lock around their whole body: a child forked in
+/// that instant shares the lock's file description until it execs, which would make the lock look held.
+#[cfg(test)]
+pub(crate) static SPAWN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn a_second_instance_is_turned_away_until_the_first_ends() {
+        let _g = SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let d = std::env::temp_dir().join(format!("lc-desktop-instance-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         assert!(!InstanceLock::is_held(&d)); // (nothing created by asking)

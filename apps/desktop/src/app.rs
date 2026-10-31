@@ -10,7 +10,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Child;
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, SystemTime};
@@ -103,35 +103,51 @@ fn spawn_config_thread(config_path: PathBuf, cmd: Sender<Command>, stop: Receive
     })
 }
 
-/// Windows opened from the tray, one per kind; a window already open is left alone.
+/// The one window the tray opens (it has a Status and a Settings tab). A click while it is open writes the tab's name to its
+/// stdin; the window switches and raises itself (see `ui::window::read_tab_requests`).
 struct Windows {
     exe: PathBuf,
     config: Option<PathBuf>,
-    open: Vec<(&'static str, Child)>,
+    open: Option<(Child, ChildStdin)>,
 }
 
 impl Windows {
     fn open(&mut self, kind: &'static str) {
-        self.open.retain_mut(|(_, c)| c.try_wait().ok().flatten().is_none());
-        if self.open.iter().any(|(k, _)| *k == kind) {
-            return;
+        if let Some((child, stdin)) = &mut self.open {
+            if child.try_wait().ok().flatten().is_none() && writeln!(stdin, "{kind}").and_then(|()| stdin.flush()).is_ok() {
+                return;
+            }
         }
+        self.close_all(); // (gone, or not listening: start over)
         let mut cmd = std::process::Command::new(&self.exe);
-        cmd.arg("ui").arg(kind);
+        cmd.arg("ui").arg(kind).stdin(Stdio::piped());
         if let Some(c) = &self.config {
             cmd.arg("--config").arg(c);
         }
         match cmd.spawn() {
-            Ok(child) => self.open.push((kind, child)),
+            Ok(mut child) => match child.stdin.take() {
+                Some(stdin) => self.open = Some((child, stdin)),
+                None => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            },
             Err(e) => log::warn!("cannot open the {kind} window: {e}"),
         }
     }
 
     fn close_all(&mut self) {
-        for (_, c) in &mut self.open {
+        if let Some((mut c, stdin)) = self.open.take() {
+            drop(stdin);
             let _ = c.kill();
             let _ = c.wait();
         }
+    }
+}
+
+impl Drop for Windows {
+    fn drop(&mut self) {
+        self.close_all();
     }
 }
 
@@ -207,7 +223,7 @@ fn main_loop_tray(
 ) -> Result<(), String> {
     use crate::tray::{MenuAction, Tray};
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let mut windows = Windows { exe, config: opts.config.clone(), open: Vec::new() };
+    let mut windows = Windows { exe, config: opts.config.clone(), open: None };
     let initial = AppStatus::load(state_dir).unwrap_or_default();
     let mut tray = match Tray::new(&initial) {
         Ok(t) => Some(t),
@@ -262,4 +278,57 @@ fn main_loop_tray(
     _msg_rx: &Receiver<Msg>,
 ) -> Result<(), String> {
     Err("the tray icon is only built for Linux so far; use `run --headless`".into())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// A stand-in for the window: logs that it started, then every line it is sent.
+    fn fake_exe(dir: &Path, log: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let exe = dir.join("fake-window");
+        std::fs::write(&exe, format!("#!/bin/sh\necho \"start $2\" >> '{0}'\nwhile read l; do echo \"got $l\" >> '{0}'; done\n", log.display())).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        exe
+    }
+
+    fn wait_for(log: &Path, want: &str) -> String {
+        for _ in 0..200 {
+            let t = std::fs::read_to_string(log).unwrap_or_default();
+            if t == want {
+                return t;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        std::fs::read_to_string(log).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_second_click_switches_the_open_window_and_a_closed_one_is_started_again() {
+        let dir = std::env::temp_dir().join(format!("lc-windows-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("log");
+        let mut w = Windows { exe: fake_exe(&dir, &log), config: None, open: None };
+        let spawn_lock = || crate::instance::SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        {
+            let _g = spawn_lock();
+            w.open("status");
+        }
+        w.open("settings");
+        w.open("status");
+        assert_eq!(wait_for(&log, "start status\ngot settings\ngot status\n"), "start status\ngot settings\ngot status\n");
+        // the window goes away on its own: the next click starts a new one
+        w.open.as_mut().unwrap().0.kill().unwrap();
+        w.open.as_mut().unwrap().0.wait().unwrap();
+        {
+            let _g = spawn_lock();
+            w.open("settings");
+        }
+        assert!(wait_for(&log, "start status\ngot settings\ngot status\nstart settings\n").ends_with("start settings\n"));
+        w.close_all();
+        assert!(w.open.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
