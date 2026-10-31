@@ -14,7 +14,7 @@ Phone app: https://github.com/artcraft-android/lightcraft-android (cloud library
 | Path | What it is |
 | --- | --- |
 | `crates/sync` | Rust crate `lightcraft-cloud-client`: the sync client shared by the apps (talks to the remote through librclone, reads the manifest, fetches thumbnails and previews, sends edits back; the phone app uses it) and, in its `home` module, the PC side: publishing a photo folder, applying the phone's edits, merging sidecars. |
-| `apps/desktop` | `lightcraft-cloud-desktop`: the PC app. A command line so far (`sync --once`, `status`); the tray app is to come. Renders thumbnails and smart previews with LightCraft's engine. See "Desktop app" below. |
+| `apps/desktop` | `lightcraft-cloud-desktop`: the PC app: an always-running tray app (and the command line). Renders thumbnails and smart previews with LightCraft's engine. See "Desktop app" below. |
 | `tools/parity` | The harness that runs the Python tool and the Rust app on the same generated photos and compares everything they write. |
 | `legacy/` | The current PC tool, `lc-cloud`, written in Python. It is still what runs the sync today; see "Legacy tool" below. |
 
@@ -43,16 +43,61 @@ works with either. It has its own config and state; it never reads or writes the
 (`~/.config/lightcraft-cloud/`, `~/.local/state/lightcraft-cloud/`), and refuses a `state_dir` inside the latter.
 
 ```
+lightcraft-cloud-desktop [run] [--headless] [--config FILE]        the always-running app (below)
 lightcraft-cloud-desktop sync --once [--dry-run] [--config FILE]   apply phone edits, then publish the photo folder
 lightcraft-cloud-desktop status [--config FILE]                    last run, tracked photos, remote size, pending inbox files
+lightcraft-cloud-desktop inbox-check [--config FILE]               how many phone edits wait in the cloud inbox
+lightcraft-cloud-desktop purge-history [--days N] [--config FILE]  delete old cloud history, only after a recent backup
 ```
 
 `sync --once` does what `lc-cloud sync` does, in the same six steps: the inbox (three-way merge of phone edits into the
 sidecars, every replaced version kept in `<state>/history/`), the scan (excludes, raw+JPEG pairs, sidecar naming, files still
 being written are left for the next run), thumbnails and smart previews for new and changed photos, a one-way mirror of the
 originals (anything replaced or removed on the remote goes to `history/<date>/` with a `.HHMMSS` suffix, `max_delete` guards
-against a missing drive), the mobile files, and the manifest last. `--dry-run` changes nothing. There is no background mode
-yet, and `purge-history`, `inbox-check`, the watcher, the systemd units and desktop notifications are not ported.
+against a missing drive), the mobile files, and the manifest last. `--dry-run` changes nothing.
+
+### The always-running app
+
+`lightcraft-cloud-desktop` with no command (or `run`) replaces the Python tool's systemd timers, watcher and notifications:
+
+* a full sync every 15 minutes (counted from the end of the last one), the first 20 seconds after the start;
+* a cheap check of the cloud inbox every 2 minutes (one listing, nothing else), which starts a sync only when phone edits wait
+  (`inbox-check`);
+* a folder watcher (inotify through the `notify` crate) that starts a sync once the photo folder has been quiet for 30 seconds
+  (5 minutes after the first change at the latest). Hidden files and excluded folders do not count;
+* a weekly `purge-history`: the remote's `history/` and `inbox-done/` day folders older than `device_history_days` (30), and the
+  stored sidecar versions older than that, except those of current sidecars. The same safety rule as the Python tool: it only
+  runs if `photo_backup snapshots --latest 1 --json` (restic) says the newest backup is at most 48 hours old; otherwise nothing
+  is deleted and the Status window says so. Set `photo_backup = ""` to switch the purge off;
+* Sync now, Pause/Resume (remembered across restarts; "Sync now" still works while paused), one sync at a time (the sync's run
+  lock, so `sync --once` and the app never run together), one app at a time (`<state>/instance.lock`: a second launch says so
+  and exits);
+* desktop notifications (`notify-rust`, over D-Bus; off with `notify = false` or the checkbox in Settings), with the Python
+  tool's texts: "N phone edits applied (M merged with PC changes) in <folders> - in LightCraft run Synchronize Folder ...",
+  and "Publisher failed - see the Status window or the log" (once per distinct error, not every 15 minutes). A phone edit that
+  lost to a newer PC sidecar is announced too, and listed under "Newest wins" in the Status window.
+
+The tray icon (idle green, syncing blue, phone edits waiting amber, paused grey, error red) has the menu Sync now, Pause/Resume,
+Status..., Settings..., Quit. On Linux it is a StatusNotifierItem over D-Bus (`tray-icon`'s `ksni` backend: no GTK or
+libappindicator to install). The desktop needs a tray host: KDE has one; GNOME needs the AppIndicator extension (Ubuntu ships
+it). The windows (egui 0.37, the version LightCraft v0.15.0 uses) run as `lightcraft-cloud-desktop ui status|settings`, in a
+process of their own, so a problem in a window cannot stop the sync; they read `<state>/status.json` and write the config file,
+which the app notices within two seconds.
+
+* **Setup / Settings**: the photo folder (text field + Browse), folders to leave out, the storage (one of your rclone remotes,
+  listed by name only, plus a folder on it; or a folder on this PC), "Originals and previews" or "Previews only", notifications,
+  "Start when I log in". With no config the app opens Setup instead of syncing; saving writes the config file (keys the app does
+  not know are kept) and the app starts syncing.
+* **Status**: last sync (time, result), photos published, phone edits applied, the inbox, the next scheduled sync, "Newest wins"
+  decisions, problems.
+* "Start when I log in" writes `~/.config/autostart/lightcraft-cloud-desktop.desktop` (`Exec=<this binary> run`) only when the
+  box is ticked in Settings, and removes it when unticked. Nothing else writes there.
+
+**Secrets, for now**: the app uses your existing rclone config (`rclone_config`, default the standard one), like the Python tool.
+It lists remote names only and never shows, logs or copies the config's contents. Storing the cloud credentials in the system
+keyring arrives with sign-in / pairing.
+
+One photo folder per app for now (the sync, its state and the manifest are per folder).
 
 ### Config
 
@@ -69,6 +114,8 @@ are ignored, so a Python config can be reused. State in `~/.local/state/lightcra
 | `max_delete` | `50` | refuse when more published photos vanished than this since the last run; also the most files one mirror removes |
 | `thumb_px`, `thumb_quality` | `512`, `80` | thumbnail long edge and JPEG quality |
 | `previews_only` | `false` | upload sidecars, thumbnails, smart previews and the manifest, but not the photo files |
+| `notify` | `true` | desktop notifications (the app) |
+| `device_history_days`, `photo_backup` | `30`, `"restic"` | the weekly purge: age limit; the backup command it asks (`photo_backup snapshots --latest 1 --json`); `""` switches the purge off |
 | `state_dir` | `~/.local/state/lightcraft-cloud-desktop` | must not be under `~/Pictures` |
 | `rclone_config` | `$RCLONE_CONFIG`, else `~/.config/rclone/rclone.conf` | rclone config used for an rclone remote |
 | `librclone` | `$LIBRCLONE`, else the system search path | the host `librclone.so` (see "Building the Rust part") |

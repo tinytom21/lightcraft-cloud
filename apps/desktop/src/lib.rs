@@ -6,6 +6,7 @@
 //! * [`appstate`], [`config`], [`settings`], [`autostart`], [`instance`], [`backup`], [`notifier`]: what it keeps and uses;
 //! * [`ui`], [`tray`], [`app`]: the windows (egui, in a process of their own), the tray icon, and what ties them together.
 
+pub mod app;
 pub mod appstate;
 pub mod autostart;
 pub mod backup;
@@ -17,5 +18,7 @@ pub mod notifier;
 pub mod scheduler;
 pub mod service;
 pub mod settings;
+pub mod tray;
+pub mod ui;
 pub mod watcher;
 pub mod worker;
