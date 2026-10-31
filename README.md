@@ -13,8 +13,9 @@ Phone app: https://github.com/artcraft-android/lightcraft-android (cloud library
 
 | Path | What it is |
 | --- | --- |
-| `crates/sync` | Rust crate `lightcraft-cloud-client`: the sync client shared by the apps (talks to the remote through librclone, reads the manifest, fetches thumbnails and previews, sends edits back). The phone app uses it. |
-| `apps/desktop` | The coming PC app (a tray app). Only a stub that prints its version so far. |
+| `crates/sync` | Rust crate `lightcraft-cloud-client`: the sync client shared by the apps (talks to the remote through librclone, reads the manifest, fetches thumbnails and previews, sends edits back; the phone app uses it) and, in its `home` module, the PC side: publishing a photo folder, applying the phone's edits, merging sidecars. |
+| `apps/desktop` | `lightcraft-cloud-desktop`: the PC app. A command line so far (`sync --once`, `status`); the tray app is to come. Renders thumbnails and smart previews with LightCraft's engine. See "Desktop app" below. |
+| `tools/parity` | The harness that runs the Python tool and the Rust app on the same generated photos and compares everything they write. |
 | `legacy/` | The current PC tool, `lc-cloud`, written in Python. It is still what runs the sync today; see "Legacy tool" below. |
 
 ## Building the Rust part
@@ -34,6 +35,83 @@ print "skipped" and pass.
 Some tests in `crates/sync/tests/cloud.rs` are marked `#[ignore]` because they need the engine command `library.addRemote`,
 which the upstream LightCraft engine (pinned to `v0.15.0` for the tests) does not have yet. They pass against the
 lightcraft-android engine; run them with `-- --ignored` once the engine has the command.
+
+## Desktop app (`lightcraft-cloud-desktop`)
+
+The Rust port of what `lc-cloud` does on the PC, writing the same remote layout ([FORMAT.md](FORMAT.md)), so the phone app
+works with either. It has its own config and state; it never reads or writes the Python tool's
+(`~/.config/lightcraft-cloud/`, `~/.local/state/lightcraft-cloud/`), and refuses a `state_dir` inside the latter.
+
+```
+lightcraft-cloud-desktop sync --once [--dry-run] [--config FILE]   apply phone edits, then publish the photo folder
+lightcraft-cloud-desktop status [--config FILE]                    last run, tracked photos, remote size, pending inbox files
+```
+
+`sync --once` does what `lc-cloud sync` does, in the same six steps: the inbox (three-way merge of phone edits into the
+sidecars, every replaced version kept in `<state>/history/`), the scan (excludes, raw+JPEG pairs, sidecar naming, files still
+being written are left for the next run), thumbnails and smart previews for new and changed photos, a one-way mirror of the
+originals (anything replaced or removed on the remote goes to `history/<date>/` with a `.HHMMSS` suffix, `max_delete` guards
+against a missing drive), the mobile files, and the manifest last. `--dry-run` changes nothing. There is no background mode
+yet, and `purge-history`, `inbox-check`, the watcher, the systemd units and desktop notifications are not ported.
+
+### Config
+
+Default `~/.config/lightcraft-cloud-desktop/config.toml` (`$XDG_CONFIG_HOME` is honoured), or `--config FILE`. TOML; unknown keys
+are ignored, so a Python config can be reused. State in `~/.local/state/lightcraft-cloud-desktop/` (or `state_dir`): `state.json`,
+`sidecar-versions/`, `history/`, `mobile/` (the staged files as uploaded), `lib/` (the engine's scratch library), `logs/`.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `remote` | **none, required** | an rclone `remote:path` (a crypt remote works: `lccrypt:`), or a local folder (starts with `/`, `~` or `.`; for tests). There is deliberately no default: nothing is published to a remote nobody named. |
+| `source` | `~/Pictures/Photos` | folder to publish |
+| `exclude` | `[]` | folder-name patterns (fnmatch, case-sensitive) skipped at any depth |
+| `pair_primary` | `"jpeg"` | which file of a raw+JPEG pair is the photo (`"jpeg"` or `"raw"`); the other becomes an alternate |
+| `max_delete` | `50` | refuse when more published photos vanished than this since the last run; also the most files one mirror removes |
+| `thumb_px`, `thumb_quality` | `512`, `80` | thumbnail long edge and JPEG quality |
+| `previews_only` | `false` | upload sidecars, thumbnails, smart previews and the manifest, but not the photo files |
+| `state_dir` | `~/.local/state/lightcraft-cloud-desktop` | must not be under `~/Pictures` |
+| `rclone_config` | `$RCLONE_CONFIG`, else `~/.config/rclone/rclone.conf` | rclone config used for an rclone remote |
+| `librclone` | `$LIBRCLONE`, else the system search path | the host `librclone.so` (see "Building the Rust part") |
+
+### Rendering
+
+Thumbnails and smart previews come from LightCraft's engine (`lightcraft-engine`, pinned to `v0.15.0`, no `sam` and no
+`denoise` features), in this process, through the same commands the Python tool sends to `lightcraft-cli`: `library.import`
+(mode `add`), `photo.inspect`, `library.smartPreviews`, `app.export` (JPEG, long edge `thumb_px`, quality 80, sRGB, with the
+photo's current edits) and, for a changed sidecar, `photo.readMetadataFromFile`. `previewKey` is the engine's own name for the
+smart preview (`lightcraft_engine::smart::file_name`, a hash of the content hash). The sync crate does not depend on the
+engine: it calls a `Renderer` trait, and `apps/desktop` supplies the engine-backed one.
+
+Render-only is enforced, not assumed: the engine works on a scratch library in `<state>/lib` (writing XMP next to the photos is
+switched off), the app refuses a library folder under `~/Pictures` or named `LightCraft Library` and has no setting to point it
+elsewhere, and the tests check that the source folder is byte- and mtime-identical after a sync. The user's LightCraft library
+is never opened, locked or written.
+
+### Parity with the Python tool
+
+```sh
+tools/parity/parity.py          # generated photos under /tmp/lc-parity; needs rclone, the LightCraft Flatpak and cargo
+```
+
+It generates a photo folder (procedural scenes from LightCraft's `lightcraft-scenes`, a synthetic DNG with a JPEG of the same
+stem, sidecars, an identical copy, an excluded folder; no real photos), copies it twice, and runs `lc-cloud sync` on one copy
+and `lightcraft-cloud-desktop sync --once` on the other, each with a throwaway config and state folder and a local-folder
+remote (the Python tool is given `--config`, so it never reads `~/.config/lightcraft-cloud/`; `RCLONE_CONFIG` is an empty
+file). Five rounds: first publish; new, changed and removed photos and edited sidecars; fourteen synthetic phone edits in the
+inbox (apply, merge, newest wins both ways, a chain of edits, an identical edit, edits for the raw and the JPEG of a pair, a
+crs attribute-style sidecar, and three kinds of reject); publishing what the inbox wrote; a quiet run. After each it compares
+the remote file lists, the manifests field by field, thumbnails (JPEG, dimensions) and smart previews (header), the state rows,
+the version stores and, after the inbox, the sidecars byte for byte, the local history and the inbox lines of the log. A last
+check lets the Rust app take over the Python tool's remote with a fresh state folder (nothing is uploaded again). Because the
+Flatpak is the same engine release, thumbnails and smart previews come out byte-identical as well; the harness only requires
+the same format and dimensions.
+
+Result of the last run: no unexpected difference. Intended ones: `publisher` in the manifest (`lightcraft-cloud-desktop <version>`
+instead of `lightcraft-cloud 0.1.0`) and `generated`.
+
+Tests: `cargo test --workspace` runs about a hundred tests of the home side against a folder standing in for the remote with a fake
+renderer (ports of the Python tool's scenarios: scan rules, exclude, pairing, manifest, inbox, merge, versions, dry run, safety,
+publishing and history), plus tests with the real engine in `apps/desktop/tests` and, when `LIBRCLONE` is set, through librclone.
 
 ## Legacy tool (`lc-cloud`)
 
