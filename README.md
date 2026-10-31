@@ -1,6 +1,43 @@
-# lc-cloud
+# LightCraft Cloud
 
-Publish a folder of photos as a LightCraft cloud library. `lc-cloud` runs on your PC, mirrors the folder to any
+LightCraft Cloud keeps your photo library in step between your PCs and your phone. The PC is home: it holds the
+original photos and is the only place they are ever changed. Each PC publishes its photo folder to any
+[rclone](https://rclone.org) remote (Google Drive, S3, WebDAV, ...) together with thumbnails and small smart previews.
+The LightCraft phone app browses that library, downloads a preview to edit, and sends the edits back as XMP sidecars, which
+the PC then applies. Originals are only ever mirrored one way, and photo files are never modified.
+
+Remote layout and the inbox protocol: [FORMAT.md](FORMAT.md).
+Phone app: https://github.com/artcraft-android/lightcraft-android (cloud library support is a pending PR).
+
+## What is in this repository
+
+| Path | What it is |
+| --- | --- |
+| `crates/sync` | Rust crate `lightcraft-cloud-client`: the sync client shared by the apps (talks to the remote through librclone, reads the manifest, fetches thumbnails and previews, sends edits back). The phone app uses it. |
+| `apps/desktop` | The coming PC app (a tray app). Only a stub that prints its version so far. |
+| `legacy/` | The current PC tool, `lc-cloud`, written in Python. It is still what runs the sync today; see "Legacy tool" below. |
+
+## Building the Rust part
+
+Rust 1.99.0 (`rust-toolchain.toml` picks it). librclone is loaded at run time, so it is not needed to build.
+
+```sh
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+The tests that talk to a real rclone need a host build of `librclone.so`. Point `LIBRCLONE` at it, for example
+`LIBRCLONE=~/src/lightcraft-android/apps/lightcraft-android/librclone-host/librclone.so cargo test --workspace`
+(built by `apps/lightcraft-android/scripts/build-librclone.sh host` in the phone app repository). Without it those tests
+print "skipped" and pass.
+
+Some tests in `crates/sync/tests/cloud.rs` are marked `#[ignore]` because they need the engine command `library.addRemote`,
+which the upstream LightCraft engine (pinned to `v0.15.0` for the tests) does not have yet. They pass against the
+lightcraft-android engine; run them with `-- --ignored` once the engine has the command.
+
+## Legacy tool (`lc-cloud`)
+
+The current PC side, still in use. Publish a folder of photos as a LightCraft cloud library. `lc-cloud` runs on your PC, mirrors the folder to any
 [rclone](https://rclone.org) remote (Google Drive, S3, WebDAV, ...), and writes thumbnails, smart previews and a manifest
 next to it. The LightCraft phone app browses that library, downloads a small preview to edit, and sends the edits back
 as XMP sidecars. `lc-cloud` pulls them into the matching sidecar on the PC. The PC stays the master copy: originals are
@@ -9,7 +46,7 @@ only ever mirrored one way, and photo files are never modified.
 Phone app: https://github.com/artcraft-android/lightcraft-android (cloud library support is a pending PR).
 Remote layout and the inbox protocol: [FORMAT.md](FORMAT.md).
 
-## Requirements
+### Requirements
 
 - Linux with Python 3.11+ (`tomllib`)
 - [rclone](https://rclone.org) with a configured remote
@@ -17,16 +54,16 @@ Remote layout and the inbox protocol: [FORMAT.md](FORMAT.md).
 - optional: `restic` (or a wrapper), only for `purge-history`
 - optional: `inotify-tools`, only for `lc-cloud-watch`; `notify-send` for desktop notifications
 
-## Install
+### Install
 
 ```sh
 git clone https://github.com/tinytom21/lightcraft-cloud ~/src/lightcraft-cloud
 cd ~/src/lightcraft-cloud
 mkdir -p ~/.local/bin ~/.config/lightcraft-cloud ~/.config/systemd/user
-ln -s "$PWD/lightcraft_cloud.py" ~/.local/bin/lc-cloud
-ln -s "$PWD/lc-cloud-watch" ~/.local/bin/lc-cloud-watch
-cp config.example.toml ~/.config/lightcraft-cloud/config.toml   # edit it
-cp units/* ~/.config/systemd/user/ && systemctl --user daemon-reload
+ln -sfn "$PWD/legacy/lightcraft_cloud.py" ~/.local/bin/lc-cloud
+ln -sfn "$PWD/legacy/lc-cloud-watch" ~/.local/bin/lc-cloud-watch
+cp legacy/config.example.toml ~/.config/lightcraft-cloud/config.toml   # edit it
+cp legacy/units/* ~/.config/systemd/user/ && systemctl --user daemon-reload
 lc-cloud sync --dry-run
 ```
 
@@ -42,7 +79,7 @@ The units call `%h/.local/bin/lc-cloud`. None is enabled by default:
 
 Enable what you want, e.g. `systemctl --user enable --now lightcraft-cloud.timer lightcraft-cloud-inbox.timer`.
 
-## Commands
+### Commands
 
 ```
 lc-cloud [--config FILE] sync [--dry-run]   publish originals, previews, thumbs and manifest; apply phone edits
@@ -55,9 +92,9 @@ Config file: `--config FILE`, else `$LC_CLOUD_CONFIG`, else `~/.config/lightcraf
 Environment: `LC_INBOX_SYNC_CMD` (command `inbox-check` runs; default `systemctl --user start --no-block lightcraft-cloud.service`),
 `LC_WATCH_CMD`, `LC_WATCH_QUIET` (default 30 s), `LC_WATCH_MAX` (default 300 s) for `lc-cloud-watch`.
 
-## Config reference
+### Config reference
 
-See [config.example.toml](config.example.toml). All keys are optional.
+See [legacy/config.example.toml](legacy/config.example.toml). All keys are optional.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -77,7 +114,7 @@ See [config.example.toml](config.example.toml). All keys are optional.
 With the Flatpak, `lc-cloud` grants it `--filesystem=<source>:ro` and `--filesystem=<state_dir>` for each call, so no
 manual Flatpak override is needed.
 
-## Encrypting the remote
+### Encrypting the remote
 
 `lc-cloud` and the phone app reach the library only through rclone, so an rclone [`crypt`](https://rclone.org/crypt/)
 remote can encrypt everything on your side before it reaches the provider. Neither side has a setting for it: both open
@@ -85,7 +122,7 @@ the crypt remote instead of the plain one, and [FORMAT.md](FORMAT.md) describes 
 thumbnails, previews, phone edits, the three-way merge and `purge-history` were tested through a crypt remote over a
 local folder and over Google Drive.
 
-### On the PC
+#### On the PC
 
 1. Create a new, empty folder on the provider for the encrypted tree, e.g. `LightCraft Cloud Encrypted`. Do not use the
    folder of an existing plain library.
@@ -122,7 +159,7 @@ local folder and over Google Drive.
 wrapper script that adds `--config FILE`, or set `RCLONE_CONFIG` for the systemd units. Keep the passwords in the rclone
 config, not inline in `remote` (a `:crypt,...:` connection string works, but `lc-cloud status` and error messages print `remote`).
 
-### On the phone
+#### On the phone
 
 Make the phone-only drive remote as described in the app's cloud-library guide, with `root_folder_id` set to the id of the
 **encrypted** folder (the one with the random names; its address ends in `/folders/<id>`):
@@ -147,7 +184,7 @@ Copy `phone-rclone.conf` to the phone and, in the app, pick the remote `lccrypt:
 only holds encrypted names. The file now holds the Drive token **and the encryption key**: keep it private, and delete it from
 the PC and from wherever you transferred it (a share, a USB drive, a messenger) once the app has its own copy.
 
-### What is hidden
+#### What is hidden
 
 - **Hidden from the provider:** the contents of every file (photos, sidecars with your edits, thumbnails, previews, the
   manifest with paths, camera, lens and dates), and all file and folder names, including `originals`, `mobile`, `inbox`,
@@ -159,7 +196,7 @@ the PC and from wherever you transferred it (a share, a USB drive, a messenger) 
 The provider's own previews, search and duplicate detection see only opaque files (Google Drive listed every file as
 `application/octet-stream`), and you cannot browse the library in its web interface.
 
-### Name length
+#### Name length
 
 Encrypted names are longer: with the default `filename_encoding` (base32) a name of *n* bytes (UTF-8, so `Å` is 2) becomes
 `ceil(8 * 16 * (n div 16 + 1) / 5)` characters, and every folder level grows the same way. Measured:
@@ -184,7 +221,7 @@ about 450 bytes fit). It cannot be changed later without publishing again, and i
 bytes (three per character). Google Drive accepted the 256-character names and the longest path of the test, 391 characters;
 the default encoding is fine there.
 
-### Switching an existing library
+#### Switching an existing library
 
 Encryption belongs to the remote, so files already on the provider are not encrypted in place; you publish again to a new
 folder:
@@ -198,7 +235,7 @@ folder:
 4. Give the phone the new config file and pick the new remote. It downloads thumbnails and previews again.
 5. When it works, delete the old plain folder (`rclone purge`); the new remote starts without the old `history/`.
 
-## Phone edits that meet PC edits
+### Phone edits that meet PC edits
 
 When you edit a photo on the PC while the phone edits the same photo, `lc-cloud` does not throw one edit away. It
 merges them setting by setting, using the sidecar version the phone started from as the common ancestor: what only the
@@ -215,7 +252,7 @@ except those of sidecars currently in the library. If the ancestor is not there,
 (different LightCraft engine versions, an unparsable file, ...), the newest edit wins as a whole file and the loser goes to
 the local history. Details: [FORMAT.md](FORMAT.md).
 
-## Safety
+### Safety
 
 - `--max-delete` and the `max_delete` check stop a mass deletion when the source drive is missing or damaged.
 - An empty source folder is refused (drive not mounted).
@@ -226,10 +263,10 @@ the local history. Details: [FORMAT.md](FORMAT.md).
 - `purge-history` refuses unless the newest backup snapshot (via `photo_backup`) is at most 48 hours old.
 - Only one sync runs at a time (lock file); `--dry-run` changes nothing.
 
-## Tests
+### Tests
 
 ```sh
-python3 -m unittest discover -s tests
+python3 -m unittest discover -s legacy/tests
 ```
 
 ## License
