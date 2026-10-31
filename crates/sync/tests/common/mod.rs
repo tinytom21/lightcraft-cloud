@@ -308,6 +308,12 @@ pub fn set_age(p: &Path, age: u64) {
     f.set_modified(SystemTime::now() - Duration::from_secs(age)).unwrap();
 }
 
+impl Drop for Fx {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
 impl Fx {
     pub fn new(tag: &str) -> Fx {
         Fx::with(tag, |_| {})
