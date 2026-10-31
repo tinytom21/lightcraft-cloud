@@ -25,6 +25,8 @@ pub struct InboxSummary {
     pub items: Vec<String>,
     /// Folders (relative to the source) with applied or merged edits.
     pub folders: Vec<String>,
+    /// The sidecars (relative to the source) written by this pass: complete files, not ones still being saved by something else.
+    pub written: Vec<String>,
 }
 
 /// A parsed `<device>/<id>-<UTCstamp>-<base>.xmp`.
@@ -352,6 +354,9 @@ impl Home {
                 let folder = target.rsplit_once('/').map_or(".", |(d, _)| d).to_string();
                 if !summary.folders.contains(&folder) {
                     summary.folders.push(folder);
+                }
+                if !summary.written.contains(&target) {
+                    summary.written.push(target.clone());
                 }
             } else {
                 save_history(&self.cfg.state_dir, &date, &target, &data, &tag)?;

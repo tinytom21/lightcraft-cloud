@@ -218,6 +218,12 @@ pub struct Scan {
 
 /// `versions`: the sidecar version store to keep every stable sidecar's bytes in; `None` writes nothing.
 pub fn scan_source(root: &Path, now: SystemTime, exclude: &[String], versions: Option<&VersionStore>) -> Scan {
+    scan_source_settled(root, now, exclude, versions, &[])
+}
+
+/// [`scan_source`], where the sidecars in `settled` (this run wrote them whole, atomically) count as stable however new
+/// they are: the files the inbox step has just written are published by the same sync, not the next one.
+pub fn scan_source_settled(root: &Path, now: SystemTime, exclude: &[String], versions: Option<&VersionStore>, settled: &[String]) -> Scan {
     let files = walk_source(root, exclude);
     let photos: Vec<String> = files.keys().filter(|r| is_photo(r)).cloned().collect();
     let all: BTreeSet<String> = files.keys().cloned().collect();
@@ -241,7 +247,7 @@ pub fn scan_source(root: &Path, now: SystemTime, exclude: &[String], versions: O
             let s = &files[sc];
             e.sidecar = Some(sc.clone());
             e.sidecar_mtime_ns = Some(s.mtime_ns);
-            if now_s - secs_of(s.mtime_ns) < STABLE_SECS {
+            if now_s - secs_of(s.mtime_ns) < STABLE_SECS && !settled.contains(sc) {
                 unstable.insert(sc.clone());
             }
             match std::fs::read(&s.abs) {

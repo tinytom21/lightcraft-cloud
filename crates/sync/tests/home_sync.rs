@@ -850,6 +850,54 @@ fn inbox_edit_for_an_alternate_id_is_applied_to_its_own_sidecar() {
 }
 
 #[test]
+fn an_applied_phone_edit_is_published_by_the_same_sync() {
+    // The inbox step writes the sidecar "now"; the scan must not treat that file as still being written (it would wait for
+    // the next sync, which published the old rating and the old sidecar).
+    let fx = Fx::new("inbox-same-sync");
+    let mut r = Fake::default();
+    photo(&fx, "A/one.jpg", "one");
+    let old = sc().rating(1).build();
+    fx.touch("A/one.xmp", &old, 100);
+    fx.home.sync(&mut r, false).unwrap();
+    let id = content_hash(b"one");
+    let edited = sc().s(&[("light.exposure", j(0.7))]).rating(5).build();
+    fx.put_inbox(&format!("phone/{id}-{LATER}-{}.xmp", sha16(&old)), &edited);
+    let rep = fx.home.sync(&mut r, false).unwrap();
+    assert_eq!(rep.inbox.applied, 1, "{:?}", rep.inbox);
+    assert_eq!(names(&rep.plan.sc_changed), ["A/one.jpg"]);
+    assert!(fx.rfile("originals/A/one.xmp").unwrap().ends_with(&edited));
+    let b = &fx.manifest()["photos"][0];
+    assert_eq!((b["sidecarVersion"].clone(), b["rating"].clone()), (json!(sha16(&edited)), json!(5)));
+    // and nothing is left for the next one
+    let again = fx.home.sync(&mut r, false).unwrap();
+    assert!(!again.plan.any(), "{:?}", again.plan);
+}
+
+#[test]
+fn a_merged_phone_edit_is_published_by_the_same_sync() {
+    let fx = Fx::new("inbox-same-sync-merge");
+    let mut r = Fake::default();
+    photo(&fx, "A/one.jpg", "one");
+    let v0 = sc().build();
+    fx.touch("A/one.xmp", &v0, 100);
+    fx.home.sync(&mut r, false).unwrap();
+    // the PC edits the sidecar (published by the next sync), then the phone edits from the old version
+    let pc = sc().s(&[("color.vibrance", j(30.0))]).build();
+    fx.touch("A/one.xmp", &pc, 100);
+    fx.home.sync(&mut r, false).unwrap();
+    let id = content_hash(b"one");
+    let phone = sc().s(&[("light.exposure", j(0.5))]).rating(4).build();
+    fx.put_inbox(&format!("phone/{id}-{LATER}-{}.xmp", sha16(&v0)), &phone);
+    let rep = fx.home.sync(&mut r, false).unwrap();
+    assert_eq!((rep.inbox.merged, rep.inbox.applied), (1, 0), "{:?}", rep.inbox);
+    let merged = std::fs::read(fx.src.join("A/one.xmp")).unwrap();
+    assert_ne!(merged, pc);
+    assert_eq!(names(&rep.plan.sc_changed), ["A/one.jpg"]);
+    assert_eq!(fx.manifest()["photos"][0]["sidecarVersion"], json!(sha16(&merged)));
+    assert!(fx.rfile("originals/A/one.xmp").unwrap().ends_with(&merged));
+}
+
+#[test]
 fn inbox_conflict_is_merged() {
     let v0 = sc().build();
     let pc1 = sc().s(&[("color.vibrance", j(30.0))]).rating(2).build();

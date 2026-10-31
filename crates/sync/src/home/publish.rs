@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::inbox::InboxSummary;
 use super::manifest::{ManifestPhoto, build_manifest_photos, manifest_ids};
-use super::scan::{FileInfo, Plan, Scan, diff_scan, ext_lower, in_scope, published_removals, scan_source, walk_source};
+use super::scan::{FileInfo, Plan, Scan, diff_scan, ext_lower, in_scope, published_removals, scan_source_settled, walk_source};
 use super::state::{Meta, Row, RunLock, State, Uploaded};
 use super::{Added, Home, PhotoInfo, Renderer};
 use crate::util::{iso, parallel, utc_stamp, write_atomic};
@@ -143,7 +143,7 @@ impl Home {
         // (2) scan
         self.logln("step 2/6: scan source");
         let versions = self.versions();
-        let scan = scan_source(&cfg.source, self.now(), &cfg.exclude, (!dry).then_some(&versions));
+        let scan = scan_source_settled(&cfg.source, self.now(), &cfg.exclude, (!dry).then_some(&versions), &report.inbox.written);
         if scan.entries.is_empty() {
             return refuse(format!("no photos found under {}; refusing (unmounted?)", cfg.source.display()));
         }

@@ -38,6 +38,8 @@ EXPECTED = {
     "manifest.generated": "a timestamp",
     "manifest.publisher": "'lightcraft-cloud 0.1.0' (Python) vs 'lightcraft-cloud-desktop <version>' (Rust)",
     "state.note": "free-text notes",
+    "state.last_counts.sc_changed": "the Rust app publishes a phone edit in the sync that applied it; the Python tool, whose scan sees the "
+                                    "fresh sidecar as still being written, in the next one (so its round 4 still has sidecars to publish)",
 }
 
 problems = []   # (area, text) unexpected
@@ -259,8 +261,11 @@ def compare_state(py, rs):
             elif x[k] != y[k]:
                 diffs.append(f"{p}.{k}: {x[k]!r} vs {y[k]!r}")
     report("state rows (size, mtime, sidecar, hash, id, status, meta incl. previewKey)", not diffs, "; ".join(diffs[:10]))
-    report("state.last_result / last_counts", ka.get("last_result") == kb.get("last_result") and json.loads(ka.get("last_counts")) == json.loads(kb.get("last_counts")),
-           f"{ka.get('last_result')}, {ka.get('last_counts')} vs {kb.get('last_result')}, {kb.get('last_counts')}")
+    ca, cb = json.loads(ka.get("last_counts")), json.loads(kb.get("last_counts"))
+    late = {k: v for k, v in ca.items() if k != "sc_changed"} == {k: v for k, v in cb.items() if k != "sc_changed"} and ca["sc_changed"] > cb["sc_changed"] == 0
+    report("state.last_result / last_counts", ka.get("last_result") == kb.get("last_result") and ca == cb,
+           f"{ka.get('last_result')}, {ka.get('last_counts')} vs {kb.get('last_result')}, {kb.get('last_counts')}",
+           key="state.last_counts.sc_changed" if late else None)
     report("state.manifest_uploaded", ka.get("manifest_uploaded") == str(py.remote) and kb.get("manifest_uploaded") == str(rs.remote),
            f"{ka.get('manifest_uploaded')} vs {kb.get('manifest_uploaded')}")
 
