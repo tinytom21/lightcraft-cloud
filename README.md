@@ -32,9 +32,9 @@ The tests that talk to a real rclone need a host build of `librclone.so`. Point 
 (built by `apps/lightcraft-android/scripts/build-librclone.sh host` in the phone app repository). Without it those tests
 print "skipped" and pass.
 
-Some tests in `crates/sync/tests/cloud.rs` are marked `#[ignore]` because they need the engine command `library.addRemote`,
-which the upstream LightCraft engine (pinned to `v0.15.0` for the tests) does not have yet. They pass against the
-lightcraft-android engine; run them with `-- --ignored` once the engine has the command.
+The sync crate's tests drive the lightcraft-android engine (tag `v0.1.0`, pinned by `rev` in `crates/sync/Cargo.toml`), because the
+upstream LightCraft engine does not have the command `library.addRemote` yet. The desktop app keeps the upstream engine
+(`v0.15.0`), so `Cargo.lock` holds both. Bump the `rev` when the phone fork's engine changes.
 
 ## Desktop app (`lightcraft-cloud-desktop`)
 

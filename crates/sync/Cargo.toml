@@ -18,6 +18,8 @@ log = { workspace = true }
 libloading = { workspace = true }
 
 [dev-dependencies]
-lightcraft-engine = { workspace = true }
-lightcraft-scenes = { workspace = true }
-lightcraft-meta = { workspace = true }
+# The phone fork's engine (it has `library.addRemote`, which upstream v0.15.0 lacks), pinned to its v0.1.0 tag. The desktop app keeps
+# the upstream engine; the two never meet in one crate. The fork depends on this crate, a dev-only cycle through git.
+lightcraft-engine = { git = "https://github.com/tinytom21/lightcraft-android", rev = "dd8af9a5d7115247b7e8d213bc08c070f7da7bd4" }
+lightcraft-scenes = { git = "https://github.com/tinytom21/lightcraft-android", rev = "dd8af9a5d7115247b7e8d213bc08c070f7da7bd4" }
+lightcraft-meta = { git = "https://github.com/tinytom21/lightcraft-android", rev = "dd8af9a5d7115247b7e8d213bc08c070f7da7bd4" }

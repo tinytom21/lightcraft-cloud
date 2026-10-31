@@ -812,6 +812,11 @@ dependencies = [
 [[package]]
 name = "craft-docpath"
 version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=82a24b006eefa036b43c09a67fb9a3fbd17ffe63#82a24b006eefa036b43c09a67fb9a3fbd17ffe63"
+
+[[package]]
+name = "craft-docpath"
+version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
 
 [[package]]
@@ -2483,14 +2488,31 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-catalog"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "chrono",
+ "crc32fast",
+ "lightcraft-develop 0.14.0",
+ "lightcraft-meta 0.14.0",
+ "lightcraft-raw 0.14.0",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "web-time",
+]
+
+[[package]]
+name = "lightcraft-catalog"
 version = "0.15.0"
 source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
 dependencies = [
  "chrono",
  "crc32fast",
- "lightcraft-develop",
- "lightcraft-meta",
- "lightcraft-raw",
+ "lightcraft-develop 0.15.0",
+ "lightcraft-meta 0.15.0",
+ "lightcraft-raw 0.15.0",
  "log",
  "serde",
  "serde_json",
@@ -2504,9 +2526,9 @@ name = "lightcraft-cloud-client"
 version = "0.1.0"
 dependencies = [
  "libloading",
- "lightcraft-engine",
- "lightcraft-meta",
- "lightcraft-scenes",
+ "lightcraft-engine 0.14.0",
+ "lightcraft-meta 0.14.0",
+ "lightcraft-scenes 0.14.0",
  "log",
  "serde",
  "serde_json",
@@ -2522,14 +2544,14 @@ dependencies = [
  "egui",
  "egui_kittest",
  "lightcraft-cloud-client",
- "lightcraft-codecs",
- "lightcraft-color",
- "lightcraft-engine",
+ "lightcraft-codecs 0.15.0",
+ "lightcraft-color 0.15.0",
+ "lightcraft-engine 0.15.0",
  "lightcraft-mcp",
- "lightcraft-meta",
- "lightcraft-raster",
- "lightcraft-raw",
- "lightcraft-scenes",
+ "lightcraft-meta 0.15.0",
+ "lightcraft-raster 0.15.0",
+ "lightcraft-raw 0.15.0",
+ "lightcraft-scenes 0.15.0",
  "log",
  "notify",
  "notify-rust",
@@ -2540,6 +2562,34 @@ dependencies = [
  "sha2",
  "toml",
  "tray-icon",
+]
+
+[[package]]
+name = "lightcraft-codecs"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "avif-serialize",
+ "bytemuck",
+ "image",
+ "image-webp",
+ "jixel",
+ "jpeg-decoder",
+ "jpeg-encoder",
+ "jxl-oxide",
+ "lightcraft-color 0.14.0",
+ "lightcraft-geom 0.14.0",
+ "lightcraft-raster 0.14.0",
+ "moxcms 0.9.1",
+ "png",
+ "rav1e",
+ "ravif",
+ "rayon",
+ "serde",
+ "thiserror 2.0.21",
+ "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2555,9 +2605,9 @@ dependencies = [
  "jpeg-decoder",
  "jpeg-encoder",
  "jxl-oxide",
- "lightcraft-color",
- "lightcraft-geom",
- "lightcraft-raster",
+ "lightcraft-color 0.15.0",
+ "lightcraft-geom 0.15.0",
+ "lightcraft-raster 0.15.0",
  "moxcms 0.9.1",
  "png",
  "rav1e",
@@ -2572,11 +2622,35 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-color"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "lightcraft-geom 0.14.0",
+ "serde",
+]
+
+[[package]]
+name = "lightcraft-color"
 version = "0.15.0"
 source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
 dependencies = [
- "lightcraft-geom",
+ "lightcraft-geom 0.15.0",
  "serde",
+]
+
+[[package]]
+name = "lightcraft-denoise-core"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "lightcraft-raster 0.14.0",
+ "miniz_oxide 0.8.9",
+ "rayon",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.21",
+ "web-time",
 ]
 
 [[package]]
@@ -2584,7 +2658,7 @@ name = "lightcraft-denoise-core"
 version = "0.15.0"
 source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
 dependencies = [
- "lightcraft-raster",
+ "lightcraft-raster 0.15.0",
  "miniz_oxide 0.9.1",
  "rayon",
  "serde",
@@ -2596,14 +2670,64 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-develop"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "lightcraft-color 0.14.0",
+ "lightcraft-geom 0.14.0",
+ "miniz_oxide 0.8.9",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "lightcraft-develop"
 version = "0.15.0"
 source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
 dependencies = [
- "lightcraft-color",
- "lightcraft-geom",
+ "lightcraft-color 0.15.0",
+ "lightcraft-geom 0.15.0",
  "miniz_oxide 0.9.1",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "lightcraft-engine"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "ab_glyph",
+ "chrono",
+ "craft-docpath 0.1.0 (git+https://github.com/storytold/craft-libs?rev=82a24b006eefa036b43c09a67fb9a3fbd17ffe63)",
+ "harfrust 0.12.0",
+ "lightcraft-catalog 0.14.0",
+ "lightcraft-codecs 0.14.0",
+ "lightcraft-color 0.14.0",
+ "lightcraft-denoise-core 0.14.0",
+ "lightcraft-develop 0.14.0",
+ "lightcraft-faces 0.14.0",
+ "lightcraft-fetch 0.14.0",
+ "lightcraft-geocode 0.14.0",
+ "lightcraft-geom 0.14.0",
+ "lightcraft-gpu 0.14.0",
+ "lightcraft-lensdb 0.14.0",
+ "lightcraft-merge 0.14.0",
+ "lightcraft-meta 0.14.0",
+ "lightcraft-pipeline 0.14.0",
+ "lightcraft-preview 0.14.0",
+ "lightcraft-raster 0.14.0",
+ "lightcraft-raw 0.14.0",
+ "lightcraft-scenes 0.14.0",
+ "lightcraft-slideshow 0.14.0",
+ "log",
+ "miniz_oxide 0.8.9",
+ "rayon",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "unicode-segmentation",
+ "web-time",
 ]
 
 [[package]]
@@ -2613,27 +2737,27 @@ source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006
 dependencies = [
  "ab_glyph",
  "chrono",
- "craft-docpath",
+ "craft-docpath 0.1.0 (git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0)",
  "harfrust 0.13.3",
- "lightcraft-catalog",
- "lightcraft-codecs",
- "lightcraft-color",
- "lightcraft-denoise-core",
- "lightcraft-develop",
- "lightcraft-faces",
- "lightcraft-fetch",
- "lightcraft-geocode",
- "lightcraft-geom",
- "lightcraft-gpu",
- "lightcraft-lensdb",
- "lightcraft-merge",
- "lightcraft-meta",
- "lightcraft-pipeline",
- "lightcraft-preview",
- "lightcraft-raster",
- "lightcraft-raw",
- "lightcraft-scenes",
- "lightcraft-slideshow",
+ "lightcraft-catalog 0.15.0",
+ "lightcraft-codecs 0.15.0",
+ "lightcraft-color 0.15.0",
+ "lightcraft-denoise-core 0.15.0",
+ "lightcraft-develop 0.15.0",
+ "lightcraft-faces 0.15.0",
+ "lightcraft-fetch 0.15.0",
+ "lightcraft-geocode 0.15.0",
+ "lightcraft-geom 0.15.0",
+ "lightcraft-gpu 0.15.0",
+ "lightcraft-lensdb 0.15.0",
+ "lightcraft-merge 0.15.0",
+ "lightcraft-meta 0.15.0",
+ "lightcraft-pipeline 0.15.0",
+ "lightcraft-preview 0.15.0",
+ "lightcraft-raster 0.15.0",
+ "lightcraft-raw 0.15.0",
+ "lightcraft-scenes 0.15.0",
+ "lightcraft-slideshow 0.15.0",
  "log",
  "miniz_oxide 0.9.1",
  "rayon",
@@ -2641,6 +2765,20 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "unicode-segmentation",
+ "web-time",
+]
+
+[[package]]
+name = "lightcraft-faces"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "matrixmultiply",
+ "ndarray",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.21",
  "web-time",
 ]
 
@@ -2660,6 +2798,18 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-fetch"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "log",
+ "rustls",
+ "rustls-rustcrypto",
+ "sha2",
+ "webpki-roots",
+]
+
+[[package]]
+name = "lightcraft-fetch"
 version = "0.15.0"
 source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
 dependencies = [
@@ -2668,6 +2818,15 @@ dependencies = [
  "rustls-rustcrypto",
  "sha2",
  "webpki-roots",
+]
+
+[[package]]
+name = "lightcraft-geocode"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "miniz_oxide 0.8.9",
+ "serde",
 ]
 
 [[package]]
@@ -2681,6 +2840,14 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-geom"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "lightcraft-geom"
 version = "0.15.0"
 source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
 dependencies = [
@@ -2689,19 +2856,44 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-gpu"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "bytemuck",
+ "lightcraft-color 0.14.0",
+ "lightcraft-develop 0.14.0",
+ "lightcraft-faces 0.14.0",
+ "lightcraft-geom 0.14.0",
+ "lightcraft-pipeline 0.14.0",
+ "lightcraft-raster 0.14.0",
+ "log",
+ "pollster 1.0.1",
+ "wgpu",
+]
+
+[[package]]
+name = "lightcraft-gpu"
 version = "0.15.0"
 source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
 dependencies = [
  "bytemuck",
- "lightcraft-color",
- "lightcraft-develop",
- "lightcraft-faces",
- "lightcraft-geom",
- "lightcraft-pipeline",
- "lightcraft-raster",
+ "lightcraft-color 0.15.0",
+ "lightcraft-develop 0.15.0",
+ "lightcraft-faces 0.15.0",
+ "lightcraft-geom 0.15.0",
+ "lightcraft-pipeline 0.15.0",
+ "lightcraft-raster 0.15.0",
  "log",
  "pollster 1.0.1",
  "wgpu",
+]
+
+[[package]]
+name = "lightcraft-inpaint"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "rayon",
 ]
 
 [[package]]
@@ -2714,11 +2906,21 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-lensdb"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "lightcraft-develop 0.14.0",
+ "lightcraft-geom 0.14.0",
+ "quick-xml",
+]
+
+[[package]]
+name = "lightcraft-lensdb"
 version = "0.15.0"
 source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
 dependencies = [
- "lightcraft-develop",
- "lightcraft-geom",
+ "lightcraft-develop 0.15.0",
+ "lightcraft-geom 0.15.0",
  "quick-xml",
 ]
 
@@ -2727,11 +2929,28 @@ name = "lightcraft-mcp"
 version = "0.15.0"
 source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
 dependencies = [
- "lightcraft-codecs",
- "lightcraft-engine",
- "lightcraft-raster",
+ "lightcraft-codecs 0.15.0",
+ "lightcraft-engine 0.15.0",
+ "lightcraft-raster 0.15.0",
  "log",
  "serde_json",
+]
+
+[[package]]
+name = "lightcraft-merge"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "lightcraft-codecs 0.14.0",
+ "lightcraft-color 0.14.0",
+ "lightcraft-geom 0.14.0",
+ "lightcraft-meta 0.14.0",
+ "lightcraft-raster 0.14.0",
+ "lightcraft-raw 0.14.0",
+ "lightcraft-scenes 0.14.0",
+ "rayon",
+ "serde",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2739,16 +2958,28 @@ name = "lightcraft-merge"
 version = "0.15.0"
 source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
 dependencies = [
- "lightcraft-codecs",
- "lightcraft-color",
- "lightcraft-geom",
- "lightcraft-meta",
- "lightcraft-raster",
- "lightcraft-raw",
- "lightcraft-scenes",
+ "lightcraft-codecs 0.15.0",
+ "lightcraft-color 0.15.0",
+ "lightcraft-geom 0.15.0",
+ "lightcraft-meta 0.15.0",
+ "lightcraft-raster 0.15.0",
+ "lightcraft-raw 0.15.0",
+ "lightcraft-scenes 0.15.0",
  "rayon",
  "serde",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "lightcraft-meta"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "chrono",
+ "lightcraft-geom 0.14.0",
+ "lightcraft-tiff 0.14.0",
+ "quick-xml",
+ "serde",
 ]
 
 [[package]]
@@ -2757,9 +2988,24 @@ version = "0.15.0"
 source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
 dependencies = [
  "chrono",
- "lightcraft-geom",
- "lightcraft-tiff",
+ "lightcraft-geom 0.15.0",
+ "lightcraft-tiff 0.15.0",
  "quick-xml",
+ "serde",
+]
+
+[[package]]
+name = "lightcraft-pipeline"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "lightcraft-color 0.14.0",
+ "lightcraft-develop 0.14.0",
+ "lightcraft-geom 0.14.0",
+ "lightcraft-inpaint 0.14.0",
+ "lightcraft-raster 0.14.0",
+ "lightcraft-raw 0.14.0",
+ "rayon",
  "serde",
 ]
 
@@ -2768,14 +3014,27 @@ name = "lightcraft-pipeline"
 version = "0.15.0"
 source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
 dependencies = [
- "lightcraft-color",
- "lightcraft-develop",
- "lightcraft-geom",
- "lightcraft-inpaint",
- "lightcraft-raster",
- "lightcraft-raw",
+ "lightcraft-color 0.15.0",
+ "lightcraft-develop 0.15.0",
+ "lightcraft-geom 0.15.0",
+ "lightcraft-inpaint 0.15.0",
+ "lightcraft-raster 0.15.0",
+ "lightcraft-raw 0.15.0",
  "rayon",
  "serde",
+]
+
+[[package]]
+name = "lightcraft-preview"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "jpeg-encoder",
+ "lightcraft-raster 0.14.0",
+ "log",
+ "siphasher",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2784,7 +3043,7 @@ version = "0.15.0"
 source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
 dependencies = [
  "jpeg-encoder",
- "lightcraft-raster",
+ "lightcraft-raster 0.15.0",
  "log",
  "siphasher",
  "zune-core",
@@ -2793,13 +3052,44 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-raster"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "lightcraft-color 0.14.0",
+ "lightcraft-geom 0.14.0",
+ "rayon",
+ "serde",
+]
+
+[[package]]
+name = "lightcraft-raster"
 version = "0.15.0"
 source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
 dependencies = [
- "lightcraft-color",
- "lightcraft-geom",
+ "lightcraft-color 0.15.0",
+ "lightcraft-geom 0.15.0",
  "rayon",
  "serde",
+]
+
+[[package]]
+name = "lightcraft-raw"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "jpeg-encoder",
+ "jxl-oxide",
+ "lightcraft-color 0.14.0",
+ "lightcraft-geom 0.14.0",
+ "lightcraft-meta 0.14.0",
+ "lightcraft-raster 0.14.0",
+ "lightcraft-tiff 0.14.0",
+ "miniz_oxide 0.8.9",
+ "rayon",
+ "serde",
+ "thiserror 2.0.21",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2809,11 +3099,11 @@ source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006
 dependencies = [
  "jpeg-encoder",
  "jxl-oxide",
- "lightcraft-color",
- "lightcraft-geom",
- "lightcraft-meta",
- "lightcraft-raster",
- "lightcraft-tiff",
+ "lightcraft-color 0.15.0",
+ "lightcraft-geom 0.15.0",
+ "lightcraft-meta 0.15.0",
+ "lightcraft-raster 0.15.0",
+ "lightcraft-tiff 0.15.0",
  "miniz_oxide 0.9.1",
  "rayon",
  "serde",
@@ -2824,13 +3114,34 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-scenes"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "lightcraft-color 0.14.0",
+ "lightcraft-raster 0.14.0",
+ "rayon",
+ "serde",
+]
+
+[[package]]
+name = "lightcraft-scenes"
 version = "0.15.0"
 source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
 dependencies = [
- "lightcraft-color",
- "lightcraft-raster",
+ "lightcraft-color 0.15.0",
+ "lightcraft-raster 0.15.0",
  "rayon",
  "serde",
+]
+
+[[package]]
+name = "lightcraft-slideshow"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "lightcraft-raster 0.14.0",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2838,9 +3149,18 @@ name = "lightcraft-slideshow"
 version = "0.15.0"
 source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
 dependencies = [
- "lightcraft-raster",
+ "lightcraft-raster 0.15.0",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "lightcraft-tiff"
+version = "0.14.0"
+source = "git+https://github.com/tinytom21/lightcraft-android?rev=dd8af9a5d7115247b7e8d213bc08c070f7da7bd4#dd8af9a5d7115247b7e8d213bc08c070f7da7bd4"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
