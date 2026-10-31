@@ -26,7 +26,7 @@ fn main() {
     let a: Vec<String> = std::env::args().collect();
     let (conf, fs, device, step) = (&a[1], &a[2], &a[3], a[4].as_str());
     let dir = PathBuf::from(std::env::var("LC_E2E_DIR").unwrap_or_else(|_| "/tmp/lc-e2e".into()));
-    let so = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/lightcraft-android/librclone-host/librclone.so");
+    let so = PathBuf::from(std::env::var("LIBRCLONE").expect("set LIBRCLONE to the path of librclone.so"));
     let t = Instant::now();
     let lap = |what: &str, t: &mut Instant| {
         println!("{what}: {:.2}s", t.elapsed().as_secs_f64());

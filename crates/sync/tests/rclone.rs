@@ -1,19 +1,19 @@
-//! `RcloneRemote` through the real librclone (host build: `apps/lightcraft-android/scripts/build-librclone.sh host`).
-//! Skipped when the library is not built.
+//! `RcloneRemote` through the real librclone (host build: `apps/lightcraft-android/scripts/build-librclone.sh host` in the
+//! lightcraft-android repo). Set `LIBRCLONE` to the path of `librclone.so`; skipped when it is not set.
 
 use std::path::{Path, PathBuf};
 
 use lightcraft_cloud_client::{Error, RcloneRemote, Remote};
 
 fn so() -> Option<PathBuf> {
-    let p = std::env::var_os("LIBRCLONE").map(PathBuf::from).unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/lightcraft-android/librclone-host/librclone.so"));
+    let p = PathBuf::from(std::env::var_os("LIBRCLONE")?);
     p.is_file().then_some(p)
 }
 
 #[test]
 fn rclone_remote_lists_gets_and_puts_in_a_local_folder() {
     let Some(so) = so() else {
-        eprintln!("skipped: librclone.so is not built");
+        eprintln!("skipped: set LIBRCLONE to a librclone.so");
         return;
     };
     let base = std::env::temp_dir().join(format!("lc-cloud-rclone-{}", std::process::id()));
