@@ -161,3 +161,34 @@ fn list_remotes_gives_names_only_and_purge_dir_deletes_a_folder() {
     assert!(!remote_dir.join("history/2020-01-01").exists() && remote_dir.join("history/keep.txt").exists());
     let _ = std::fs::remove_dir_all(&base);
 }
+
+#[test]
+fn a_second_config_with_the_same_remote_name_wins_in_the_same_process() {
+    let _turn = LIBRCLONE_TURN.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(so) = so() else {
+        eprintln!("skipped: set LIBRCLONE to a librclone.so");
+        return;
+    };
+    let base = std::env::temp_dir().join(format!("lc-cloud-rclone-reconnect-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    for (d, file) in [("one", "from-one.txt"), ("two", "from-two.txt")] {
+        std::fs::create_dir_all(base.join(d)).unwrap();
+        std::fs::write(base.join(d).join(file), b"x").unwrap();
+    }
+    // the same remote name in two config files, as after Disconnect and Connect with another folder behind `lightcraft:`
+    let conf = |d: &str| {
+        let c = base.join(format!("{d}.conf"));
+        std::fs::write(&c, format!("[lightcraft]\ntype = alias\nremote = {}\n", base.join(d).display())).unwrap();
+        c
+    };
+    let names = |r: &RcloneRemote| r.list("", false).unwrap().into_iter().map(|e| e.path).collect::<Vec<_>>();
+    let one = RcloneRemote::open(Some(&so), &conf("one"), "lightcraft:", None).unwrap();
+    assert_eq!(names(&one), vec!["from-one.txt"]);
+    let two = RcloneRemote::open(Some(&so), &conf("two"), "lightcraft:", None).unwrap();
+    assert_eq!(names(&two), vec!["from-two.txt"]);
+    // the same file rewritten to name another folder (not a different file) counts as well
+    std::fs::write(base.join("one.conf"), format!("[lightcraft]\ntype = alias\nremote = {}/\n", base.join("two").display())).unwrap();
+    let again = RcloneRemote::open(Some(&so), &base.join("one.conf"), "lightcraft:", None).unwrap();
+    assert_eq!(names(&again), vec!["from-two.txt"]);
+    let _ = std::fs::remove_dir_all(&base);
+}

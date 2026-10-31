@@ -75,6 +75,10 @@ fn lib(path: Option<&Path>, work_dir: Option<&Path>) -> Result<&'static Lib> {
         init();
         Lib { rpc, free, _lib: lib }
     };
+    // librclone logs every failed call at ERROR on stderr ("rc: "operations/list": error: ... directory not found"), but a
+    // missing folder is routine here (the inbox of a fresh remote) and every real failure comes back to us in the call's
+    // result and is reported by our own code. So only what rclone itself calls critical is printed.
+    let _ = loaded.call("options/set", &json!({"main": {"LogLevel": "CRITICAL"}}));
     Ok(LIB.get_or_init(|| loaded))
 }
 
@@ -105,6 +109,18 @@ impl Lib {
     }
 }
 
+impl Lib {
+    /// Make the config file at `config` the one in use. The path is process-wide, and rclone caches the remotes it has
+    /// opened by their `name:path` string, so after a switch to another config with a remote of the same name (or the same
+    /// file rewritten) the cached one would keep pointing at the old place: forget them. (The config's own contents are
+    /// re-read by rclone when the file it names has changed.)
+    fn use_config(&self, config: &Path) -> Result<()> {
+        self.call("config/setpath", &json!({"path": config.to_string_lossy()}))?;
+        self.call("fscache/clear", &json!({}))?;
+        Ok(())
+    }
+}
+
 /// An rclone remote, or a folder of one: `fs` is what rclone calls the "fs" string (`phone:LightCraft Cloud`,
 /// `phone:` for a remote whose root is the library, an absolute local folder).
 pub struct RcloneRemote {
@@ -122,7 +138,7 @@ impl RcloneRemote {
         if !config.is_file() {
             return Err(Error::Invalid(format!("rclone config {} not found", config.display())));
         }
-        lib.call("config/setpath", &json!({"path": config.to_string_lossy()}))?;
+        lib.use_config(&config)?;
         Ok(RcloneRemote { lib, fs: fs.to_string() })
     }
 
@@ -190,7 +206,7 @@ pub fn list_remotes(librclone: Option<&Path>, config: &Path) -> Result<Vec<Strin
     if !config.is_file() {
         return Err(Error::Invalid(format!("rclone config {} not found", config.display())));
     }
-    lib.call("config/setpath", &json!({"path": config.to_string_lossy()}))?;
+    lib.use_config(&config)?;
     let out = lib.call("config/listremotes", &json!({}))?;
     let mut names: Vec<String> =
         out.get("remotes").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
