@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = ["crates/sync", "apps/desktop"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.95"
+repository = "https://github.com/tinytom21/lightcraft-cloud"
+
+[workspace.dependencies]
+lightcraft-cloud-client = { path = "crates/sync" }
+
+thiserror = "2"
+sha2 = "0.10"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+log = "0.4"
+# rclone's librclone, loaded at run time (ISC)
+libloading = "0.8"
+
+# Test-only: the upstream desktop app's engine, to drive the sync tests with real photos and sidecars.
+lightcraft-engine = { git = "https://github.com/storytold/lightcraft", tag = "v0.15.0" }
+lightcraft-scenes = { git = "https://github.com/storytold/lightcraft", tag = "v0.15.0" }
+lightcraft-meta = { git = "https://github.com/storytold/lightcraft", tag = "v0.15.0" }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+too_many_arguments = "allow"
+needless_range_loop = "allow"
+type_complexity = "allow"
+excessive_precision = "allow"

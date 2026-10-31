@@ -1,0 +1,12 @@
+[package]
+name = "lightcraft-cloud-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LightCraft Cloud for the PC: keeps the cloud library in sync (tray app, not implemented yet)."
+
+[lints]
+workspace = true
+
+[dependencies]
+lightcraft-cloud-client = { workspace = true }
