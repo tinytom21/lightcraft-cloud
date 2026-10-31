@@ -6,6 +6,7 @@
 //! and calls [`CloudLibrary`]. Nothing here keeps the engine locked while the network is busy.
 
 mod error;
+pub mod home;
 mod library;
 mod manifest;
 mod rclone;
