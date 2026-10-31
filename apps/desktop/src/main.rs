@@ -106,7 +106,7 @@ impl From<String> for Failure {
 impl From<Error> for Failure {
     fn from(e: Error) -> Self {
         match e {
-            Error::Invalid(m) => Failure::Refused(m),
+            Error::Invalid(m) | Error::Busy(m) => Failure::Refused(m),
             e => Failure::Error(e.to_string()),
         }
     }

@@ -212,7 +212,7 @@ impl RunLock {
             std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path)
         }
         .map_err(|e| Error::io(path.display(), e))?;
-        file.try_lock().map_err(|_| Error::Invalid("another run holds the lock".into()))?;
+        file.try_lock().map_err(|_| Error::Busy("another run holds the lock".into()))?;
         Ok(Some(RunLock { _file: file }))
     }
 }

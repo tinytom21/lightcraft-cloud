@@ -19,6 +19,9 @@ pub enum Error {
     /// The caller's request makes no sense (unknown photo, bad device name…).
     #[error("{0}")]
     Invalid(String),
+    /// Another run (this app's, or the command line's) holds the run lock: nothing was done, try again later.
+    #[error("{0}")]
+    Busy(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

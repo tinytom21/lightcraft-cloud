@@ -133,7 +133,8 @@ impl RcloneRemote {
 
     fn local(path: &Path) -> Result<(String, String)> {
         let abs = std::path::absolute(path).map_err(|e| Error::io(path.display(), e))?;
-        let name = abs.file_name().map(|n| n.to_string_lossy().into_owned()).ok_or_else(|| Error::Invalid(format!("{} names no file", abs.display())))?;
+        let name =
+            abs.file_name().map(|n| n.to_string_lossy().into_owned()).ok_or_else(|| Error::Invalid(format!("{} names no file", abs.display())))?;
         let dir = abs.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_else(|| "/".into());
         Ok((dir, name))
     }
@@ -141,7 +142,9 @@ impl RcloneRemote {
 
 impl Remote for RcloneRemote {
     fn list(&self, dir: &str, recursive: bool) -> Result<Vec<RemoteEntry>> {
-        let out = self.lib.call("operations/list", &json!({"fs": self.fs, "remote": dir, "opt": {"recurse": recursive, "noMimeType": true, "noModTime": true}}))?;
+        let out = self
+            .lib
+            .call("operations/list", &json!({"fs": self.fs, "remote": dir, "opt": {"recurse": recursive, "noMimeType": true, "noModTime": true}}))?;
         let list = out.get("list").and_then(Value::as_array).cloned().unwrap_or_default();
         // (rclone's `Path` is relative to the fs, so it starts with the listed folder)
         let prefix = format!("{}/", dir.trim_matches('/'));
@@ -170,4 +173,27 @@ impl Remote for RcloneRemote {
     fn move_file(&self, from: &str, to: &str) -> Result<()> {
         self.lib.call("operations/movefile", &json!({"srcFs": self.fs, "srcRemote": from, "dstFs": self.fs, "dstRemote": to})).map(|_| ())
     }
+
+    fn purge_dir(&self, dir: &str) -> Result<()> {
+        if dir.trim_matches('/').is_empty() {
+            return Err(Error::Invalid("refusing to delete the remote's root".into()));
+        }
+        self.lib.call("operations/purge", &json!({"fs": self.fs, "remote": dir})).map(|_| ())
+    }
+}
+
+/// The names of the remotes in an rclone config file (`config/listremotes`). Only the names: nothing else of the config is
+/// read out, kept or logged.
+pub fn list_remotes(librclone: Option<&Path>, config: &Path) -> Result<Vec<String>> {
+    let lib = lib(librclone, None)?;
+    let config = std::path::absolute(config).map_err(|e| Error::io(config.display(), e))?;
+    if !config.is_file() {
+        return Err(Error::Invalid(format!("rclone config {} not found", config.display())));
+    }
+    lib.call("config/setpath", &json!({"path": config.to_string_lossy()}))?;
+    let out = lib.call("config/listremotes", &json!({}))?;
+    let mut names: Vec<String> =
+        out.get("remotes").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    names.sort();
+    Ok(names)
 }

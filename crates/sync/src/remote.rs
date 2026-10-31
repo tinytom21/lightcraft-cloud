@@ -30,6 +30,10 @@ pub trait Remote: Send + Sync {
     fn move_file(&self, from: &str, to: &str) -> Result<()> {
         Err(Error::Invalid(format!("this remote cannot move {from} to {to}")))
     }
+    /// Delete the folder `dir` and everything in it. Only the home side (purging old history) needs it.
+    fn purge_dir(&self, dir: &str) -> Result<()> {
+        Err(Error::Invalid(format!("this remote cannot delete the folder {dir}")))
+    }
     /// The entry at `path`, if there is one.
     fn stat(&self, path: &str) -> Result<Option<RemoteEntry>> {
         let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
@@ -118,5 +122,17 @@ impl Remote for DirRemote {
             std::fs::create_dir_all(dir).map_err(|e| Error::io(to, e))?;
         }
         std::fs::rename(&src, &dst).map_err(|e| Error::io(from, e))
+    }
+
+    fn purge_dir(&self, dir: &str) -> Result<()> {
+        let at = self.at(dir)?;
+        if at == self.root {
+            return Err(Error::Invalid("refusing to delete the remote's root".into()));
+        }
+        match std::fs::remove_dir_all(&at) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Error::NotFound(dir.to_string())),
+            Err(e) => Err(Error::io(dir, e)),
+        }
     }
 }

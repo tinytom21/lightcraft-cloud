@@ -16,7 +16,7 @@ mod util;
 pub use error::{Error, Result};
 pub use library::{CloudLibrary, DEFAULT_CACHE_CAP, PhotoState, PreviewState, PushSummary, RefreshSummary, State, Status, valid_device};
 pub use manifest::{FORMAT, Item};
-pub use rclone::RcloneRemote;
+pub use rclone::{RcloneRemote, list_remotes};
 pub use remote::{DirRemote, Remote, RemoteEntry};
 
 /// The app's engine, as the cloud client drives it. Commands used: `library.addRemote`,

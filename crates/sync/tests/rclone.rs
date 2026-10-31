@@ -128,3 +128,29 @@ fn walk(d: &Path) -> Vec<String> {
     }
     out
 }
+
+#[test]
+fn list_remotes_gives_names_only_and_purge_dir_deletes_a_folder() {
+    let Some(so) = so() else {
+        eprintln!("skipped: set LIBRCLONE to a librclone.so");
+        return;
+    };
+    let base = std::env::temp_dir().join(format!("lc-cloud-rclone-names-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let conf = base.join("rclone.conf");
+    std::fs::write(&conf, "[zeta]\ntype = local\n\n[alpha]\ntype = crypt\nremote = alpha-base:\npassword = SECRET-TOKEN\n").unwrap();
+    let names = lightcraft_cloud_client::list_remotes(Some(&so), &conf).unwrap();
+    assert_eq!(names, vec!["alpha".to_string(), "zeta".to_string()]);
+    assert!(lightcraft_cloud_client::list_remotes(Some(&so), &base.join("absent.conf")).is_err());
+
+    let remote_dir = base.join("r");
+    std::fs::create_dir_all(remote_dir.join("history/2020-01-01/A")).unwrap();
+    std::fs::write(remote_dir.join("history/2020-01-01/A/x.xmp"), b"x").unwrap();
+    std::fs::write(remote_dir.join("history/keep.txt"), b"x").unwrap();
+    let r = RcloneRemote::open(Some(&so), &conf, &remote_dir.to_string_lossy(), None).unwrap();
+    assert!(r.purge_dir("").is_err());
+    r.purge_dir("history/2020-01-01").unwrap();
+    assert!(!remote_dir.join("history/2020-01-01").exists() && remote_dir.join("history/keep.txt").exists());
+    let _ = std::fs::remove_dir_all(&base);
+}

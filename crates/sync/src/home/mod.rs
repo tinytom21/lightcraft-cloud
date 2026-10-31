@@ -13,6 +13,7 @@ mod json;
 mod manifest;
 mod merge;
 mod publish;
+mod purge;
 mod scan;
 mod state;
 mod xmp;
@@ -24,6 +25,7 @@ use std::time::{Duration, SystemTime};
 pub use inbox::{InboxName, InboxSummary, decide, notify_message, parse_inbox_name, phone_is_newer};
 pub use manifest::{Alternate, ManifestPhoto, build_manifest_photos, manifest_ids};
 pub use publish::{MirrorStats, StatusReport, SyncReport};
+pub use purge::{MAX_BACKUP_AGE_HOURS, PurgeReport};
 pub use scan::{Entry, FileInfo, Plan, STABLE_SECS, Scan, diff_scan, find_sidecars, fnmatch, is_excluded, published_removals, scan_source};
 pub use state::{Meta, Row, RunLock, State, Uploaded, VersionStore};
 
