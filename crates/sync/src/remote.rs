@@ -25,6 +25,11 @@ pub trait Remote: Send + Sync {
     fn get(&self, path: &str, local: &Path) -> Result<()>;
     /// Copy the local file to `path` on the remote (creating folders as needed).
     fn put(&self, local: &Path, path: &str) -> Result<()>;
+    /// Move (rename) the remote file `from` to `to`, creating folders as needed and replacing what is at `to`. Only the
+    /// home side (publishing, the inbox) needs it; a remote that cannot says so.
+    fn move_file(&self, from: &str, to: &str) -> Result<()> {
+        Err(Error::Invalid(format!("this remote cannot move {from} to {to}")))
+    }
     /// The entry at `path`, if there is one.
     fn stat(&self, path: &str) -> Result<Option<RemoteEntry>> {
         let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
@@ -102,5 +107,16 @@ impl Remote for DirRemote {
             std::fs::create_dir_all(dir).map_err(|e| Error::io(path, e))?;
         }
         std::fs::copy(local, &to).map(|_| ()).map_err(|e| Error::io(path, e))
+    }
+
+    fn move_file(&self, from: &str, to: &str) -> Result<()> {
+        let (src, dst) = (self.at(from)?, self.at(to)?);
+        if !src.is_file() {
+            return Err(Error::NotFound(from.to_string()));
+        }
+        if let Some(dir) = dst.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| Error::io(to, e))?;
+        }
+        std::fs::rename(&src, &dst).map_err(|e| Error::io(from, e))
     }
 }

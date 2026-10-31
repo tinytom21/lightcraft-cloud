@@ -166,4 +166,8 @@ impl Remote for RcloneRemote {
         let (dir, name) = Self::local(local)?;
         self.lib.call("operations/copyfile", &json!({"srcFs": dir, "srcRemote": name, "dstFs": self.fs, "dstRemote": path})).map(|_| ())
     }
+
+    fn move_file(&self, from: &str, to: &str) -> Result<()> {
+        self.lib.call("operations/movefile", &json!({"srcFs": self.fs, "srcRemote": from, "dstFs": self.fs, "dstRemote": to})).map(|_| ())
+    }
 }
