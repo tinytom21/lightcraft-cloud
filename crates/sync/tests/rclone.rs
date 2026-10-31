@@ -10,6 +10,9 @@ use common::{Fake, sc, touch};
 use lightcraft_cloud_client::home::{Home, HomeConfig};
 use lightcraft_cloud_client::{Error, RcloneRemote, Remote};
 
+/// librclone is one Go runtime per process with one config path: tests that point it at their own config take turns.
+static LIBRCLONE_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn so() -> Option<PathBuf> {
     let p = PathBuf::from(std::env::var_os("LIBRCLONE")?);
     p.is_file().then_some(p)
@@ -17,6 +20,7 @@ fn so() -> Option<PathBuf> {
 
 #[test]
 fn rclone_remote_lists_gets_and_puts_in_a_local_folder() {
+    let _turn = LIBRCLONE_TURN.lock().unwrap_or_else(|e| e.into_inner());
     let Some(so) = so() else {
         eprintln!("skipped: set LIBRCLONE to a librclone.so");
         return;
@@ -59,6 +63,7 @@ fn rclone_remote_lists_gets_and_puts_in_a_local_folder() {
 
 #[test]
 fn a_missing_library_is_a_clear_error() {
+    let _turn = LIBRCLONE_TURN.lock().unwrap_or_else(|e| e.into_inner());
     // (a different path than the real one: the process-wide library may already be loaded by the test above, which is fine)
     if RcloneRemote::available(Some(Path::new("/nonexistent/librclone.so"))) {
         return;
@@ -69,6 +74,7 @@ fn a_missing_library_is_a_clear_error() {
 
 #[test]
 fn rclone_remote_moves_and_carries_a_whole_publish_and_inbox() {
+    let _turn = LIBRCLONE_TURN.lock().unwrap_or_else(|e| e.into_inner());
     let Some(so) = so() else {
         eprintln!("skipped: set LIBRCLONE to a librclone.so");
         return;
@@ -131,6 +137,7 @@ fn walk(d: &Path) -> Vec<String> {
 
 #[test]
 fn list_remotes_gives_names_only_and_purge_dir_deletes_a_folder() {
+    let _turn = LIBRCLONE_TURN.lock().unwrap_or_else(|e| e.into_inner());
     let Some(so) = so() else {
         eprintln!("skipped: set LIBRCLONE to a librclone.so");
         return;
