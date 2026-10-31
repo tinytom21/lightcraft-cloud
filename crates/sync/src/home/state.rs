@@ -54,8 +54,17 @@ struct File {
     format: u32,
     files: BTreeMap<String, Row>,
     kv: BTreeMap<String, String>,
-    /// remote path -> (size, mtime_ns) of the local file last uploaded there
-    uploaded: BTreeMap<String, (u64, i64)>,
+    /// remote path -> the local file last uploaded there
+    uploaded: BTreeMap<String, Uploaded>,
+}
+
+/// The local file a remote copy was made from: how a changed mtime with unchanged content is told from a real change.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Uploaded {
+    pub size: u64,
+    pub mtime_ns: i64,
+    /// SHA-256 of the bytes uploaded (None: not known, e.g. a copy another tool made).
+    pub sha256: Option<String>,
 }
 
 /// The state folder of one home library.
@@ -104,12 +113,12 @@ impl State {
         self.file.kv.insert(k.to_string(), v.to_string());
     }
 
-    pub fn uploaded(&self, remote_path: &str) -> Option<(u64, i64)> {
-        self.file.uploaded.get(remote_path).copied()
+    pub fn uploaded(&self, remote_path: &str) -> Option<&Uploaded> {
+        self.file.uploaded.get(remote_path)
     }
 
-    pub fn set_uploaded(&mut self, remote_path: &str, size: u64, mtime_ns: i64) {
-        self.file.uploaded.insert(remote_path.to_string(), (size, mtime_ns));
+    pub fn set_uploaded(&mut self, remote_path: &str, up: Uploaded) {
+        self.file.uploaded.insert(remote_path.to_string(), up);
     }
 
     pub fn forget_uploaded(&mut self, remote_path: &str) {
@@ -219,11 +228,11 @@ mod tests {
         let mut s = State::open(&d, false).unwrap();
         s.put("a.jpg", Row { size: 3, status: "ok".into(), id: Some("x".into()), ..Row::default() });
         s.set("k", "v");
-        s.set_uploaded("originals/a.jpg", 3, 7);
+        s.set_uploaded("originals/a.jpg", Uploaded { size: 3, mtime_ns: 7, sha256: None });
         s.commit().unwrap();
         let s2 = State::open(&d, true).unwrap();
         assert_eq!(s2.files()["a.jpg"].size, 3);
-        assert_eq!((s2.get("k"), s2.uploaded("originals/a.jpg")), (Some("v"), Some((3, 7))));
+        assert_eq!((s2.get("k"), s2.uploaded("originals/a.jpg").map(|u| u.mtime_ns)), (Some("v"), Some(7)));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

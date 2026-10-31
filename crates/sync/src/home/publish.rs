@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use super::inbox::InboxSummary;
 use super::manifest::{ManifestPhoto, build_manifest_photos, manifest_ids};
 use super::scan::{FileInfo, Plan, Scan, diff_scan, ext_lower, in_scope, published_removals, scan_source, walk_source};
-use super::state::{Meta, Row, RunLock, State};
+use super::state::{Meta, Row, RunLock, State, Uploaded};
 use super::{Added, Home, PhotoInfo, Renderer};
 use crate::util::{iso, parallel, utc_stamp, write_atomic};
 use crate::{Error, FORMAT, Result};
@@ -297,7 +297,7 @@ impl Home {
         let mut keys: HashMap<String, String> = HashMap::new();
         for p in added {
             let h = &infos[p].content_hash;
-            let tmp = previews.join(format!(".{h}.lcsp.tmp"));
+            let tmp = previews.join(format!(".tmp-{h}.lcsp"));
             match renderer.smart_preview(&src.join(p), &tmp) {
                 Ok(key) => {
                     let dest = previews.join(format!("{h}.lcsp"));
@@ -313,7 +313,7 @@ impl Home {
         // thumbnails: new + sidecar-changed, rendered with the current edits
         for (p, i) in &infos {
             let h = &i.content_hash;
-            let tmp = thumbs.join(format!(".{h}.jpg.tmp"));
+            let tmp = thumbs.join(format!(".tmp-{h}.jpg"));
             match renderer.thumbnail(&src.join(p), cfg.thumb_px, cfg.thumb_quality, &tmp) {
                 Ok(()) if tmp.exists() => {
                     let dest = thumbs.join(format!("{h}.jpg"));
@@ -325,6 +325,9 @@ impl Home {
                     self.logln(format!("WARNING: thumbnail of {p} failed: {e}"));
                 }
             }
+        }
+        if let Err(e) = renderer.finish() {
+            self.logln(format!("WARNING: could not save the scratch library: {e}"));
         }
         // update state rows
         let mut failed = Vec::new();
@@ -422,13 +425,20 @@ impl Home {
             match remote.get(rel) {
                 None => new.push(rel),
                 Some(&sz) if sz != f.size => replace.push(rel),
-                Some(_) => match st.uploaded(&key) {
-                    Some(rec) if rec != (f.size, f.mtime_ns) => replace.push(rel),
-                    Some(_) => stats.unchanged += 1,
+                Some(_) => match st.uploaded(&key).cloned() {
+                    Some(rec) if rec.size == f.size && rec.mtime_ns == f.mtime_ns => stats.unchanged += 1,
+                    // the mtime moved: like rclone (same size, same checksum: only the time differs), the content decides
+                    Some(rec) if rec.size == f.size && rec.sha256.is_some() && rec.sha256 == file_sha(&f.abs) => {
+                        stats.unchanged += 1;
+                        if !dry {
+                            st.set_uploaded(&key, Uploaded { mtime_ns: f.mtime_ns, ..rec });
+                        }
+                    }
+                    Some(_) => replace.push(rel),
                     None => {
                         stats.unchanged += 1;
                         if !dry {
-                            st.set_uploaded(&key, f.size, f.mtime_ns);
+                            st.set_uploaded(&key, Uploaded { size: f.size, mtime_ns: f.mtime_ns, sha256: None });
                         }
                     }
                 },
@@ -453,7 +463,10 @@ impl Home {
         let mut first_err = None;
         for ((rel, _), r) in jobs.iter().zip(results) {
             match r {
-                Ok(()) => st.set_uploaded(&format!("{prefix}/{rel}"), local[rel].size, local[rel].mtime_ns),
+                Ok(()) => st.set_uploaded(
+                    &format!("{prefix}/{rel}"),
+                    Uploaded { size: local[rel].size, mtime_ns: local[rel].mtime_ns, sha256: file_sha(&local[rel].abs) },
+                ),
                 Err(e) => {
                     st.forget_uploaded(&format!("{prefix}/{rel}"));
                     self.logln(format!("  upload of {prefix}/{rel} failed: {e}"));
@@ -495,7 +508,15 @@ impl Home {
             self.logln("  manifest unchanged; not uploading");
             return Ok(false);
         }
-        let doc = json!({"format": FORMAT, "generated": iso(self.now()), "publisher": self.cfg.publisher, "photos": new_photos});
+        // (a struct, so the fields keep the order the Python tool writes them in)
+        #[derive(serde::Serialize)]
+        struct Doc<'a> {
+            format: u64,
+            generated: String,
+            publisher: &'a str,
+            photos: &'a [ManifestPhoto],
+        }
+        let doc = Doc { format: FORMAT, generated: iso(self.now()), publisher: &self.cfg.publisher, photos };
         let mut bytes = Vec::new();
         {
             use serde::Serialize;
@@ -533,6 +554,23 @@ impl Home {
         r.inbox_pending = self.inbox_pending().ok().map(|v| v.len());
         Ok(r)
     }
+}
+
+/// SHA-256 of a file's bytes, read in chunks.
+fn file_sha(path: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        let n = f.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    Some(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
 fn staged_sizes(dir: &Path, ext: &str) -> HashMap<String, u64> {

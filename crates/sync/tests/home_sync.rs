@@ -404,11 +404,11 @@ fn too_many_disappeared_photos_are_refused() {
     set_age(&fx.src.join("p1.jpg"), 100);
     let rep = fx.home.sync(&mut r, false).unwrap();
     assert_eq!(rep.originals.removed, 3);
-    // (p0 and p1 were written again: replaced, so their old copies are in history too)
+    // (p0 and p1 were written again with the same bytes: not replaced)
     for gone in ["p2", "p3", "p4"] {
         assert!(fx.history().iter().any(|h| h.contains(&format!("/originals/{gone}."))), "{gone}");
     }
-    assert_eq!(fx.history().iter().filter(|h| h.contains("/originals/p")).count(), 5);
+    assert_eq!(fx.history().iter().filter(|h| h.contains("/originals/p")).count(), 3);
 }
 
 // ------------------------------------------------------------------ publishing
@@ -489,6 +489,24 @@ fn a_changed_photo_replaces_the_remote_copy_and_the_old_one_goes_to_history() {
     assert_eq!(fx.rfile(old).unwrap(), b"one");
     assert!(h.iter().any(|p| p.contains("/mobile/thumbs/")) && h.iter().any(|p| p.contains("/mobile/previews/")));
     assert_eq!(fx.manifest()["photos"][0]["id"], json!(content_hash(b"one edited in another program")));
+}
+
+#[test]
+fn a_touched_file_with_the_same_bytes_is_not_uploaded_again() {
+    let (fx, spy) = Fx::spied("pub-touch", |_| {});
+    let mut r = Fake::default();
+    photo(&fx, "A/one.jpg", "one");
+    fx.touch("A/one.xmp", &sc().build(), 100);
+    fx.home.sync(&mut r, false).unwrap();
+    spy.puts();
+    spy.moves();
+    // only the modification time moves (a backup restore, a sync tool): like rclone, the checksum says nothing changed
+    set_age(&fx.src.join("A/one.jpg"), 5000);
+    set_age(&fx.src.join("A/one.xmp"), 5000);
+    let rep = fx.home.sync(&mut r, false).unwrap();
+    assert_eq!((rep.originals.replaced, rep.originals.unchanged), (0, 2));
+    assert!(spy.moves().iter().all(|(_, to)| !to.starts_with("history/")) && fx.history().is_empty());
+    assert_eq!(rep.plan.changed.len(), 1); // (the scan sees a changed photo, and the renderer reads it again)
 }
 
 #[test]

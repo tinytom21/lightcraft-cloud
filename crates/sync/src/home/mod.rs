@@ -25,7 +25,7 @@ pub use inbox::{InboxName, InboxSummary, decide, notify_message, parse_inbox_nam
 pub use manifest::{Alternate, ManifestPhoto, build_manifest_photos, manifest_ids};
 pub use publish::{MirrorStats, StatusReport, SyncReport};
 pub use scan::{Entry, FileInfo, Plan, STABLE_SECS, Scan, diff_scan, find_sidecars, fnmatch, is_excluded, published_removals, scan_source};
-pub use state::{Meta, Row, RunLock, State, VersionStore};
+pub use state::{Meta, Row, RunLock, State, Uploaded, VersionStore};
 
 use crate::util::iso;
 use crate::{Error, Remote, Result};
@@ -130,13 +130,22 @@ pub trait Renderer {
     fn add(&mut self, photo: &Path) -> Result<Added>;
     /// The sidecar changed: read it again and describe the photo. A photo the scratch library lost is added again.
     fn reread(&mut self, photo: &Path) -> Result<PhotoInfo>;
-    /// Write a JPEG thumbnail with the photo's current edits (`long_edge` px, quality 1..100, sRGB) to `out`.
+    /// Write a JPEG thumbnail with the photo's current edits (`long_edge` px, quality 1..100, sRGB) to `out` (a `.jpg` name).
     fn thumbnail(&mut self, photo: &Path, long_edge: u32, quality: u8, out: &Path) -> Result<()>;
-    /// Write the photo's smart preview (`.lcsp`) to `out`; returns its `previewKey` (the engine's file name without
+    /// Write the photo's smart preview to `out` (a `.lcsp` name); returns its `previewKey` (the engine's file name without
     /// `.lcsp`).
     fn smart_preview(&mut self, photo: &Path, out: &Path) -> Result<String>;
     /// Drop photos (changed or gone from the source).
     fn forget(&mut self, photos: &[PathBuf]) -> Result<()>;
+    /// Called after a batch of the calls above: save the scratch library.
+    fn finish(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// `YYYY-mm-ddTHH:MM:SSZ`.
+pub fn utc_iso(t: SystemTime) -> String {
+    iso(t)
 }
 
 type Clock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
