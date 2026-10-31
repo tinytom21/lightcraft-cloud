@@ -185,3 +185,49 @@ impl Renderer for EngineRenderer {
         self.h.session.persist().map_err(engine)
     }
 }
+
+/// Opens the engine's scratch library on first use: a dry run, or a run with nothing to render, never opens it.
+pub struct LazyRenderer {
+    lib: PathBuf,
+    inner: Option<EngineRenderer>,
+}
+
+impl LazyRenderer {
+    pub fn new(lib: PathBuf) -> Self {
+        LazyRenderer { lib, inner: None }
+    }
+
+    fn get(&mut self) -> Result<&mut EngineRenderer> {
+        if self.inner.is_none() {
+            self.inner = Some(EngineRenderer::open(&self.lib)?);
+        }
+        self.inner.as_mut().ok_or_else(|| Error::Engine("the scratch library did not open".into()))
+    }
+}
+
+impl Renderer for LazyRenderer {
+    fn add(&mut self, photo: &Path) -> Result<Added> {
+        self.get()?.add(photo)
+    }
+    fn reread(&mut self, photo: &Path) -> Result<PhotoInfo> {
+        self.get()?.reread(photo)
+    }
+    fn thumbnail(&mut self, photo: &Path, long_edge: u32, quality: u8, out: &Path) -> Result<()> {
+        self.get()?.thumbnail(photo, long_edge, quality, out)
+    }
+    fn smart_preview(&mut self, photo: &Path, out: &Path) -> Result<String> {
+        self.get()?.smart_preview(photo, out)
+    }
+    fn forget(&mut self, photos: &[PathBuf]) -> Result<()> {
+        if self.inner.is_none() && !self.lib.is_dir() {
+            return Ok(()); // no scratch library yet, so nothing to drop
+        }
+        self.get()?.forget(photos)
+    }
+    fn finish(&mut self) -> Result<()> {
+        match self.inner.as_mut() {
+            Some(r) => r.finish(),
+            None => Ok(()),
+        }
+    }
+}

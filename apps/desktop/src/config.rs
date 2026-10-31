@@ -8,13 +8,13 @@ use std::sync::Arc;
 
 use lightcraft_cloud_client::home::{HomeConfig, PairPrimary};
 use lightcraft_cloud_client::{DirRemote, RcloneRemote, Remote};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub const APP_DIR: &str = "lightcraft-cloud-desktop";
 
 /// What the file says; every key but `remote` is optional. Unknown keys are ignored (the Python tool's config can be
 /// reused).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct File {
     /// Folder to publish.
@@ -40,6 +40,13 @@ pub struct File {
     pub rclone_config: Option<String>,
     /// The host `librclone.so`; default `$LIBRCLONE`, else the system's search path.
     pub librclone: Option<String>,
+    /// Desktop notifications (phone edits applied, a sync that failed).
+    pub notify: bool,
+    /// The weekly purge deletes the remote's `history/` and `inbox-done/` day folders older than this many days.
+    pub device_history_days: u32,
+    /// A command that answers `snapshots --latest 1 --json` (restic). The purge only runs when the newest snapshot is at most
+    /// 48 hours old; an empty string switches the purge off.
+    pub photo_backup: String,
 }
 
 impl Default for File {
@@ -56,7 +63,53 @@ impl Default for File {
             state_dir: None,
             rclone_config: None,
             librclone: None,
+            notify: true,
+            device_history_days: 30,
+            photo_backup: "restic".into(),
         }
+    }
+}
+
+/// The keys this app writes (and removes when unset); any other key in the file is left as it is.
+const KNOWN_KEYS: &[&str] = &[
+    "source",
+    "remote",
+    "exclude",
+    "pair_primary",
+    "max_delete",
+    "thumb_px",
+    "thumb_quality",
+    "previews_only",
+    "state_dir",
+    "rclone_config",
+    "librclone",
+    "notify",
+    "device_history_days",
+    "photo_backup",
+];
+
+impl File {
+    /// Write the settings to `path` (the folder is created). Keys this app does not know stay as they are in an existing file;
+    /// comments do not survive.
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        let mut table: toml::Table = match std::fs::read_to_string(path) {
+            Ok(t) => toml::from_str(&t).map_err(|e| format!("config {}: {e}", path.display()))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
+            Err(e) => return Err(format!("config {}: {e}", path.display())),
+        };
+        for k in KNOWN_KEYS {
+            table.remove(*k);
+        }
+        let mine = toml::Table::try_from(self).map_err(|e| e.to_string())?;
+        for (k, v) in mine {
+            table.insert(k, v);
+        }
+        let text = toml::to_string_pretty(&table).map_err(|e| e.to_string())?;
+        let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
+        std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
     }
 }
 
@@ -106,6 +159,11 @@ impl Config {
         };
         let text = std::fs::read_to_string(&path).map_err(|e| format!("config {}: {e}", path.display()))?;
         let file: File = toml::from_str(&text).map_err(|e| format!("config {}: {e}", path.display()))?;
+        Config::from_file(path, file)
+    }
+
+    /// A config from settings that were not read from the file (the Settings window checks what it is about to save).
+    pub fn from_file(path: PathBuf, file: File) -> Result<Config, String> {
         file.pair_primary.parse::<PairPrimary>().map_err(|e| e.to_string())?;
         let source = expand(&file.source)?;
         let state_dir = match &file.state_dir {
@@ -115,6 +173,14 @@ impl Config {
         let c = Config { path, file, source, state_dir };
         c.refuse_the_python_tools_folders()?;
         Ok(c)
+    }
+
+    /// Where the config is, given `--config`: that, else the default path.
+    pub fn resolve_path(path: Option<&Path>) -> Result<PathBuf, String> {
+        match path {
+            Some(p) => Ok(p.to_path_buf()),
+            None => default_config_path(),
+        }
     }
 
     /// This app never shares state with `lc-cloud`: refuse a state folder that is the Python tool's.
@@ -213,6 +279,28 @@ mod tests {
         assert_eq!((h.exclude, h.pair_primary, h.remote_label.as_str()), (vec!["a".to_string()], PairPrimary::Raw, "/tmp/r"));
         std::fs::write(&f, "remote = \"/tmp/r\"\npair_primary = \"tiff\"\nstate_dir = \"/tmp/lc-state-x\"\n").unwrap();
         assert!(Config::load(Some(&f)).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn saving_keeps_unknown_keys_and_drops_unset_ones() {
+        let d = std::env::temp_dir().join(format!("lc-desktop-cfg3-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let f = d.join("sub/c.toml");
+        let mut file = File { source: "/tmp/s".into(), remote: Some("gd:LC".into()), exclude: vec!["a".into()], notify: false, ..File::default() };
+        file.save(&f).unwrap(); // (creates the folder)
+        let back: File = toml::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+        assert_eq!(
+            (back.source.as_str(), back.remote.as_deref(), back.exclude.clone(), back.notify),
+            ("/tmp/s", Some("gd:LC"), vec!["a".to_string()], false)
+        );
+        // an older file with a key this app does not know, and a remote that is now unset
+        std::fs::write(&f, "remote = \"old:x\"\nphoto_backup_extra = \"keep me\"\n").unwrap();
+        file.remote = None;
+        file.save(&f).unwrap();
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(text.contains("photo_backup_extra = \"keep me\"") && !text.contains("old:x") && !text.contains("remote ="), "{text}");
+        assert!(!f.with_extension("toml.tmp").exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 

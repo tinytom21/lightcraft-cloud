@@ -1,5 +1,21 @@
-//! LightCraft Cloud for the PC: the config file, and LightCraft's engine as the sync crate's renderer. The command line is
-//! `main.rs`; the sync itself is `lightcraft_cloud_client::home`.
+//! LightCraft Cloud for the PC: the always-running app (a tray icon, a background engine, a Status and a Settings window), the
+//! command line, and LightCraft's engine as the sync crate's renderer. The command line is `main.rs`; the sync itself is
+//! `lightcraft_cloud_client::home`.
+//!
+//! * [`scheduler`], [`service`], [`watcher`], [`worker`]: the background engine (UI-independent; tests move a fake [`clock`]);
+//! * [`appstate`], [`config`], [`settings`], [`autostart`], [`instance`], [`backup`], [`notifier`]: what it keeps and uses;
+//! * [`ui`], [`tray`], [`app`]: the windows (egui, in a process of their own), the tray icon, and what ties them together.
 
+pub mod appstate;
+pub mod autostart;
+pub mod backup;
+pub mod clock;
 pub mod config;
 pub mod engine;
+pub mod instance;
+pub mod notifier;
+pub mod scheduler;
+pub mod service;
+pub mod settings;
+pub mod watcher;
+pub mod worker;

@@ -33,6 +33,16 @@ lightcraft-raster = { git = "https://github.com/storytold/lightcraft", tag = "v0
 
 toml = "1"
 
+# The desktop app: folder watching, desktop notifications (pure Rust over D-Bus), the tray icon (its `ksni` backend: no GTK, no
+# libappindicator, a StatusNotifierItem over D-Bus), and the egui windows at the version LightCraft v0.15.0 uses.
+notify = "8"
+notify-rust = "4"
+tray-icon = { version = "0.26", default-features = false, features = ["ksni"] }
+egui = { version = "0.37", default-features = false, features = ["default_fonts"] }
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui_kittest = "0.37"
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+
 [workspace.lints.rust]
 unsafe_code = "deny"
 
