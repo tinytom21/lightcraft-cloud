@@ -118,7 +118,7 @@ are ignored, so a Python config can be reused. State in `~/.local/state/lightcra
 | `device_history_days`, `photo_backup` | `30`, `"restic"` | the weekly purge: age limit; the backup command it asks (`photo_backup snapshots --latest 1 --json`); `""` switches the purge off |
 | `state_dir` | `~/.local/state/lightcraft-cloud-desktop` | must not be under `~/Pictures` |
 | `rclone_config` | `$RCLONE_CONFIG`, else `~/.config/rclone/rclone.conf` | rclone config used for an rclone remote |
-| `librclone` | `$LIBRCLONE`, else the system search path | the host `librclone.so` (see "Building the Rust part") |
+| `librclone` | `$LIBRCLONE`, else `librclone.so` next to the executable, else `~/.local/lib/lightcraft-cloud/librclone.so`, else the system search path | the host `librclone.so` (see "Building the Rust part"); the desktop app looks in that order, so an installed app needs the library in one of those places |
 
 ### Rendering
 

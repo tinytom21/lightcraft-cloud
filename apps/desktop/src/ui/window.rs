@@ -47,7 +47,7 @@ impl Window {
 }
 
 impl eframe::App for Window {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.refresh();
         ui.ctx().request_repaint_after(Duration::from_secs(1));
         if !self.setup_only {
@@ -62,7 +62,7 @@ impl eframe::App for Window {
                 status::show(ui, &StatusView { status: self.status.as_ref(), running: self.running, now: SystemTime::now() })
             }
             _ => {
-                self.settings.show(ui);
+                self.settings.show_with_parent(ui, Some(frame));
                 if self.settings.saved && self.setup_only {
                     self.setup_only = false;
                     self.tab = Tab::Status;
@@ -117,9 +117,6 @@ fn list_remotes(file: &File) -> Result<Vec<String>, String> {
             None => config::home_dir()?.join(".config/rclone/rclone.conf"),
         },
     };
-    let lib: Option<PathBuf> = match &file.librclone {
-        Some(l) => Some(config::expand(l)?),
-        None => std::env::var_os("LIBRCLONE").filter(|v| !v.is_empty()).map(PathBuf::from),
-    };
+    let lib = config::find_librclone(file.librclone.as_deref())?;
     lightcraft_cloud_client::list_remotes(lib.as_deref(), &conf).map_err(|e| e.to_string())
 }

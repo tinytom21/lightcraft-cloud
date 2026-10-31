@@ -4,13 +4,21 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use egui::{Color32, RichText, Ui};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 use crate::settings::{Form, SaveEnv, Storage};
+
+/// The window a dialog belongs to (eframe's `Frame`): without a parent the desktop portal cannot place the dialog and it
+/// can end up hidden behind the window.
+pub trait Parent: HasWindowHandle + HasDisplayHandle {}
+impl<T: HasWindowHandle + HasDisplayHandle + ?Sized> Parent for T {}
 
 /// Picks a folder (the real one opens the desktop's dialog on a thread of its own, so the window keeps painting).
 pub trait FolderPicker {
     /// Start choosing; the result arrives through [`FolderPicker::poll`].
-    fn start(&mut self, from: &str);
+    fn start(&mut self, from: &str, parent: Option<&dyn Parent>);
+    /// Whether a dialog is open (the window keeps repainting so its result shows without mouse movement).
+    fn waiting(&self) -> bool;
     fn poll(&mut self) -> Option<PathBuf>;
 }
 
@@ -20,20 +28,28 @@ pub struct RfdPicker {
 }
 
 impl FolderPicker for RfdPicker {
-    fn start(&mut self, from: &str) {
+    fn start(&mut self, from: &str, parent: Option<&dyn Parent>) {
         if self.rx.is_some() {
             return;
         }
         let (tx, rx) = channel();
         self.rx = Some(rx);
         let from = crate::config::expand(from).ok().filter(|p| p.is_dir());
+        // Built here, where the window handle is at hand; rfd's `FileDialog` is `Send` and only carries the raw window id.
+        let mut d = rfd::FileDialog::new().set_title("Choose the photo folder");
+        if let Some(p) = parent {
+            d = d.set_parent(p);
+        }
+        if let Some(f) = from {
+            d = d.set_directory(f);
+        }
         std::thread::spawn(move || {
-            let mut d = rfd::FileDialog::new().set_title("Choose the photo folder");
-            if let Some(f) = from {
-                d = d.set_directory(f);
-            }
             let _ = tx.send(d.pick_folder());
         });
+    }
+
+    fn waiting(&self) -> bool {
+        self.rx.is_some()
     }
 
     fn poll(&mut self) -> Option<PathBuf> {
@@ -95,8 +111,16 @@ impl SettingsPanel {
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
+        self.show_with_parent(ui, None);
+    }
+
+    /// [`SettingsPanel::show`], with the window that Browse… dialogs belong to.
+    pub fn show_with_parent(&mut self, ui: &mut Ui, parent: Option<&dyn Parent>) {
         if let Some(p) = self.picker.poll() {
             self.form.source = p.to_string_lossy().into_owned();
+        }
+        if self.picker.waiting() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
         }
         ui.heading(if self.setup { "Set up LightCraft Cloud" } else { "Settings" });
         if self.setup {
@@ -108,7 +132,7 @@ impl SettingsPanel {
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.form.source).desired_width(380.0).hint_text("/path/to/your/photos")).labelled_by(label.id);
             if ui.button("Browse…").clicked() {
-                self.picker.start(&self.form.source);
+                self.picker.start(&self.form.source, parent);
             }
         });
         ui.add_space(6.0);

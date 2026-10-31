@@ -233,14 +233,29 @@ impl Config {
                 None => home_dir()?.join(".config/rclone/rclone.conf"),
             },
         };
-        let lib: Option<PathBuf> = match &self.file.librclone {
-            Some(l) => Some(expand(l)?),
-            None => std::env::var_os("LIBRCLONE").filter(|v| !v.is_empty()).map(PathBuf::from),
-        };
+        let lib = find_librclone(self.file.librclone.as_deref())?;
         RcloneRemote::open(lib.as_deref(), &conf, spec, Some(&self.state_dir.join("rclone-tmp")))
             .map(|r| Arc::new(r) as Arc<dyn Remote>)
             .map_err(|e| e.to_string())
     }
+}
+
+/// Where to load `librclone.so` from: the config's `librclone`, else `$LIBRCLONE`, else the first of `librclone.so` next to the
+/// running executable (symlinks resolved) and `~/.local/lib/lightcraft-cloud/librclone.so` that exists. `None` leaves it to the
+/// dynamic loader's search path.
+pub fn find_librclone(configured: Option<&str>) -> Result<Option<PathBuf>, String> {
+    let configured = configured.map(expand).transpose()?;
+    let env = std::env::var_os("LIBRCLONE").filter(|v| !v.is_empty()).map(PathBuf::from);
+    let exe = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok());
+    Ok(librclone_in(configured, env, exe.as_deref(), home_dir().ok().as_deref()))
+}
+
+fn librclone_in(configured: Option<PathBuf>, env: Option<PathBuf>, exe: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
+    configured.or(env).or_else(|| {
+        let beside_exe = exe.and_then(Path::parent).map(|d| d.join("librclone.so"));
+        let in_home = home.map(|h| h.join(".local/lib/lightcraft-cloud/librclone.so"));
+        beside_exe.into_iter().chain(in_home).find(|p| p.is_file())
+    })
 }
 
 /// `Some(folder)` when `spec` names a local folder rather than an rclone remote.
@@ -255,6 +270,25 @@ pub fn local_remote(spec: &str) -> Result<Option<PathBuf>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn librclone_is_looked_for_in_order() {
+        let d = std::env::temp_dir().join(format!("lc-desktop-lib-{}", std::process::id()));
+        let (bin, home) = (d.join("bin"), d.join("home"));
+        let home_lib = home.join(".local/lib/lightcraft-cloud");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&home_lib).unwrap();
+        let exe = bin.join("lightcraft-cloud-desktop");
+        let find = |c: Option<&str>, e: Option<&str>| librclone_in(c.map(PathBuf::from), e.map(PathBuf::from), Some(&exe), Some(&home));
+        assert_eq!(find(None, None), None);
+        std::fs::write(home_lib.join("librclone.so"), "").unwrap();
+        assert_eq!(find(None, None), Some(home_lib.join("librclone.so")));
+        std::fs::write(bin.join("librclone.so"), "").unwrap();
+        assert_eq!(find(None, None), Some(bin.join("librclone.so")));
+        assert_eq!(find(None, Some("/env/librclone.so")), Some(PathBuf::from("/env/librclone.so")));
+        assert_eq!(find(Some("/cfg/librclone.so"), Some("/env/librclone.so")), Some(PathBuf::from("/cfg/librclone.so")));
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn local_folders_and_rclone_remotes_are_told_apart() {
