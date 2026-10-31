@@ -70,10 +70,9 @@ impl eframe::App for Window {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.refresh();
         ui.ctx().request_repaint_after(Duration::from_secs(1));
-        if let Some(t) = self.pending.lock().unwrap_or_else(|e| e.into_inner()).take() {
-            if !self.setup_only {
-                self.tab = t;
-            }
+        let asked = self.pending.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(t) = asked.filter(|_| !self.setup_only) {
+            self.tab = t;
         }
         if !self.setup_only {
             ui.horizontal(|ui| {

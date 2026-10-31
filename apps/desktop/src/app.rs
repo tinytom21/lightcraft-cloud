@@ -113,10 +113,11 @@ struct Windows {
 
 impl Windows {
     fn open(&mut self, kind: &'static str) {
-        if let Some((child, stdin)) = &mut self.open {
-            if child.try_wait().ok().flatten().is_none() && writeln!(stdin, "{kind}").and_then(|()| stdin.flush()).is_ok() {
-                return;
-            }
+        if let Some((child, stdin)) = &mut self.open
+            && child.try_wait().ok().flatten().is_none()
+            && writeln!(stdin, "{kind}").and_then(|()| stdin.flush()).is_ok()
+        {
+            return;
         }
         self.close_all(); // (gone, or not listening: start over)
         let mut cmd = std::process::Command::new(&self.exe);
