@@ -73,6 +73,8 @@ pub struct SyncOutcome {
     pub downloaded: usize,
     /// Things the user can act on, one line each (the other PC's role).
     pub problems: Vec<String>,
+    /// The other PC's role: new photos were not ready (still being copied, or not all hashed yet): look again after this long.
+    pub recheck: Option<Duration>,
 }
 
 /// What telling LightCraft about the adopted photos did (see [`crate::pending`]).
@@ -104,6 +106,9 @@ pub struct QueueView {
     pub awaiting_home: usize,
     /// Photos the home PC refused that the user has not dealt with.
     pub rejected: usize,
+    /// Photos that were in the folder at the start and are not in the library (held back), and how many are not looked at yet.
+    pub held: usize,
+    pub held_unchecked: usize,
 }
 
 /// What one bounded upload job did.
@@ -160,6 +165,10 @@ pub trait Worker {
     fn queue_view(&mut self) -> Option<QueueView> {
         None
     }
+    /// The user pressed "Send them": the photos that were here at the start are to be queued (a pass does it).
+    fn send_requested(&mut self) -> bool {
+        false
+    }
     /// A bounded share of the upload queue: look for the home PC's answers, send some photos. Never holds a pass up: the work per
     /// call is limited, and the next call is a job of its own.
     fn upload_step(&mut self) -> Result<UploadOutcome, JobError> {
@@ -184,7 +193,7 @@ pub enum Command {
     FolderChanged,
     /// The config file changed.
     ConfigChanged,
-    /// The upload queue changed (the import window queued photos).
+    /// The upload queue changed (the Status window asked for photos to be sent, or a refused photo was dealt with).
     UploadsChanged,
     Quit,
 }
@@ -211,6 +220,8 @@ pub struct Service<W: Worker> {
     imports_stuck: usize,
     /// No try to reach LightCraft has been made since the app started.
     bridge_first: bool,
+    /// When the last sync wanted to be looked at again (new photos that were not ready yet).
+    recheck: Option<SystemTime>,
 }
 
 impl<W: Worker> Service<W> {
@@ -230,7 +241,7 @@ impl<W: Worker> Service<W> {
         {
             status.last_sync = Some(LastSync { when, ok: result.starts_with("ok"), result, photos, applied: 0, merged: 0, kept: 0 });
         }
-        let mut s = Service { worker, sched, clock, notifier, state_dir, persisted, status, info, sink, log, quit: false, announced: None, imports_stuck: 0, bridge_first: true };
+        let mut s = Service { worker, sched, clock, notifier, state_dir, persisted, status, info, sink, log, quit: false, announced: None, imports_stuck: 0, bridge_first: true, recheck: None };
         s.publish();
         s.refresh_queue(true);
         s
@@ -302,7 +313,12 @@ impl<W: Worker> Service<W> {
                     self.status.push_error(&self.iso(now), format!("settings: {e}"));
                 }
             },
-            Command::UploadsChanged => self.refresh_queue(false),
+            Command::UploadsChanged => {
+                self.refresh_queue(false);
+                if self.worker.send_requested() {
+                    self.sched.request_sync(Reason::SendHeld);
+                }
+            }
             Command::Quit => self.quit = true,
         }
         self.publish();
@@ -319,6 +335,8 @@ impl<W: Worker> Service<W> {
             o.uploads_bytes = v.bytes;
             o.awaiting_home = v.awaiting_home;
             o.rejected = v.rejected;
+            o.held = v.held;
+            o.held_unchecked = v.held_unchecked;
         }
         if v.to_upload > 0 {
             self.sched.want_upload(if starting { now + t.startup_delay } else { now });
@@ -351,6 +369,9 @@ impl<W: Worker> Service<W> {
             Job::Upload => self.run_upload(),
         };
         self.sched.ended(self.clock.now(), job, ended);
+        if let (Job::Sync(_), Some(t)) = (job, self.recheck.take()) {
+            self.sched.sync_by(t);
+        }
         self.publish();
         true
     }
@@ -387,6 +408,7 @@ impl<W: Worker> Service<W> {
                     view.received = self.status.other.as_ref().map_or(0, |v| v.received) + o.downloaded;
                     self.status.other = Some(view);
                 }
+                self.recheck = o.recheck.map(|d| self.clock.now() + d);
                 self.status.offline = false;
                 self.status.last_error = None;
                 self.announced = None;

@@ -251,15 +251,16 @@ fn paused_means_nothing_runs() {
 }
 
 #[test]
-fn a_config_without_folders_is_not_set_up() {
+fn a_config_without_folders_is_set_up_it_keeps_nothing_and_still_sends_what_was_imported() {
     let e = env("f", "other");
     let text = std::fs::read_to_string(&e.config).unwrap().replace("folders = [\"Lisbon\"]", "folders = []");
     std::fs::write(&e.config, text).unwrap();
     let spy = Spy::default();
     let mut svc = service(&e, &spy, false);
-    assert!(!svc.status().configured);
+    assert!(svc.status().configured);
     run_due(&mut svc, &e, 60);
-    assert!(!e.photos.join("Lisbon").exists());
+    assert!(!e.photos.join("Lisbon").exists(), "nothing is chosen, so nothing is downloaded");
+    assert!(svc.status().errors.is_empty(), "{:?}", svc.status().errors);
 }
 
 #[cfg(not(feature = "home"))]
@@ -285,19 +286,18 @@ fn the_light_build_given_a_home_config_says_so_once_and_does_not_sync() {
 
 use lightcraft_cloud_client::other::{ImportQueue, Other};
 
-/// Import `n` small photos from a made-up card into `Holiday` the way the Import window does (the sync crate's scan and copy).
+/// LightCraft imports `n` small photos into `Holiday/Day 1` (written straight into the photo folder), and this PC's pass notices them
+/// (here with no waiting for them to settle: a pass of the sync crate by hand, as the command line would run one).
 fn import_card(e: &Env, n: usize, tag: &str) {
-    let card = e.root.join(format!("card-{tag}"));
     for i in 0..n {
-        put(&card, &format!("DCIM/P{i:03}.jpg"), format!("card photo {tag} {i} ").repeat(40).as_bytes());
+        put(&e.photos, &format!("Holiday/Day 1/P{i:03}.jpg"), format!("card photo {tag} {i} ").repeat(40).as_bytes());
     }
     let cfg = Config::load(Some(&e.config)).unwrap();
-    let other = Other::new(cfg.other_config().unwrap(), Arc::new(DirRemote::new(&e.cloud))).unwrap();
-    let cancel = AtomicBool::new(false);
-    let scan = other.import_scan(&card, "Holiday", &mut |_| {}, &cancel).unwrap();
-    assert_eq!(scan.new.len(), n, "{scan:?}");
-    let run = other.import_run(&scan, &mut |_| {}, &cancel).unwrap();
-    assert_eq!(run.copied, n, "{run:?}");
+    let mut oc = cfg.other_config().unwrap();
+    oc.settle = Duration::ZERO;
+    let other = Other::new(oc, Arc::new(DirRemote::new(&e.cloud))).unwrap();
+    let r = other.sync().unwrap();
+    assert_eq!(r.picked_up, n, "{r:?}");
 }
 
 fn notes_in_cloud(e: &Env) -> usize {
@@ -423,121 +423,91 @@ fn a_sidecar_edit_is_sent_before_the_rest_of_a_long_queue() {
     assert_eq!(notes_in_cloud(&e), 60);
 }
 
+// ------------------------------------------------------------------ noticing what LightCraft imported, through the app
+
+fn write_photo(e: &Env, rel: &str, tag: &str) {
+    put(&e.photos, rel, format!("imported in lightcraft {tag} ").repeat(40).as_bytes());
+}
+
 #[test]
-fn the_real_backend_scans_and_copies_in_the_background_chooses_the_folder_queues_and_tells_lightcraft() {
-    use lightcraft_cloud_desktop::pending::PendingList;
-    use lightcraft_cloud_desktop::ui::ImportBackend;
-    use lightcraft_cloud_desktop::ui::import_panel::{Event, ThreadBackend};
-    let e = env("backend", "other");
-    let card = e.root.join("card-z");
-    for i in 0..3 {
-        put(&card, &format!("DCIM/P{i}.jpg"), format!("backend photo {i} ").repeat(30).as_bytes());
-    }
-    put(&card, "DCIM/P0.xmp", b"<x:xmpmeta>not a real sidecar</x:xmpmeta>");
-    let mut b = ThreadBackend::new(&e.config).expect("another PC's config");
-    assert_eq!(b.folders(), ["Lisbon"]);
-    assert!(b.check("../x").is_err() && b.check("Holiday").is_ok());
-    assert!(b.lightcraft_on(), "the test config has the link on");
-    let off = env("backend-off", "other");
-    let text = std::fs::read_to_string(&off.config).unwrap().replace("lightcraft_control_port = 7999", "lightcraft_control_port = 0");
-    std::fs::write(&off.config, text).unwrap();
-    assert!(!ThreadBackend::new(&off.config).unwrap().lightcraft_on());
-    let wait = |b: &mut ThreadBackend| {
-        for _ in 0..400 {
-            let ev = b.poll();
-            if let Some(ev) = ev.into_iter().next() {
-                return ev;
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        panic!("the background job did not finish");
-    };
-    b.scan(card.clone(), "Holiday".into());
-    assert!(b.busy());
-    let Event::Scanned(Ok(scan)) = wait(&mut b) else { panic!("scan") };
-    assert_eq!((scan.new.len(), scan.in_library, scan.library_checked), (3, 0, true), "{scan:?}");
-    b.import(scan);
-    let Event::Imported(Ok(run), chosen) = wait(&mut b) else { panic!("import") };
-    assert_eq!((run.copied, chosen.as_deref()), (3, Some("Holiday")), "{run:?}");
-    assert!(!b.busy());
-    // the destination is a chosen folder in the config (the app picks that up), the rest of the config is as it was
+fn photos_written_into_nested_folders_are_found_after_they_settle_sent_and_their_folders_chosen_and_lightcraft_is_not_told() {
+    let e = env("found", "other");
+    let spy = Spy::default();
+    let mut svc = service(&e, &spy, false);
+    run_due(&mut svc, &e, 20);
+    let told_before = e.lightcraft.0.lock().unwrap().len();
+    write_photo(&e, "2026/261101 - Lisbon/Day 1/A.jpg", "a");
+    write_photo(&e, "2026/261101 - Lisbon/Day 2/B.jpg", "b");
+    write_photo(&e, "Root.jpg", "r");
+    svc.handle(Command::FolderChanged);
+    // 30 quiet seconds later the pass looks: the files are brand new, so nothing is taken yet, and another look is planned
+    run_due(&mut svc, &e, 31);
+    assert_eq!(notes_in_cloud(&e), 0);
+    assert_eq!(ImportQueue::new(&e.state).list().len(), 0);
+    // two minutes later they have settled: found, queued, sent
+    run_due(&mut svc, &e, 125);
+    run_due(&mut svc, &e, 2);
+    assert_eq!(notes_in_cloud(&e), 3, "{:?}", svc.status());
     let c = Config::load(Some(&e.config)).unwrap();
-    assert_eq!(c.file.folders, ["Lisbon", "Holiday"]);
-    assert_eq!(c.device(), "laptop");
-    // queued for the home PC, and LightCraft will be told (the same durable list the downloads use)
-    assert_eq!(ImportQueue::new(&e.state).list().len(), 3);
-    let told = PendingList::new(&e.state).list();
-    assert_eq!(told.len(), 3);
-    assert!(told.iter().all(|t| t.path.starts_with(&e.photos.display().to_string()) && t.path.contains("Holiday")));
-    // the card is as it was
-    assert_eq!(std::fs::read_dir(card.join("DCIM")).unwrap().count(), 4);
-    // the same card again: nothing new
-    b.scan(card, "Holiday".into());
-    let Event::Scanned(Ok(again)) = wait(&mut b) else { panic!("scan") };
-    assert_eq!((again.new.len(), again.on_this_pc), (0, 3));
-    // a home PC's config is not an import window's
-    let home = env("backend-home", "home");
-    assert!(ThreadBackend::new(&home.config).is_none());
-}
-
-#[test]
-fn a_refused_photo_keeps_the_state_off_green_across_a_restart_until_try_again_or_keep_here() {
-    use lightcraft_cloud_desktop::appstate::HealthKind;
-    let e = env("refused", "other");
-    let spy = Spy::default();
-    let mut svc = service(&e, &spy, false);
-    run_due(&mut svc, &e, 20);
-    import_card(&e, 2, "r");
-    svc.handle(Command::UploadsChanged);
-    run_due(&mut svc, &e, 2);
-    let ids: Vec<String> = ImportQueue::new(&e.state).list().into_iter().map(|x| x.id).collect();
-    // the home PC refuses one and adds the other
-    for (i, id) in ids.iter().enumerate() {
-        let (st, why) = if i == 0 { ("rejected", json!("the downloaded P000.jpg does not match its note")) } else { ("added", json!(null)) };
-        put(&e.cloud, &format!("imports-done/2026-11-01/laptop/{id}.result.json"), json!({"id": id, "status": st, "path": null, "reason": why}).to_string().as_bytes());
+    for f in ["2026/261101 - Lisbon/Day 1", "2026/261101 - Lisbon/Day 2", ""] {
+        assert!(c.file.folders.iter().any(|x| x == f), "{f:?} is a chosen folder now: {:?}", c.file.folders);
     }
-    run_due(&mut svc, &e, 5 * 60);
-    let h = svc.status().health();
-    assert_eq!((h.kind, h.text.as_str()), (HealthKind::Problem, "1 photo the home PC refused"), "{:?}", svc.status());
-    // a restart: still counted, not green
-    drop(svc);
-    let mut svc = service(&e, &spy, false);
-    assert_eq!(svc.status().other.as_ref().map(|o| o.rejected), Some(1));
-    assert_eq!(svc.status().health().kind, HealthKind::Problem);
-    run_due(&mut svc, &e, 15 * 60);
-    assert_eq!(svc.status().health().kind, HealthKind::Problem, "nothing clears it by itself");
-    // "Keep on this PC only": accepted, cleared, restart-proof, the file stays
-    assert_eq!(ImportQueue::new(&e.state).keep_refused(), 1);
-    svc.handle(Command::UploadsChanged);
-    assert_eq!(svc.status().other.as_ref().map(|o| o.rejected), Some(0));
-    assert_ne!(svc.status().health().kind, HealthKind::Problem);
-    drop(svc);
-    let svc = service(&e, &spy, false);
-    assert_eq!(svc.status().other.as_ref().map(|o| o.rejected), Some(0));
-    assert!(e.photos.join("Holiday/P000.jpg").exists());
+    assert!(c.file.folders.iter().any(|x| x == "Lisbon"), "what was chosen stays");
+    let note = std::fs::read_dir(e.cloud.join("imports/laptop")).unwrap().flatten().find(|f| f.file_name().to_string_lossy().ends_with(".json")).unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(note.path()).unwrap()).unwrap();
+    assert!(v["folder"].as_str().is_some_and(|f| f.is_empty() || f.starts_with("2026/261101 - Lisbon/Day ")), "{v}");
+    // LightCraft imported them: it is not told (only downloads go through the pending list)
+    assert_eq!(e.lightcraft.0.lock().unwrap().len(), told_before);
+    let pending = lightcraft_cloud_desktop::pending::PendingList::new(&e.state).list();
+    assert!(pending.iter().all(|p| !p.path.contains("Day 1") && !p.path.contains("Root.jpg")), "{pending:?}");
 }
 
 #[test]
-fn try_again_puts_the_refused_photos_back_in_the_queue_and_the_app_sends_them() {
-    let e = env("refused2", "other");
+fn paused_nothing_is_found_or_sent_and_offline_a_new_photo_is_still_queued() {
+    use lightcraft_cloud_desktop::appstate::HealthKind;
+    let e = env("found2", "other");
     let spy = Spy::default();
     let mut svc = service(&e, &spy, false);
     run_due(&mut svc, &e, 20);
-    import_card(&e, 1, "t");
-    svc.handle(Command::UploadsChanged);
-    run_due(&mut svc, &e, 2);
-    let id = ImportQueue::new(&e.state).list().remove(0).id;
-    put(&e.cloud, &format!("imports-done/2026-11-01/laptop/{id}.result.json"), json!({"id": id, "status": "rejected", "path": null, "reason": "damaged"}).to_string().as_bytes());
+    svc.handle(Command::Pause);
+    write_photo(&e, "Trip/A.jpg", "p");
+    svc.handle(Command::FolderChanged);
+    run_due(&mut svc, &e, 3 * 86_400);
+    assert!(ImportQueue::new(&e.state).list().is_empty() && notes_in_cloud(&e) == 0, "paused: no pickup work, nothing sent");
+    svc.handle(Command::Resume);
+    e.offline.store(true, Ordering::SeqCst);
+    run_due(&mut svc, &e, 1);
+    run_due(&mut svc, &e, 15 * 60);
+    run_due(&mut svc, &e, 15 * 60);
+    assert_eq!(ImportQueue::new(&e.state).list().len(), 1, "offline, the photo was noticed and queued");
+    assert_eq!(notes_in_cloud(&e), 0);
+    let s = svc.status();
+    assert_eq!(s.errors.iter().map(|x| x.text.as_str()).collect::<Vec<_>>(), [OFFLINE_LINE]);
+    assert_eq!(s.health().kind, HealthKind::Offline);
+    e.offline.store(false, Ordering::SeqCst);
+    run_due(&mut svc, &e, 15 * 60);
     run_due(&mut svc, &e, 5 * 60);
-    assert_eq!(svc.status().other.as_ref().map(|o| o.rejected), Some(1));
-    // the home PC moved the files away when it answered
-    std::fs::remove_file(e.cloud.join(format!("imports/laptop/{id}.json"))).unwrap();
-    std::fs::remove_dir_all(e.cloud.join(format!("imports/laptop/{id}"))).unwrap();
-    assert_eq!(ImportQueue::new(&e.state).retry_refused(), 1);
+    assert_eq!(notes_in_cloud(&e), 1);
+}
+
+#[test]
+fn the_photos_that_were_there_at_the_start_wait_for_send_them_and_the_status_counts_them() {
+    let e = env("baseline", "other");
+    write_photo(&e, "Old/A.jpg", "old a");
+    write_photo(&e, "Old/B.jpg", "old b");
+    let spy = Spy::default();
+    let mut svc = service(&e, &spy, false);
+    run_due(&mut svc, &e, 20); // the first look: the baseline
+    run_due(&mut svc, &e, 15 * 60);
+    assert_eq!(svc.status().other.as_ref().map(|o| o.held), Some(2), "{:?}", svc.status());
+    assert_eq!(notes_in_cloud(&e), 0);
+    let h = svc.status().health();
+    assert_eq!(h.text, "Up to date", "informational: the user did not ask for them to be sent");
+    // "Send them" (the Status window writes the request; the app notices the queue folder change and looks)
+    ImportQueue::new(&e.state).request_send_held();
     svc.handle(Command::UploadsChanged);
-    let o = svc.status().other.clone().unwrap();
-    assert_eq!((o.rejected, o.uploads_waiting), (0, 1));
+    run_due(&mut svc, &e, 1);
     run_due(&mut svc, &e, 2);
-    assert!(e.cloud.join(format!("imports/laptop/{id}.json")).exists(), "sent again");
-    assert!(e.photos.join("Holiday/P000.jpg").exists());
+    assert_eq!(notes_in_cloud(&e), 2);
+    assert_eq!(svc.status().other.as_ref().map(|o| o.held), Some(0));
 }

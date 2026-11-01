@@ -12,7 +12,6 @@ use crate::autostart;
 use crate::config::{self, Config, File};
 use crate::instance::InstanceLock;
 use crate::settings::{Form, SaveEnv};
-use crate::ui::import_panel::{ImportPanel, ThreadBackend};
 use crate::ui::settings_panel::SettingsPanel;
 use crate::ui::status::{self, StatusAction, StatusView};
 use lightcraft_cloud_client::other::ImportQueue;
@@ -21,8 +20,6 @@ use crate::ui::theme;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Status,
-    /// Another PC only: import photos from a card or a folder.
-    Import,
     Settings,
 }
 
@@ -30,7 +27,6 @@ impl Tab {
     pub fn parse(s: &str) -> Option<Tab> {
         match s {
             "status" => Some(Tab::Status),
-            "import" => Some(Tab::Import),
             "settings" | "setup" => Some(Tab::Settings),
             _ => None,
         }
@@ -58,8 +54,6 @@ struct Window {
     /// The title still says "Set up ..." until the first save.
     retitle: bool,
     settings: SettingsPanel,
-    /// Another PC only.
-    import: Option<ImportPanel>,
     state_dir: PathBuf,
     status: Option<AppStatus>,
     running: bool,
@@ -80,15 +74,11 @@ impl eframe::App for Window {
         ui.ctx().request_repaint_after(Duration::from_secs(1));
         let asked = self.pending.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(t) = asked.filter(|_| !self.setup_only) {
-            self.tab = if t == Tab::Import && self.import.is_none() { Tab::Status } else { t };
+            self.tab = t;
         }
         if !self.setup_only {
-            let has_import = self.import.is_some();
             theme::top_bar(ui, |ui| {
-                for (tab, label) in [(Tab::Status, "Status"), (Tab::Import, "Import"), (Tab::Settings, "Settings")] {
-                    if tab == Tab::Import && !has_import {
-                        continue;
-                    }
+                for (tab, label) in [(Tab::Status, "Status"), (Tab::Settings, "Settings")] {
                     if theme::tab(ui, self.tab == tab, label).clicked() {
                         self.tab = tab;
                     }
@@ -98,7 +88,7 @@ impl eframe::App for Window {
         theme::page(ui, |ui| match self.tab {
             Tab::Status if !self.setup_only => {
                 let queue = ImportQueue::new(&self.state_dir);
-                let refused = if self.import.is_some() { status::refused_lines(&queue.refused()) } else { Vec::new() };
+                let refused = status::refused_lines(&queue.refused());
                 match status::show_with_actions(ui, &StatusView { status: self.status.as_ref(), running: self.running, now: SystemTime::now() }, &refused) {
                     // (the app picks the change up from the queue folder; the photos stay where they are)
                     Some(StatusAction::TryAgain) => {
@@ -107,16 +97,8 @@ impl eframe::App for Window {
                     Some(StatusAction::KeepHere) => {
                         queue.keep_refused();
                     }
+                    Some(StatusAction::SendHeld) => queue.request_send_held(),
                     None => {}
-                }
-            }
-            Tab::Import if !self.setup_only && self.import.is_some() => {
-                if let Some(panel) = self.import.as_mut() {
-                    panel.show(ui, Some(frame));
-                    // (the destination is a folder this PC keeps now: Settings must not save it away again)
-                    for f in panel.take_chosen() {
-                        self.settings.form.set_folder(&f, true);
-                    }
                 }
             }
             _ => {
@@ -152,15 +134,12 @@ pub fn run_window(tab: Tab, config_path: Option<PathBuf>) -> Result<(), String> 
     let remotes = list_remotes(&file);
     let env = SaveEnv { config_path: path.clone(), autostart_dir, exe: std::env::current_exe().map_err(|e| e.to_string())? };
     let setup_only = !exists;
-    let import = if exists && file.role == config::Role::Other { ThreadBackend::new(&path).map(|b| ImportPanel::new(Box::new(b))) } else { None };
     let title = if setup_only { "Set up LightCraft Cloud" } else { "LightCraft Cloud" };
-    let import_missing = import.is_none();
     let mut win = Window {
-        tab: if setup_only { Tab::Settings } else if tab == Tab::Import && import_missing { Tab::Status } else { tab },
+        tab: if setup_only { Tab::Settings } else { tab },
         pending: Arc::new(Mutex::new(None)),
         retitle: setup_only,
         settings: SettingsPanel::new(form, remotes, env, setup_only),
-        import,
         state_dir,
         status: None,
         running: false,

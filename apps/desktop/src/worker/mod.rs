@@ -169,6 +169,13 @@ impl Worker for RoleWorker {
         }
     }
 
+    fn send_requested(&mut self) -> bool {
+        match self.role {
+            Role::Other => self.other.send_requested(),
+            Role::Home => false,
+        }
+    }
+
     fn upload_step(&mut self) -> Result<UploadOutcome, JobError> {
         match self.role {
             Role::Other => self.other.upload_step(),

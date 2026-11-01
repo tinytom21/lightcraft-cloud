@@ -1,6 +1,6 @@
 //! The tray icon. Five pictures: idle (green), syncing (blue), amber (phone edits or anything else waiting, offline), paused (grey), red
-//! (a failure or a problem); uploading shares the syncing picture. Idle only when truly settled. Menu: Sync now, Pause/Resume, Import
-//! photos… (another PC only), Status…, Settings…, Quit. The icons are generated here (a disc with a lens ring), so there are no image files.
+//! (a failure or a problem); uploading shares the syncing picture. Idle only when truly settled. Menu: Sync now, Pause/Resume, Status…,
+//! Settings…, Quit. The icons are generated here (a disc with a lens ring), so there are no image files.
 //!
 //! On Linux the icon is a StatusNotifierItem over D-Bus (`tray-icon`'s `ksni` backend: no GTK and no libappindicator to
 //! install). The desktop needs a tray host: KDE has one, GNOME needs its AppIndicator extension (Ubuntu ships it).
@@ -12,8 +12,6 @@ use crate::appstate::TrayState;
 pub enum MenuAction {
     SyncNow,
     PauseResume,
-    /// Another PC only: open the window that imports photos from a card or a folder.
-    ImportPhotos,
     Status,
     Settings,
     Quit,
@@ -80,17 +78,10 @@ mod linux {
 
     pub struct Tray {
         icon: TrayIcon,
-        menu: Menu,
         pause: MenuItem,
-        /// "Import photos…": in the menu only on another PC.
-        import: MenuItem,
-        import_shown: bool,
         ids: Vec<(MenuId, MenuAction)>,
-        shown: Option<(TrayState, bool, bool)>,
+        shown: Option<(TrayState, bool)>,
     }
-
-    /// Where "Import photos…" sits in the menu: after Sync now and Pause.
-    const IMPORT_AT: usize = 2;
 
     fn icon_of(state: TrayState) -> Result<Icon, String> {
         Icon::from_rgba(icon_rgba(state, ICON_SIZE), ICON_SIZE, ICON_SIZE).map_err(|e| e.to_string())
@@ -102,24 +93,19 @@ mod linux {
             let menu = Menu::new();
             let sync = MenuItem::new("Sync now", true, None);
             let pause = MenuItem::new(pause_label(status.paused), true, None);
-            let import = MenuItem::new("Import photos\u{2026}", true, None);
-            let is_other = status.other.is_some();
             let st = MenuItem::new("Status…", true, None);
             let se = MenuItem::new("Settings…", true, None);
             let quit = MenuItem::new("Quit", true, None);
             let e = |e: tray_icon::menu::Error| e.to_string();
             menu.append(&sync).map_err(e)?;
             menu.append(&pause).map_err(e)?;
-            if is_other {
-                menu.append(&import).map_err(e)?;
-            }
             menu.append(&PredefinedMenuItem::separator()).map_err(e)?;
             menu.append(&st).map_err(e)?;
             menu.append(&se).map_err(e)?;
             menu.append(&PredefinedMenuItem::separator()).map_err(e)?;
             menu.append(&quit).map_err(e)?;
             let icon = TrayIconBuilder::new()
-                .with_menu(Box::new(menu.clone()))
+                .with_menu(Box::new(menu))
                 .with_icon(icon_of(state)?)
                 .with_tooltip(state.tooltip())
                 .with_title("LightCraft Cloud")
@@ -128,12 +114,11 @@ mod linux {
             let ids = vec![
                 (sync.id().clone(), MenuAction::SyncNow),
                 (pause.id().clone(), MenuAction::PauseResume),
-                (import.id().clone(), MenuAction::ImportPhotos),
                 (st.id().clone(), MenuAction::Status),
                 (se.id().clone(), MenuAction::Settings),
                 (quit.id().clone(), MenuAction::Quit),
             ];
-            Ok(Tray { icon, menu, pause, import, import_shown: is_other, ids, shown: Some((state, status.paused, is_other)) })
+            Ok(Tray { icon, pause, ids, shown: Some((state, status.paused)) })
         }
 
         pub fn action(&self, id: &MenuId) -> Option<MenuAction> {
@@ -142,14 +127,9 @@ mod linux {
 
         /// Follow the status: icon, tooltip, and the Pause/Resume label (only when something changed).
         pub fn update(&mut self, status: &AppStatus) {
-            let now = (status.tray_state(), status.paused, status.other.is_some());
+            let now = (status.tray_state(), status.paused);
             if self.shown == Some(now) {
                 return;
-            }
-            if now.2 != self.import_shown {
-                // (the role was changed in Settings)
-                let _ = if now.2 { self.menu.insert(&self.import, IMPORT_AT) } else { self.menu.remove(&self.import) };
-                self.import_shown = now.2;
             }
             if let Ok(i) = icon_of(now.0) {
                 let _ = self.icon.set_icon(Some(i));

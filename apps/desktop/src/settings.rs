@@ -191,9 +191,6 @@ impl Form {
                 Err(e) => p.push(e),
             }
         }
-        if self.folders.is_empty() {
-            p.push("Tick at least one folder to keep on this PC.".to_string());
-        }
         let device = self.device.trim();
         if !device.is_empty() && !valid_device(device) {
             p.push("The name of this PC may use letters, digits, - _ and . only (up to 64 characters).".to_string());
@@ -345,14 +342,14 @@ mod tests {
     }
 
     #[test]
-    fn another_pc_needs_a_folder_here_folders_to_keep_and_a_valid_name() {
+    fn another_pc_needs_a_folder_here_and_a_valid_name_and_no_folder_to_keep_is_fine() {
         let d = temp("e");
         let mut f = Form::first_run(false);
         f.set_role(Role::Other);
         assert!(f.source.is_empty(), "the home PC's usual folder is not offered");
         f.storage = Storage::Local { dir: d.join("lib").to_string_lossy().into_owned() };
         let p = f.problems(None);
-        assert_eq!(p.len(), 2, "{p:?}"); // (no folder here, nothing ticked)
+        assert_eq!(p.len(), 1, "{p:?}"); // (no folder here; nothing ticked is fine: photos imported there are sent)
         f.source = d.join("pc-photos").to_string_lossy().into_owned(); // (does not exist yet: made when saved)
         f.set_folder("Lisbon", true);
         assert!(f.problems(None).is_empty());

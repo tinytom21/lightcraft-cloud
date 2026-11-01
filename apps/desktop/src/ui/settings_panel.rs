@@ -35,15 +35,9 @@ const RESTART_AFTER: Duration = Duration::from_secs(5);
 pub struct RfdPicker {
     rx: Option<Receiver<Option<PathBuf>>>,
     since: Option<Instant>,
-    /// The dialog's title; empty: "Choose the photo folder".
-    title: &'static str,
 }
 
 impl RfdPicker {
-    pub fn with_title(title: &'static str) -> RfdPicker {
-        RfdPicker { title, ..RfdPicker::default() }
-    }
-
     /// A sender for a new dialog, unless one was started less than `wait` ago and is still open; an older one is dropped.
     fn begin(&mut self, now: Instant, wait: Duration) -> Option<Sender<Option<PathBuf>>> {
         if self.rx.is_some() && self.since.is_some_and(|t| now.saturating_duration_since(t) < wait) {
@@ -61,7 +55,7 @@ impl FolderPicker for RfdPicker {
         let Some(tx) = self.begin(Instant::now(), RESTART_AFTER) else { return };
         let from = crate::config::expand(from).ok().filter(|p| p.is_dir());
         // Built here, where the window handle is at hand; rfd's `FileDialog` is `Send` and only carries the raw window id.
-        let mut d = rfd::FileDialog::new().set_title(if self.title.is_empty() { "Choose the photo folder" } else { self.title });
+        let mut d = rfd::FileDialog::new().set_title("Choose the photo folder");
         if let Some(p) = parent {
             d = d.set_parent(p);
         }
@@ -271,7 +265,8 @@ impl SettingsPanel {
             theme::panel(ui, Some("Photos on this PC"), |ui| {
                 let label = theme::field_label(ui, "Folder for the photos");
                 self.source_row(ui, parent, label.id, "/path/to/a/folder");
-                theme::hint(ui, "The folders you choose are downloaded here. Use a folder that is only for this, and add it to LightCraft.");
+                ui.add(egui::Label::new(RichText::new("Set LightCraft's import destination to this folder. New photos you import there, in any folders inside it, are sent to the home PC by themselves, with your folders kept. Photos imported anywhere else are not uploaded.").color(t.text)).wrap());
+                theme::hint(ui, "The folders you choose below are downloaded here. Use a folder that is only for this, and add it to LightCraft. The folders you import into are added to the ones kept on this PC automatically.");
             });
             theme::gap(ui);
             self.folders_panel(ui);

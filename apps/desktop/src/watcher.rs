@@ -22,10 +22,15 @@ pub fn relevant(source: &Path, exclude: &[String], path: &Path) -> bool {
     !is_excluded(&rel, exclude)
 }
 
-/// Whether a path is a sidecar (`.xmp`, any case): the only files another PC's pass looks at, since the photos themselves never
-/// change on it.
+/// Whether a path is a sidecar (`.xmp`, any case).
 pub fn is_sidecar(path: &Path) -> bool {
     path.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmp"))
+}
+
+/// Whether a path is a file another PC's pass looks at: a sidecar LightCraft wrote (an edit to send), or a photo (one LightCraft just
+/// imported into the folder, to send).
+pub fn is_watched_on_another_pc(path: &Path) -> bool {
+    is_sidecar(path) || path.file_name().is_some_and(|n| lightcraft_cloud_client::other::is_pickup_name(&n.to_string_lossy()))
 }
 
 /// Whether this kind of event is a change (not a read).
@@ -48,14 +53,14 @@ impl FolderWatcher {
         Self::start_filtered(source, exclude, false, on_change)
     }
 
-    /// [`FolderWatcher::start`]; with `sidecars_only` only a change to an `.xmp` file counts (another PC's role: a downloaded photo is
-    /// not news to it, a sidecar LightCraft wrote is).
+    /// [`FolderWatcher::start`]; with `sidecars_only` only a change to a sidecar or a photo file counts (another PC's role: a new photo
+    /// is news, to be sent; anything else is not).
     pub fn start_filtered(source: &Path, exclude: Vec<String>, sidecars_only: bool, on_change: impl Fn() + Send + 'static) -> Result<FolderWatcher, String> {
         let root = source.to_path_buf();
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             if let Ok(ev) = res
                 && counts(&ev.kind)
-                && ev.paths.iter().any(|p| (!sidecars_only || is_sidecar(p)) && relevant(&root, &exclude, p))
+                && ev.paths.iter().any(|p| (!sidecars_only || is_watched_on_another_pc(p)) && relevant(&root, &exclude, p))
             {
                 on_change();
             }
@@ -98,7 +103,13 @@ mod tests {
     }
 
     #[test]
-    fn a_watch_for_sidecars_ignores_photos() {
+    fn another_pc_wakes_for_sidecars_and_photos_only() {
+        assert!(is_watched_on_another_pc(Path::new("/p/2026/Day 1/a.jpg")) && is_watched_on_another_pc(Path::new("/p/a.ARW")) && is_watched_on_another_pc(Path::new("/p/a.xmp")));
+        assert!(!is_watched_on_another_pc(Path::new("/p/a.txt")) && !is_watched_on_another_pc(Path::new("/p/a.jpg.part")) && !is_watched_on_another_pc(Path::new("/p/.a.jpg")));
+    }
+
+    #[test]
+    fn a_watch_for_another_pc_hears_photos_and_sidecars_not_other_files() {
         let d = std::env::temp_dir().join(format!("lc-desktop-watch-sc-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
@@ -107,8 +118,16 @@ mod tests {
             let _ = tx.send(());
         })
         .unwrap();
-        std::fs::write(d.join("a.jpg"), b"x").unwrap();
-        assert!(rx.recv_timeout(Duration::from_millis(700)).is_err(), "a photo is not a sidecar");
+        std::fs::write(d.join("a.txt"), b"x").unwrap();
+        assert!(rx.recv_timeout(Duration::from_millis(700)).is_err(), "a text file is not news");
+        std::fs::create_dir_all(d.join("2026/Day 1")).unwrap();
+        std::thread::sleep(Duration::from_millis(500)); // (the watch reaches the new folders)
+        while rx.try_recv().is_ok() {}
+        std::fs::write(d.join("2026/Day 1/a.jpg"), b"x").unwrap();
+        assert!(rx.recv_timeout(Duration::from_secs(5)).is_ok(), "no event for a photo in a nested folder");
+        while rx.try_recv().is_ok() {}
+        std::thread::sleep(Duration::from_millis(300));
+        while rx.try_recv().is_ok() {}
         std::fs::write(d.join("a.xmp"), b"x").unwrap();
         assert!(rx.recv_timeout(Duration::from_secs(5)).is_ok(), "no event for a sidecar");
         let _ = std::fs::remove_dir_all(&d);

@@ -106,6 +106,10 @@ pub struct OtherView {
     /// Photos the home PC refused that the user has not dealt with (Try again / Keep on this PC only). Counted until then, so the
     /// state line never reads "Up to date" while one is left.
     pub rejected: usize,
+    /// Photos that were in the folder when this PC first looked and are not in the cloud library: not sent unless the user says so.
+    pub held: usize,
+    /// How many of the photos that were there are not looked at yet (`held` may still grow).
+    pub held_unchecked: usize,
 }
 
 /// Everything the windows and the tray show.

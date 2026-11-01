@@ -77,7 +77,7 @@ fn spawn_config_thread(config_path: PathBuf, cmd: Sender<Command>, stop: Receive
         let mut last = stamp(&config_path);
         let mut _watcher: Option<FolderWatcher> = None;
         let mut first = true;
-        // (the import window queues photos from another process: its queue folder changing wakes the upload job)
+        // (the Status window changes the queue from another process: its queue folder changing wakes the upload job)
         let queue_dir = state_dir_for(&config_path).ok().map(|d| d.join(lightcraft_cloud_client::other::OUT_DIR));
         let queue_mtime = || queue_dir.as_deref().and_then(|d| std::fs::metadata(d).ok()).and_then(|m| m.modified().ok());
         let mut queue_stamp = queue_mtime();
@@ -94,7 +94,7 @@ fn spawn_config_thread(config_path: PathBuf, cmd: Sender<Command>, stop: Receive
                 _watcher = None; // (stop watching the old folder first)
                 if let Ok(c) = Config::load(Some(&config_path)) {
                     let tx = cmd.clone();
-                    // (another PC looks at sidecars only: its photos only ever arrive from the cloud library)
+                    // (another PC looks at sidecars and photo files only)
                     let sidecars_only = c.file.role == config::Role::Other;
                     match FolderWatcher::start_filtered(&c.source, c.file.exclude.clone(), sidecars_only, move || {
                         let _ = tx.send(Command::FolderChanged);
@@ -283,7 +283,6 @@ fn main_loop_tray(
                 Some(MenuAction::PauseResume) => {
                     let _ = cmd_tx.send(if paused { Command::Resume } else { Command::Pause });
                 }
-                Some(MenuAction::ImportPhotos) => windows.open("import"),
                 Some(MenuAction::Status) => windows.open("status"),
                 Some(MenuAction::Settings) => windows.open("settings"),
                 Some(MenuAction::Quit) => break,

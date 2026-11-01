@@ -146,12 +146,13 @@ impl File {
 }
 
 /// Add `folder` to the folders this PC keeps (role `other`) in the config file at `path`; the app notices the change. `Ok(false)`: it was
-/// there already. Everything else in the file stays as it is.
+/// there already. The photo folder itself is `""`. Everything else in the file stays as it is.
 pub fn add_chosen_folder(path: &Path, folder: &str) -> Result<bool, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("config {}: {e}", path.display()))?;
     let mut file: File = toml::from_str(&text).map_err(|e| format!("config {}: {e}", path.display()))?;
+    // ("" is the photo folder itself)
     let wanted = folder.trim().trim_matches('/');
-    if wanted.is_empty() || file.folders.iter().any(|c| c.trim().trim_matches('/') == wanted) {
+    if file.folders.iter().any(|c| c.trim().trim_matches('/') == wanted) {
         return Ok(false);
     }
     file.folders.push(wanted.to_string());

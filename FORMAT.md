@@ -169,15 +169,20 @@ reads another device's inbox.
   home PC changes it. It comes back when the user un-chooses the photo's folder and chooses it again (un-choosing forgets what the PC
   remembers about the folder's photos and leaves the files where they are; choosing again downloads what is missing). When the home
   PC deletes the photo too, the memory goes with it.
-* **Photos imported on this PC.** The user can add photos to the library from this PC (a card, any folder). They are copied into
-  `<its photo folder>/<destination>/` (never overwriting: a name that is taken gets `-2`, `-3`, ..., the sidecar named to match; the
-  bytes are hashed again after they are written), and sent to the home PC as an import (see "Imports": the files first, the commit
-  note last, a file already on the remote at the right size is not sent again). The sidecar sent is the one as it was when the photo
-  was imported; a change to it afterwards is an edit like any other and goes through the inbox once the manifest lists the photo,
-  with the manifest's `sidecarVersion` as its `base`. Once the home PC has answered (`imports-done/<day>/<device>/<id>.result.json`:
-  `added` or `duplicate`) the file stays where it is on this PC, **whatever path the home PC gave it**: from then on this PC matches
-  the manifest's photo to its own file by `id`, downloads no second copy and does not treat the file as deleted. A `rejected` photo
-  stays on this PC and is told to the user once.
+* **Photos imported on this PC.** The user imports photos in LightCraft into this PC's photo folder, in any folders. This PC notices
+  new photo files at any depth (not hidden, not temporary or partial, not under an `exclude` pattern) once their size and time have
+  stayed the same for a while, and sends each to the home PC as an import (see "Imports"): `folder` is the file's own folder
+  relative to the photo folder, `/`-separated, `""` for the photo folder itself, so the structure arrives exactly; the files first,
+  the commit note last, a file already on the remote at the right size is not sent again. A sidecar beside the photo (`<stem>.xmp`
+  or `<name>.xmp`) goes along if it is acceptable XMP. The folders sent into become chosen folders. Never sent: a photo whose `id`
+  was ever in a manifest this PC read (a photo the library had and deleted is not resurrected, even restored by hand), one already
+  queued, one that was in the folder when this PC first looked (unless the user asks). Only the bytes that were found are sent: a
+  file that changed since is looked at again. The sidecar sent is the one as it was found; a change afterwards is an edit like any
+  other and goes through the inbox once the manifest lists the photo, with the manifest's `sidecarVersion` as its `base`. Once the
+  home PC has answered (`imports-done/<day>/<device>/<id>.result.json`: `added` or `duplicate`) the file stays where it is on this
+  PC, **whatever path the home PC gave it**: from then on this PC matches the manifest's photo to its own file by `id`, downloads no
+  second copy and does not treat the file as deleted. A `rejected` photo stays on this PC and is counted for the user until they
+  send it again or keep it on this PC only.
 * **Disk space.** Before a download the PC checks that the file's size plus a safety margin (256 MiB by default) is free, and stops
   with a clear message when it is not.
 

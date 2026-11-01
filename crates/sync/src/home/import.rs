@@ -100,7 +100,7 @@ fn is_reserved(component: &str) -> bool {
 }
 
 /// Why `c` cannot be one component of an imported path, or None.
-pub(crate) fn bad_component(c: &str) -> Option<String> {
+fn bad_component(c: &str) -> Option<String> {
     if c.is_empty() {
         return Some("it has an empty component".into());
     }
@@ -128,7 +128,7 @@ pub(crate) fn bad_component(c: &str) -> Option<String> {
     None
 }
 
-pub(crate) fn bad_folder(folder: &str) -> Option<String> {
+fn bad_folder(folder: &str) -> Option<String> {
     if folder.is_empty() {
         return None; // (the photo folder itself)
     }
@@ -254,7 +254,7 @@ struct Run<'a> {
 
 /// Create `dir/name` whole or not at all: a temporary file in `dir`, `fsync`, then a link that never replaces.
 /// `AlreadyExists` when the name is taken.
-pub(crate) fn create_new_file(dir: &Path, name: &str, fill: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>) -> std::io::Result<()> {
+fn create_new_file(dir: &Path, name: &str, fill: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>) -> std::io::Result<()> {
     let dest = dir.join(name);
     let tmp = temp_beside(&dest);
     let written = (|| {
@@ -270,12 +270,12 @@ pub(crate) fn create_new_file(dir: &Path, name: &str, fill: impl FnOnce(&mut std
     linked
 }
 
-pub(crate) fn ext_of(name: &str) -> &str {
+fn ext_of(name: &str) -> &str {
     &name[stem(name).len()..]
 }
 
 /// The file name of the `n`th try (1: the name in the note), and its sidecar's, named the way the note's was.
-pub(crate) fn variant(note: &ImportNote, n: u32) -> (String, Option<String>) {
+fn variant(note: &ImportNote, n: u32) -> (String, Option<String>) {
     if n == 1 {
         return (note.name.clone(), note.sidecar.clone());
     }
@@ -287,7 +287,7 @@ pub(crate) fn variant(note: &ImportNote, n: u32) -> (String, Option<String>) {
 
 /// Whether `entry` is the name in the note or one of its numbered variants (case-insensitively: a case-insensitive filesystem
 /// would treat them as the same file).
-pub(crate) fn is_variant_of(note: &ImportNote, entry: &str) -> bool {
+fn is_variant_of(note: &ImportNote, entry: &str) -> bool {
     let (e, name) = (entry.to_lowercase(), note.name.to_lowercase());
     if e == name {
         return true;
@@ -297,7 +297,7 @@ pub(crate) fn is_variant_of(note: &ImportNote, entry: &str) -> bool {
 }
 
 /// The entry of `dir` with this name, ignoring case, as it is spelled on disk.
-pub(crate) fn entry_named(dir: &Path, name: &str) -> std::io::Result<Option<String>> {
+fn entry_named(dir: &Path, name: &str) -> std::io::Result<Option<String>> {
     let want = name.to_lowercase();
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
@@ -314,7 +314,7 @@ pub(crate) fn entry_named(dir: &Path, name: &str) -> std::io::Result<Option<Stri
 }
 
 /// A regular file (not a link) of this size and content hash.
-pub(crate) fn has_bytes(path: &Path, size: u64, id: &str) -> bool {
+fn has_bytes(path: &Path, size: u64, id: &str) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.len() == size) && content_hash_file(path).is_ok_and(|(h, _)| h == id)
 }
 

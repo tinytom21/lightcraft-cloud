@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 pub use hash::{ContentHasher, content_hash_bytes, content_hash_file, content_hash_reader};
-pub(crate) use import::{bad_component, create_new_file, entry_named, has_bytes, is_variant_of, rel_join, variant};
+pub(crate) use import::rel_join;
 pub use import::{DEFAULT_IMPORT_FREE_MARGIN, IMPORT_INCOMPLETE_LIMIT_HOURS, ImportNote, ImportSummary, ImportedPhoto, check_import_note, check_import_target};
 pub use inbox::{InboxName, InboxSummary, decide, notify_message, parse_inbox_name, phone_is_newer};
 pub use manifest::{Alternate, ManifestPhoto, build_manifest_photos, manifest_ids};

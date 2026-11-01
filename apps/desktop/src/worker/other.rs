@@ -45,9 +45,10 @@ impl OtherWorker {
         self.retry_delay = Some(d);
     }
 
-    /// A config that names the local photo folder, the folders to keep and the place the cloud library is.
+    /// A config that names the local photo folder and the place the cloud library is (no folder to keep is needed: photos imported into the
+    /// photo folder are sent all the same).
     fn usable(cfg: &Config) -> bool {
-        cfg.remote_spec().is_ok() && !cfg.file.source.trim().is_empty() && cfg.file.folders.iter().any(|f| !f.trim().is_empty())
+        cfg.remote_spec().is_ok() && !cfg.file.source.trim().is_empty()
     }
 
     fn the_config(&self) -> Result<&Config, JobError> {
@@ -114,13 +115,23 @@ pub(crate) fn outcome_of(r: &OtherReport) -> SyncOutcome {
             uploads_bytes: r.queue.bytes,
             awaiting_home: r.queue.awaiting_home,
             rejected: r.queue.rejected,
+            held: r.queue.held,
+            held_unchecked: r.queue.held_unchecked,
         }),
+        recheck: r.recheck,
         ..SyncOutcome::default()
     }
 }
 
 fn view_of(q: &QueueStatus) -> QueueView {
-    QueueView { to_upload: q.to_upload, bytes: q.bytes, awaiting_home: q.awaiting_home, rejected: q.rejected }
+    QueueView {
+        to_upload: q.to_upload,
+        bytes: q.bytes,
+        awaiting_home: q.awaiting_home,
+        rejected: q.rejected,
+        held: q.held,
+        held_unchecked: q.held_unchecked,
+    }
 }
 
 impl Worker for OtherWorker {
@@ -157,7 +168,19 @@ impl Worker for OtherWorker {
             return Err(JobError::Refused("the app is not set up yet".into()));
         }
         let other = self.other(cfg)?;
-        let report = other.sync().map_err(pass_error)?;
+        let report = other.sync().map_err(pass_error);
+        let report = report?;
+        // every folder the user imported into is a folder this PC keeps now (a chosen folder means the photos directly in it)
+        let mut added = false;
+        for f in &report.new_folders {
+            match crate::config::add_chosen_folder(&self.config_path, f) {
+                Ok(a) => added |= a,
+                Err(e) => log::warn!("cannot add the folder {f:?} to the chosen folders: {e}"),
+            }
+        }
+        if added {
+            let _ = self.reload();
+        }
         Ok(outcome_of(&report))
     }
 
@@ -173,6 +196,10 @@ impl Worker for OtherWorker {
     fn queue_view(&mut self) -> Option<QueueView> {
         let cfg = self.cfg.as_ref()?;
         Some(view_of(&lightcraft_cloud_client::other::ImportQueue::new(&cfg.state_dir).status()))
+    }
+
+    fn send_requested(&mut self) -> bool {
+        self.cfg.as_ref().is_some_and(|c| lightcraft_cloud_client::other::ImportQueue::new(&c.state_dir).send_requested())
     }
 
     fn upload_step(&mut self) -> Result<UploadOutcome, JobError> {

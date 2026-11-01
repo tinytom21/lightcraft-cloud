@@ -319,6 +319,10 @@ fn setup_asks_what_the_pc_is_and_another_pc_gets_its_own_form() {
         h.get_by_label(label);
     }
     assert!(h.query_by_label("Previews only").is_none() && h.query_by_label("Photo folder").is_none());
+    // the Setup text says plainly where LightCraft must import to, and what is not uploaded
+    h.get_by_label_contains("Set LightCraft's import destination to this folder");
+    h.get_by_label_contains("Photos imported anywhere else are not uploaded");
+    h.get_by_label_contains("added to the ones kept on this PC automatically");
     assert!(h.state().form.source.is_empty(), "no usual folder is offered for another PC");
     h.get_by_label("This is my home PC").click();
     h.run();
@@ -344,10 +348,6 @@ fn the_folders_are_listed_with_sizes_and_photo_counts_and_the_ticked_ones_are_sa
     let mut h = settings_harness(other_panel(&r, &lister));
     h.run();
     h.get_by_label_contains("The folders are listed here");
-    h.get_by_label("Save and start").click();
-    h.run();
-    h.get_by_label_contains("Tick at least one folder");
-    assert!(!r.env.config_path.exists());
     h.get_by_label("Show the folders in the cloud library").click();
     h.run();
     h.get_by_label("(photos at the top level)  \u{2014}  2 photos, 10.0 MiB");

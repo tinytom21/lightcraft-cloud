@@ -176,6 +176,8 @@ pub enum StatusAction {
     TryAgain,
     /// Accept the refusals: the photos stay on this PC only.
     KeepHere,
+    /// Queue the photos that were in the folder at the start and are not in the cloud library.
+    SendHeld,
 }
 
 pub fn show(ui: &mut Ui, v: &StatusView) {
@@ -212,8 +214,11 @@ pub fn show_with_actions(ui: &mut Ui, v: &StatusView, refused: &[(String, String
     theme::panel(ui, None, |ui| {
         if let Some(o) = &s.other {
             other_rows(ui, s, o, v.now);
+            if o.held > 0 {
+                action = held_row(ui, o.held, o.held_unchecked);
+            }
             if o.rejected > 0 {
-                action = refused_row(ui, o.rejected, refused);
+                action = refused_row(ui, o.rejected, refused).or(action);
             }
             return;
         }
@@ -282,6 +287,22 @@ pub fn show_with_actions(ui: &mut Ui, v: &StatusView, refused: &[(String, String
         list(ui, "Newest wins", "No conflicts between phone and PC edits.", &s.notices, v.now, None);
     }
     list(ui, "Problems", "None.", &s.errors, v.now, Some(theme::CHARCOAL.reject));
+    action
+}
+
+/// The row for the photos that were in the folder when this PC first looked and are not in the library: not sent by themselves.
+pub fn held_text(held: usize, unchecked: usize) -> String {
+    let n = if held == 1 { "1 photo here isn't".to_string() } else { format!("{held} photos here aren't") };
+    if unchecked > 0 { format!("{n} in the cloud library (still looking at {unchecked} more)") } else { format!("{n} in the cloud library") }
+}
+
+fn held_row(ui: &mut Ui, held: usize, unchecked: usize) -> Option<StatusAction> {
+    row(ui, "Not sent", held_text(held, unchecked));
+    theme::hint(ui, "They were in this folder before the app first looked, so they are not sent by themselves. Photos you import from now on are.");
+    let mut action = None;
+    if theme::button(ui, "Send them", theme::Kind::Secondary).clicked() {
+        action = Some(StatusAction::SendHeld);
+    }
     action
 }
 

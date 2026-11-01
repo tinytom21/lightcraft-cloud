@@ -65,6 +65,8 @@ pub enum Reason {
     Resumed,
     /// Settings were saved.
     Settings,
+    /// The user asked for the photos that were already in the folder to be sent.
+    SendHeld,
 }
 
 impl Reason {
@@ -77,6 +79,7 @@ impl Reason {
             Reason::Manual => "Sync now",
             Reason::Resumed => "resumed",
             Reason::Settings => "settings saved",
+            Reason::SendHeld => "sending the photos that were here",
         }
     }
 }
@@ -177,6 +180,11 @@ impl Scheduler {
             self.next_sync = self.next_sync.min(now);
             self.requested.get_or_insert(Reason::Resumed);
         }
+    }
+
+    /// A sync is wanted by `at` at the latest (photos that were not ready are looked at again): an earlier one stays.
+    pub fn sync_by(&mut self, at: SystemTime) {
+        self.next_sync = self.next_sync.min(at);
     }
 
     /// "Sync now", or a sync another part asked for.

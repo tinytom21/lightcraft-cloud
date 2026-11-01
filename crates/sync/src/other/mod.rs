@@ -11,6 +11,9 @@
 //! 4. photos that are missing are downloaded (checked against their id, never replacing a file) and announced to LightCraft through
 //!    the adopted-photo hook.
 //!
+//! 5. (after the pass, whether or not it could reach the cloud library) the photos the user imported in LightCraft into the photo
+//!    folder are noticed and queued for the home PC: see [`pickup`]; they are sent by [`Other::upload_step`].
+//!
 //! The engine is not a dependency, and nothing here opens, locks or writes a LightCraft library. This PC never writes `originals/` or
 //! `mobile/` on the remote; its only writes there are new files under `inbox/<device>/`.
 //!
@@ -21,11 +24,11 @@
 
 mod import;
 mod pass;
+mod pickup;
 mod state;
 
-pub use import::{
-    ImportQueue, ImportRun, ImportScan, OUT_DIR, OutEntry, OutResult, Phase, Progress, QueueStatus, ScanFile, SourceSidecar, UploadBudget, UploadReport, check_destination, existing_folders,
-};
+pub use import::{ImportQueue, OUT_DIR, OutEntry, OutResult, QueueStatus, UploadBudget, UploadReport};
+pub use pickup::{DEFAULT_HASH_BUDGET, DEFAULT_SETTLE, is_pickup_name, slash_path};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -56,6 +59,10 @@ pub struct OtherConfig {
     /// Folder-name patterns the home PC leaves out of the library (its `exclude`). Photos imported here are refused up front for a
     /// destination that matches one, the way the home PC would reject them.
     pub exclude: Vec<String>,
+    /// How long a new photo's size and time must stay the same before this PC takes it (LightCraft may still be copying).
+    pub settle: Duration,
+    /// How long one pass hashes new photos before it leaves the rest for the next.
+    pub hash_budget: Duration,
 }
 
 impl OtherConfig {
@@ -69,6 +76,8 @@ impl OtherConfig {
             max_delete: 50,
             free_margin: DEFAULT_IMPORT_FREE_MARGIN,
             exclude: Vec::new(),
+            settle: DEFAULT_SETTLE,
+            hash_budget: DEFAULT_HASH_BUDGET,
         }
     }
 }
@@ -96,8 +105,18 @@ pub struct OtherReport {
     pub edits_waiting: usize,
     /// Things the user can act on, one line each.
     pub problems: Vec<String>,
-    /// The photos this PC imported itself, as the pass left them.
+    /// The photos this PC found in its folder and sends, as the pass left them.
     pub queue: QueueStatus,
+    /// Photos found in this pass and queued for the home PC.
+    pub picked_up: usize,
+    /// Folders (relative, `/`-separated) holding queued photos that are not chosen folders yet: the app adds them to its choice.
+    pub new_folders: Vec<String>,
+    /// New photos that have not settled yet (still being copied?).
+    pub unsettled: usize,
+    /// New photos left unhashed for want of time in this pass.
+    pub pickup_left: usize,
+    /// When to look again for the photos that were not ready.
+    pub recheck: Option<Duration>,
 }
 
 /// The numbers the Status window shows, from the state alone (no network).

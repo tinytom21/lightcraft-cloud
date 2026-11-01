@@ -124,7 +124,7 @@ device = "laptop"                          # optional; default: this PC's host n
 ```
 
 Add the photo folder to LightCraft on that PC, with LightCraft's automatic writing of sidecars on. Every 15 minutes, and 30 seconds
-after a sidecar changes (5 minutes at the most, the same watcher rule as the home PC; photos arriving do not count), the app:
+after a sidecar or a photo file changes (5 minutes at the most, the same watcher rule as the home PC), the app:
 
 * downloads what is missing from the chosen folders (originals, sidecars, raw+JPEG partners), checks each file against its content
   hash, never replaces a file, and keeps going where it left off if the network drops. It checks the free disk space first and says
@@ -135,6 +135,17 @@ after a sidecar changes (5 minutes at the most, the same watcher rule as the hom
 * moves a photo the home PC deleted (with its sidecar) to `<state>/removed/<date>/`, never deleting it. It does that only for a
   file that is still exactly what was received, and refuses a pass that would move more than `max_delete` photos;
 * tells your running LightCraft to add the photos it downloaded (the same list and link as on the home PC, see below).
+
+* **sends the photos you import on this PC.** Import in LightCraft, into this photo folder (set LightCraft's import destination to
+  it), in whatever folders you like: the app notices new photo files at any depth, waits until a file has stopped changing for two
+  minutes (LightCraft may still be copying), and sends it to the home PC with its folder kept (`2026/261101 - Lisbon/Day 1/DSC1.ARW`
+  arrives at the same path; a sidecar beside it goes along), then adds each folder to the folders kept on this PC. It does not tell
+  LightCraft about them: LightCraft imported them. Photos imported anywhere else are not uploaded. Nothing is ever sent that the
+  cloud library has or ever had, so a photo deleted at home does not come back, even from a restored file; the same photo at two
+  paths goes once. **The photos already in the folder when the app first looks are not sent by themselves** (a wrong folder choice
+  must not upload a disk): Status says how many of them are not in the library, and "Send them" queues them. A photo the home PC
+  refuses stays here and is counted in Status until you choose "Try again" or "Keep on this PC only". Uploads run in short jobs of
+  their own, stop while paused, and wait when offline.
 
 **Deleting on this PC** only affects this PC. A photo you delete here is not downloaded again, even when the home PC changes it.
 To get it back, untick its folder in Settings, save, then tick it again and save. A folder you untick is no longer updated; its

@@ -108,6 +108,8 @@ impl Other {
         let mut st = State::open(&self.cfg.state_dir)?;
         let mut rep = OtherReport::default();
         let r = self.pass(&mut st, &mut rep);
+        // (local work only: a PC that is offline still notices what was imported)
+        self.pickup(&st, &mut rep);
         if r.is_ok() {
             st.last_pass = Some(iso(self.now()));
         }
@@ -228,6 +230,8 @@ impl Other {
         let tmp = self.cfg.state_dir.join("manifest.json.tmp");
         let parsed = self.retry(|| fetch_manifest(&*self.remote, &tmp))?;
         self.claim_device(st)?;
+        // every id the library ever had, for good: what was deleted there is never sent back from here
+        super::pickup::record_seen(&self.cfg.state_dir, parsed.items.iter().map(|i| i.id.as_str()))?;
         let chosen: BTreeSet<&str> = self.cfg.folders.iter().map(String::as_str).collect();
         // a folder that is no longer chosen is no longer looked after: its photos stay, and so is forgotten what was remembered of them
         st.photos.retain(|_, r| chosen.contains(folder_of(&r.path)));
@@ -239,10 +243,14 @@ impl Other {
             .filter(|e| self.target(&e.path()).is_some_and(|p| p.is_file()))
             .map(|e| (e.id.clone(), e))
             .collect();
+        // files found here (by their id) that the library has at another path
+        let found = super::pickup::local_files_by_id(&self.cfg.state_dir, &self.cfg.source, &self.cfg.folders);
         let items: Vec<&Item> = parsed
             .items
             .iter()
-            .filter(|i| chosen.contains(folder_of(&i.path)) || ledger.contains_key(&i.id) || st.photos.get(&i.id).is_some_and(|r| r.imported))
+            .filter(|i| {
+                chosen.contains(folder_of(&i.path)) || ledger.contains_key(&i.id) || found.contains_key(&i.id) || st.photos.get(&i.id).is_some_and(|r| r.imported)
+            })
             .collect();
         let by_id: HashMap<&str, &Item> = items.iter().map(|i| (i.id.as_str(), *i)).collect();
         self.remove_vanished(st, &by_id, rep);
@@ -266,6 +274,17 @@ impl Other {
                 );
                 self.logln(format!("{} is in the cloud library now (at {}); it stays where it is on this PC", e.path(), item.path));
             }
+            let mut adopted_local = false;
+            if !st.photos.contains_key(id)
+                && !ledger.contains_key(id)
+                && let Some(rel) = found.get(id)
+            {
+                // The same bytes are here already, under another name or in another folder than the library has them: this is that
+                // photo. No second copy is downloaded.
+                st.photos.insert(id.to_string(), Rec { path: rel.clone(), imported: true, ..Rec::default() });
+                adopted_local = true;
+                self.logln(format!("{rel} is the library's {} (same photo); no second copy is downloaded", item.path));
+            }
             let adopted = match st.photos.get(id) {
                 None => match self.classify_new(item, rep) {
                     New::Download => {
@@ -279,7 +298,7 @@ impl Other {
                     rep.left_out += 1;
                     continue;
                 }
-                Some(_) => false,
+                Some(_) => adopted_local,
             };
             if adopted {
                 st.photos.insert(id.to_string(), Rec { path: item.path.clone(), ..Rec::default() });
