@@ -56,6 +56,11 @@ pub fn photos_added(devices: &[(String, usize)]) -> String {
     format!("{photos} added from {from}")
 }
 
+/// Photos this PC downloaded from the home PC.
+pub fn photos_downloaded(n: usize) -> String {
+    if n == 1 { "1 new photo from the home PC".to_string() } else { format!("{n} new photos from the home PC") }
+}
+
 /// A sync that did not work.
 pub fn publisher_failed() -> &'static str {
     "Publisher failed - see the Status window or the log"

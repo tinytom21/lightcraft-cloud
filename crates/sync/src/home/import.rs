@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 use super::hash::content_hash_file;
 use super::scan::{is_excluded, is_photo, is_skipped_name, stem};
 use super::{Home, State, validate_xmp};
-use crate::util::{iso, parse_iso, temp_beside};
+use crate::util::{free_space, iso, link_no_replace, parse_iso, sync_dir, temp_beside};
 use crate::{Error, Result, valid_device};
 
 /// An import whose files are still missing this long after its note was first seen is rejected: the uploader gave up or died,
@@ -245,26 +245,6 @@ struct Run<'a> {
     known: HashMap<String, String>,
 }
 
-/// Hard-link `tmp` to `dest`, failing with `AlreadyExists` if `dest` is there: unlike a rename it can never replace a file.
-/// A filesystem without hard links gets a check and a rename (the check cannot be atomic there).
-fn link_no_replace(tmp: &Path, dest: &Path) -> std::io::Result<()> {
-    match std::fs::hard_link(tmp, dest) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
-        Err(_) => match std::fs::symlink_metadata(dest) {
-            Ok(_) => Err(std::io::ErrorKind::AlreadyExists.into()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::rename(tmp, dest),
-            Err(e) => Err(e),
-        },
-    }
-}
-
-fn sync_dir(dir: &Path) {
-    if let Ok(f) = std::fs::File::open(dir) {
-        let _ = f.sync_all();
-    }
-}
-
 /// Create `dir/name` whole or not at all: a temporary file in `dir`, `fsync`, then a link that never replaces.
 /// `AlreadyExists` when the name is taken.
 fn create_new_file(dir: &Path, name: &str, fill: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>) -> std::io::Result<()> {
@@ -281,23 +261,6 @@ fn create_new_file(dir: &Path, name: &str, fill: impl FnOnce(&mut std::fs::File)
         sync_dir(dir);
     }
     linked
-}
-
-/// Free bytes on the filesystem holding `path` (or its nearest folder that exists); None when that cannot be told.
-#[cfg(unix)]
-fn free_space(path: &Path) -> Option<u64> {
-    let mut p = path;
-    loop {
-        if let Ok(s) = rustix::fs::statvfs(p) {
-            return Some(s.f_bavail.saturating_mul(s.f_frsize));
-        }
-        p = p.parent()?;
-    }
-}
-
-#[cfg(not(unix))]
-fn free_space(_path: &Path) -> Option<u64> {
-    None
 }
 
 fn ext_of(name: &str) -> &str {

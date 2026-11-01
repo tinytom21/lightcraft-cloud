@@ -7,18 +7,38 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use lightcraft_cloud_client::home::{HomeConfig, PairPrimary};
+use lightcraft_cloud_client::other::OtherConfig;
+use lightcraft_cloud_client::valid_device;
 use lightcraft_cloud_client::{DirRemote, RcloneRemote, Remote};
 use serde::{Deserialize, Serialize};
 
 pub const APP_DIR: &str = "lightcraft-cloud-desktop";
+
+/// What this PC is in the cloud library.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    /// The master: publishes its photo folder, applies the phone's edits, adds the photos other PCs send.
+    #[default]
+    Home,
+    /// Keeps a copy of the folders its user chose, and sends its edits to the home PC.
+    Other,
+}
 
 /// What the file says; every key but `remote` is optional. Unknown keys are ignored (the Python tool's config can be
 /// reused).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct File {
-    /// Folder to publish.
+    /// `"home"` (the default: what every config before this key was) or `"other"`.
+    pub role: Role,
+    /// Folder to publish; for role `other`, the local photo folder the chosen folders are downloaded into.
     pub source: String,
+    /// Role `other`: the folders to keep a copy of, relative to the cloud library's `originals/` (photos directly in them).
+    pub folders: Vec<String>,
+    /// Role `other`: this PC's name in the cloud library's inbox (`inbox/<device>/`). Default: the host name, made valid. Must not be a
+    /// phone's name.
+    pub device: Option<String>,
     /// An rclone `remote:path` (e.g. `gdrive:LightCraft Cloud`, or a crypt remote `lccrypt:`), or a local folder (starts
     /// with `/`, `~` or `.`). There is no default: a config without it is refused, so nothing is ever published to a
     /// remote nobody named.
@@ -56,7 +76,10 @@ pub struct File {
 impl Default for File {
     fn default() -> Self {
         File {
+            role: Role::Home,
             source: "~/Pictures/Photos".into(),
+            folders: Vec::new(),
+            device: None,
             remote: None,
             exclude: Vec::new(),
             pair_primary: "jpeg".into(),
@@ -77,6 +100,9 @@ impl Default for File {
 
 /// The keys this app writes (and removes when unset); any other key in the file is left as it is.
 const KNOWN_KEYS: &[&str] = &[
+    "role",
+    "folders",
+    "device",
     "source",
     "remote",
     "exclude",
@@ -128,6 +154,30 @@ pub fn home_dir() -> Result<PathBuf, String> {
 /// A folder of the user's profile that Windows names by a variable (`%APPDATA%`, `%LOCALAPPDATA%`); None elsewhere.
 fn windows_dir(var: &str) -> Option<PathBuf> {
     if cfg!(windows) { std::env::var_os(var).map(PathBuf::from).filter(|h| !h.as_os_str().is_empty()) } else { None }
+}
+
+/// This PC's host name (`$COMPUTERNAME` on Windows, `$HOSTNAME`, the kernel's, `/etc/hostname`), or None.
+fn host_name() -> Option<String> {
+    let var = |k: &str| std::env::var(k).ok();
+    let file = |p: &str| std::fs::read_to_string(p).ok();
+    var("COMPUTERNAME")
+        .or_else(|| var("HOSTNAME"))
+        .or_else(|| file("/proc/sys/kernel/hostname"))
+        .or_else(|| file("/etc/hostname"))
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+}
+
+/// A host name made into a valid device name (see `valid_device`): other characters become `-`, a leading dot goes, 64 at most.
+pub fn device_from_host(host: &str) -> String {
+    let mut d: String = host.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') { c } else { '-' }).collect();
+    d = d.trim_start_matches('.').chars().take(64).collect();
+    if d.is_empty() { "pc".to_string() } else { d }
+}
+
+/// The default device name: this PC's host name, made valid.
+pub fn default_device() -> String {
+    device_from_host(&host_name().unwrap_or_default())
 }
 
 /// `~/` and `~` at the start of a path.
@@ -213,6 +263,31 @@ impl Config {
         Ok(())
     }
 
+    /// This PC's name in the inbox (role `other`): the config's `device`, else the host name made valid.
+    pub fn device(&self) -> String {
+        match self.file.device.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+            Some(d) => d.to_string(),
+            None => default_device(),
+        }
+    }
+
+    /// The other-PC role's settings for the sync crate.
+    pub fn other_config(&self) -> Result<OtherConfig, String> {
+        let spec = self.remote_spec()?;
+        let label = match local_remote(spec)? {
+            Some(dir) => dir.display().to_string(),
+            None => spec.to_string(),
+        };
+        let device = self.device();
+        if !valid_device(&device) {
+            return Err(format!("device name `{device}`: letters, digits, `_`, `-` and `.` (up to 64, not starting with a dot)"));
+        }
+        let mut c = OtherConfig::new(&self.source, &self.state_dir, device, self.file.folders.clone());
+        c.remote_label = label;
+        c.max_delete = self.file.max_delete;
+        Ok(c)
+    }
+
     pub fn remote_spec(&self) -> Result<&str, String> {
         self.file
             .remote
@@ -292,6 +367,40 @@ pub fn local_remote(spec: &str) -> Result<Option<PathBuf>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_host_name_becomes_a_valid_device_name() {
+        for (host, want) in [("laptop", "laptop"), ("Toms Laptop", "Toms-Laptop"), (".hidden", "hidden"), ("", "pc"), ("é", "-"), ("a.b_c-d", "a.b_c-d")] {
+            let d = device_from_host(host);
+            assert_eq!(d, want, "{host:?}");
+            assert!(valid_device(&d), "{d}");
+        }
+        assert_eq!(device_from_host(&"x".repeat(100)).len(), 64);
+        assert!(valid_device(&default_device()));
+    }
+
+    #[test]
+    fn the_role_defaults_to_home_and_other_pc_settings_are_read_and_kept() {
+        let d = std::env::temp_dir().join(format!("lc-desktop-role-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("c.toml");
+        std::fs::write(&f, "remote = \"/tmp/r\"\nstate_dir = \"/tmp/lc-state-x\"\n").unwrap();
+        let c = Config::load(Some(&f)).unwrap();
+        assert_eq!((c.file.role, c.file.folders.is_empty()), (Role::Home, true), "an existing config behaves as before");
+        std::fs::write(&f, "role = \"other\"\nsource = \"/tmp/s\"\nremote = \"/tmp/r\"\nstate_dir = \"/tmp/lc-state-x\"\nfolders = [\"A\", \"B/C\"]\ndevice = \"laptop\"\n").unwrap();
+        let c = Config::load(Some(&f)).unwrap();
+        assert_eq!((c.file.role, c.device()), (Role::Other, "laptop".to_string()));
+        let o = c.other_config().unwrap();
+        assert_eq!((o.folders, o.device.as_str(), o.remote_label.as_str()), (vec!["A".to_string(), "B/C".into()], "laptop", "/tmp/r"));
+        c.file.save(&f).unwrap();
+        let back = Config::load(Some(&f)).unwrap();
+        assert_eq!((back.file.role, back.file.folders.len(), back.file.device.as_deref()), (Role::Other, 2, Some("laptop")));
+        std::fs::write(&f, "role = \"other\"\ndevice = \"my laptop!\"\nremote = \"/tmp/r\"\nstate_dir = \"/tmp/lc-state-x\"\n").unwrap();
+        assert!(Config::load(Some(&f)).unwrap().other_config().is_err());
+        std::fs::write(&f, "role = \"boss\"\nremote = \"/tmp/r\"\n").unwrap();
+        assert!(Config::load(Some(&f)).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn librclone_is_looked_for_in_order() {

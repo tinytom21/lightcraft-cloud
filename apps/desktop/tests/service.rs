@@ -25,6 +25,8 @@ struct Script {
     /// What the next LightCraft tries return (the last repeats); each try's `retry_given_up` goes to `bridge_calls`.
     bridge: Vec<BridgeReport>,
     bridge_calls: Vec<bool>,
+    /// The worker is another PC's.
+    other: bool,
 }
 
 #[derive(Clone, Default)]
@@ -69,6 +71,9 @@ impl Worker for Fake {
         let mut s = self.0.lock().unwrap();
         s.calls.push("purge".into());
         next(&mut s.purges, Ok(PurgeOutcome::Done { folders: 1, versions: 2 }))
+    }
+    fn is_other(&self) -> bool {
+        self.0.lock().unwrap().other
     }
     fn last_run(&self) -> Option<(String, String, usize)> {
         None
@@ -531,4 +536,79 @@ fn with_the_feature_off_nothing_shows() {
     r.advance(120);
     let st = r.svc.status();
     assert_eq!((st.lightcraft_port, st.lightcraft_waiting, st.lightcraft_reachable), (0, 0, None));
+}
+
+// ------------------------------------------------------------------ another PC: calm when the cloud library cannot be reached
+
+#[test]
+fn being_offline_is_one_calm_line_in_problems_however_often_it_happens() {
+    let mut r = rig("offline");
+    r.fake.0.lock().unwrap().syncs = vec![Err(JobError::Offline("network is unreachable (os error 101)".into()))];
+    r.advance(20);
+    for _ in 0..6 {
+        r.advance(15 * 60);
+    }
+    let s = r.svc.status();
+    assert_eq!(s.errors.len(), 1, "{:?}", s.errors);
+    assert_eq!(s.errors[0].text, lightcraft_cloud_desktop::service::OFFLINE_LINE);
+    assert!(s.offline && s.last_error.is_none(), "not a failure: {s:?}");
+    assert_ne!(s.tray_state(), TrayState::Error);
+    assert!(r.spy.texts().is_empty(), "no notification");
+    // back online: the flag goes, the line stays as history
+    r.fake.0.lock().unwrap().syncs = vec![Ok(SyncOutcome::default())];
+    r.advance(15 * 60);
+    assert!(!r.svc.status().offline);
+    // offline again later: a new line (the newest one is no longer the offline line only if something else came between)
+    r.fake.0.lock().unwrap().syncs = vec![Err(JobError::Offline("again".into()))];
+    r.advance(15 * 60);
+    assert_eq!(r.svc.status().errors.len(), 1, "the line is still the newest, so it is not added twice");
+}
+
+#[test]
+fn paused_and_offline_does_nothing_at_all() {
+    let mut r = rig("paused-offline");
+    r.fake.0.lock().unwrap().syncs = vec![Err(JobError::Offline("x".into()))];
+    r.svc.handle(Command::Pause);
+    assert_eq!(r.advance(86_400), Vec::<String>::new());
+    assert!(r.svc.status().errors.is_empty());
+}
+
+#[test]
+fn the_same_refusal_is_said_once() {
+    let mut r = rig("refused-once");
+    r.fake.0.lock().unwrap().syncs = vec![Err(JobError::Refused("use the full build".into()))];
+    r.advance(20);
+    for _ in 0..4 {
+        r.advance(15 * 60);
+    }
+    let s = r.svc.status();
+    assert_eq!(s.errors.len(), 1, "{:?}", s.errors);
+    assert!(s.errors[0].text.contains("use the full build"));
+}
+
+#[test]
+fn another_pcs_numbers_reach_the_status_and_new_photos_are_announced_once() {
+    use lightcraft_cloud_desktop::appstate::OtherView;
+    let mut r = rig("other-numbers");
+    r.fake.0.lock().unwrap().other = true;
+    let out = |downloaded, waiting| {
+        Ok(SyncOutcome {
+            photos: 12,
+            downloaded,
+            other: Some(OtherView { photos: 12, waiting_to_download: waiting, edits_waiting: 1, held_back: 0, received: 0 }),
+            problems: vec!["Not enough free disk space for 3 more photos".into()],
+            ..SyncOutcome::default()
+        })
+    };
+    r.fake.0.lock().unwrap().syncs = vec![out(4, 3), out(2, 1), out(0, 0)];
+    r.advance(20);
+    assert_eq!(r.spy.texts(), ["4 new photos from the home PC"]);
+    let o = r.svc.status().other.clone().unwrap();
+    assert_eq!((o.photos, o.waiting_to_download, o.edits_waiting, o.received), (12, 3, 1, 4));
+    r.advance(15 * 60);
+    assert_eq!(r.spy.texts(), ["2 new photos from the home PC"]);
+    r.advance(15 * 60);
+    assert!(r.spy.texts().is_empty());
+    assert_eq!(r.svc.status().other.as_ref().map(|o| (o.received, o.waiting_to_download)), Some((6, 0)));
+    assert_eq!(r.svc.status().errors.len(), 1, "the same problem is listed once");
 }

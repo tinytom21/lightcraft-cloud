@@ -21,6 +21,8 @@ pub struct Item {
     pub preview_bytes: Option<u64>,
     pub thumb: Option<String>,
     pub size: Option<u64>,
+    /// The file's modification time (UTC ISO), when the manifest has it.
+    pub mtime: Option<String>,
     /// A partner of another photo: shown as part of it, not on its own.
     pub alternate: bool,
 }
@@ -41,6 +43,7 @@ fn item(v: &Value, alternate: bool) -> Result<Item> {
         preview_bytes: v.get("previewBytes").and_then(Value::as_u64),
         thumb: text(v, "thumb"),
         size: v.get("size").and_then(Value::as_u64),
+        mtime: text(v, "mtime"),
         alternate,
     })
 }

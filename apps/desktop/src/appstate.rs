@@ -79,6 +79,22 @@ pub struct LastSync {
     pub kept: usize,
 }
 
+/// What the other-PC role shows in Status (None on the home PC).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OtherView {
+    /// Photos of the chosen folders that are on this PC.
+    pub photos: usize,
+    /// Photos of the chosen folders that are not here yet.
+    pub waiting_to_download: usize,
+    /// Edits made here that are not at the home PC yet.
+    pub edits_waiting: usize,
+    /// Edits sent that the home PC has not merged yet.
+    pub held_back: usize,
+    /// Photos this PC received from the home PC since the app was first started.
+    pub received: usize,
+}
+
 /// Everything the windows and the tray show.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -106,6 +122,10 @@ pub struct AppStatus {
     pub lightcraft_waiting: usize,
     /// Whether LightCraft answered at the last try; None: it was not asked (nothing was waiting) or not yet.
     pub lightcraft_reachable: Option<bool>,
+    /// The other-PC role's numbers (None on the home PC).
+    pub other: Option<OtherView>,
+    /// The cloud library could not be reached at the last try (calm: tried again later).
+    pub offline: bool,
     /// ISO time of the next scheduled sync (none while paused or not set up).
     pub next_sync: Option<String>,
     pub last_purge: Option<String>,

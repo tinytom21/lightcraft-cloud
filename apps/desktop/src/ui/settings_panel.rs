@@ -7,6 +7,9 @@ use std::time::{Duration, Instant};
 use egui::{Margin, RichText, Ui};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
+use lightcraft_cloud_client::other::FolderInfo;
+
+use crate::config::{Config, File, Role};
 use crate::settings::{Form, SaveEnv, Storage};
 use crate::ui::theme::{self, Kind as ButtonKind};
 
@@ -84,6 +87,87 @@ impl FolderPicker for RfdPicker {
     }
 }
 
+/// Reads the folders of the cloud library from its manifest (the real one does it on a thread of its own: it needs the network).
+pub trait FolderLister {
+    /// Start reading the library the settings point at; the result arrives through [`FolderLister::poll`].
+    fn start(&mut self, file: &File);
+    fn waiting(&self) -> bool;
+    fn poll(&mut self) -> Option<Result<Vec<FolderInfo>, String>>;
+}
+
+#[derive(Default)]
+pub struct ThreadLister {
+    rx: Option<Receiver<Result<Vec<FolderInfo>, String>>>,
+}
+
+impl FolderLister for ThreadLister {
+    fn start(&mut self, file: &File) {
+        if self.rx.is_some() {
+            return;
+        }
+        let (tx, rx) = channel();
+        self.rx = Some(rx);
+        let file = file.clone();
+        std::thread::spawn(move || {
+            let r = Config::from_file(PathBuf::from("config.toml"), file)
+                .and_then(|c| c.open_remote())
+                .and_then(|remote| lightcraft_cloud_client::other::list_folders(&*remote).map_err(|e| e.to_string()));
+            let _ = tx.send(r);
+        });
+    }
+
+    fn waiting(&self) -> bool {
+        self.rx.is_some()
+    }
+
+    fn poll(&mut self) -> Option<Result<Vec<FolderInfo>, String>> {
+        let rx = self.rx.as_ref()?;
+        match rx.try_recv() {
+            Ok(r) => {
+                self.rx = None;
+                Some(r)
+            }
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                self.rx = None;
+                Some(Err("reading the cloud library stopped unexpectedly".into()))
+            }
+        }
+    }
+}
+
+/// What the folder list shows.
+pub enum Folders {
+    NotRead,
+    Reading,
+    Read(Vec<FolderInfo>),
+    Failed(String),
+}
+
+/// "1.4 GiB", "320.0 MiB".
+pub fn human_size(n: u64) -> String {
+    let mut f = n as f64;
+    let mut unit = "B";
+    for u in ["KiB", "MiB", "GiB", "TiB"] {
+        if f < 1024.0 {
+            break;
+        }
+        f /= 1024.0;
+        unit = u;
+    }
+    if unit == "B" { format!("{n} B") } else { format!("{f:.1} {unit}") }
+}
+
+fn photos_text(n: usize) -> String {
+    if n == 1 { "1 photo".to_string() } else { format!("{n} photos") }
+}
+
+/// The row of one folder: its name (the top level has none), photos and size.
+pub fn folder_label(f: &FolderInfo) -> String {
+    let name = if f.folder.is_empty() { "(photos at the top level)" } else { f.folder.as_str() };
+    format!("{name}  \u{2014}  {}, {}", photos_text(f.photos), human_size(f.bytes))
+}
+
 /// Which storage kind the radio shows.
 #[derive(PartialEq, Clone, Copy)]
 enum Kind {
@@ -99,6 +183,8 @@ pub struct SettingsPanel {
     /// First run: the panel is titled Setup and says nothing has been saved yet.
     pub setup: bool,
     pub picker: Box<dyn FolderPicker>,
+    pub lister: Box<dyn FolderLister>,
+    pub folders: Folders,
     pub problems: Vec<String>,
     pub done: Vec<String>,
     /// Set when a save worked (the window tells the app through the config file; this is for the shell and tests).
@@ -107,7 +193,7 @@ pub struct SettingsPanel {
 
 impl SettingsPanel {
     pub fn new(form: Form, remotes: Result<Vec<String>, String>, env: SaveEnv, setup: bool) -> Self {
-        SettingsPanel { form, remotes, env, setup, picker: Box::<RfdPicker>::default(), problems: Vec::new(), done: Vec::new(), saved: false }
+        SettingsPanel { form, remotes, env, setup, picker: Box::<RfdPicker>::default(), lister: Box::<ThreadLister>::default(), folders: Folders::NotRead, problems: Vec::new(), done: Vec::new(), saved: false }
     }
 
     pub fn save(&mut self) {
@@ -135,35 +221,179 @@ impl SettingsPanel {
         if let Some(p) = self.picker.poll() {
             self.form.source = p.to_string_lossy().into_owned();
         }
-        if self.picker.waiting() {
+        if let Some(r) = self.lister.poll() {
+            self.folders = match r {
+                Ok(v) => Folders::Read(v),
+                Err(e) => Folders::Failed(e),
+            };
+        }
+        // (settings that are already saved show the folders of the cloud library at once; a first setup waits for the button)
+        if self.form.is_other() && !self.setup && matches!(self.folders, Folders::NotRead) && !self.form.storage.spec().trim_matches(':').is_empty() {
+            self.read_folders();
+        }
+        if self.picker.waiting() || self.lister.waiting() {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
         }
         let t = theme::CHARCOAL;
         theme::title(ui, if self.setup { "Set up LightCraft Cloud" } else { "Settings" });
         if self.setup {
             ui.add_space(4.0);
-            ui.add(egui::Label::new(RichText::new("Choose the photos to publish and where the cloud library is stored. Nothing is uploaded until you save.").color(t.text_dim)).wrap());
+            let intro = if self.form.is_other() {
+                "Choose where the cloud library is and which folders to keep on this PC. Nothing is downloaded until you save."
+            } else {
+                "Choose the photos to publish and where the cloud library is stored. Nothing is uploaded until you save."
+            };
+            ui.add(egui::Label::new(RichText::new(intro).color(t.text_dim)).wrap());
         }
         ui.add_space(12.0);
 
-        theme::panel(ui, None, |ui| {
-            let label = theme::field_label(ui, "Photo folder");
-            ui.horizontal(|ui| {
-                let browse = 96.0;
-                let room = (ui.available_width() - browse - ui.spacing().item_spacing.x).max(120.0);
-                ui.add_sized([room, 30.0], theme::text_edit(&mut self.form.source).hint_text("/path/to/your/photos")).labelled_by(label.id);
-                if theme::button(ui, "Browse…", ButtonKind::Secondary).clicked() {
-                    self.picker.start(&self.form.source, parent);
-                }
+        if cfg!(feature = "home") {
+            theme::panel(ui, Some("What is this PC?"), |ui| {
+                let mut role = self.form.role;
+                ui.radio_value(&mut role, Role::Home, "This is my home PC");
+                theme::hint(ui, "It keeps the photos and puts them in the cloud library. Other PCs and the phone work from them.");
+                ui.radio_value(&mut role, Role::Other, "This is another PC");
+                theme::hint(ui, "It keeps a copy of the folders you choose and sends its edits back to the home PC.");
+                self.form.set_role(role);
             });
-            ui.add_space(4.0);
-            let label = theme::field_label(ui, "Folders to leave out (one name pattern per line, e.g. exported)");
-            let width = ui.available_width();
-            ui.add(egui::TextEdit::multiline(&mut self.form.exclude).desired_rows(3).desired_width(width).margin(Margin::symmetric(8, 6))).labelled_by(label.id);
-        });
+            theme::gap(ui);
+        }
+
+        if self.form.is_other() {
+            self.storage_panel(ui);
+            theme::gap(ui);
+            theme::panel(ui, Some("Photos on this PC"), |ui| {
+                let label = theme::field_label(ui, "Folder for the photos");
+                self.source_row(ui, parent, label.id, "/path/to/a/folder");
+                theme::hint(ui, "The folders you choose are downloaded here. Use a folder that is only for this, and add it to LightCraft.");
+            });
+            theme::gap(ui);
+            self.folders_panel(ui);
+            theme::gap(ui);
+            theme::panel(ui, Some("Name of this PC"), |ui| {
+                let label = theme::field_label(ui, "Shown to the home PC with the edits you send");
+                ui.add_sized([240.0, 30.0], theme::text_edit(&mut self.form.device).hint_text(crate::config::default_device())).labelled_by(label.id);
+                theme::hint(ui, "Leave it empty to use this PC's name. It must not be the name of a phone you use with this library.");
+            });
+        } else {
+            theme::panel(ui, None, |ui| {
+                let label = theme::field_label(ui, "Photo folder");
+                self.source_row(ui, parent, label.id, "/path/to/your/photos");
+                ui.add_space(4.0);
+                let label = theme::field_label(ui, "Folders to leave out (one name pattern per line, e.g. exported)");
+                let width = ui.available_width();
+                ui.add(egui::TextEdit::multiline(&mut self.form.exclude).desired_rows(3).desired_width(width).margin(Margin::symmetric(8, 6))).labelled_by(label.id);
+            });
+            theme::gap(ui);
+            self.storage_panel(ui);
+        }
 
         theme::gap(ui);
-        theme::panel(ui, Some("Storage"), |ui| {
+        theme::panel(ui, None, |ui| {
+            ui.checkbox(&mut self.form.notifications, "Show desktop notifications");
+            ui.checkbox(&mut self.form.start_at_login, "Start when I log in");
+        });
+
+        ui.add_space(14.0);
+        if theme::button(ui, if self.setup { "Save and start" } else { "Save" }, ButtonKind::Primary).clicked() {
+            self.save();
+        }
+        for p in &self.problems {
+            ui.add(egui::Label::new(RichText::new(p).color(t.reject)).wrap());
+        }
+        for d in &self.done {
+            ui.add(egui::Label::new(RichText::new(d).color(t.ok)).wrap());
+        }
+    }
+
+    fn read_folders(&mut self) {
+        if self.lister.waiting() {
+            return;
+        }
+        self.folders = Folders::Reading;
+        self.lister.start(&self.form.to_file());
+    }
+
+    /// The line with the photo folder and its Browse… button.
+    fn source_row(&mut self, ui: &mut Ui, parent: Option<&dyn Parent>, label: egui::Id, hint: &str) {
+        ui.horizontal(|ui| {
+            let browse = 96.0;
+            let room = (ui.available_width() - browse - ui.spacing().item_spacing.x).max(120.0);
+            ui.add_sized([room, 30.0], theme::text_edit(&mut self.form.source).hint_text(hint)).labelled_by(label);
+            if theme::button(ui, "Browse…", ButtonKind::Secondary).clicked() {
+                self.picker.start(&self.form.source, parent);
+            }
+        });
+    }
+
+    /// Which folders of the cloud library this PC keeps: the list read from its manifest, with sizes and photo counts.
+    fn folders_panel(&mut self, ui: &mut Ui) {
+        let t = theme::CHARCOAL;
+        theme::panel(ui, Some("Folders to keep on this PC"), |ui| {
+            let reading = self.lister.waiting();
+            let label = if matches!(self.folders, Folders::Read(_)) { "Read the list again" } else { "Show the folders in the cloud library" };
+            let can_read = !self.form.storage.spec().trim_matches(':').is_empty();
+            ui.horizontal(|ui| {
+                if theme::button(ui, label, ButtonKind::Secondary).clicked() && !reading && can_read {
+                    self.read_folders();
+                }
+                if reading {
+                    theme::hint(ui, "Reading the cloud library\u{2026}");
+                }
+            });
+            if !can_read {
+                theme::hint(ui, "Choose where the cloud library is first.");
+            }
+            let form = &mut self.form;
+            match &self.folders {
+                Folders::NotRead => {
+                    if form.folders.is_empty() {
+                        theme::hint(ui, "The folders are listed here, with how many photos they hold and how much room they need.");
+                    } else {
+                        let names: Vec<&str> = form.folders.iter().map(String::as_str).collect();
+                        ui.add(egui::Label::new(RichText::new(format!("Kept now: {}", names.join(", "))).color(t.text)).wrap());
+                    }
+                }
+                Folders::Reading => {}
+                Folders::Failed(e) => {
+                    ui.add(egui::Label::new(RichText::new(format!("Could not read the cloud library: {e}")).color(t.reject)).wrap());
+                }
+                Folders::Read(list) => {
+                    if list.is_empty() {
+                        theme::hint(ui, "The cloud library has no photos yet.");
+                    }
+                    for f in list {
+                        let mut on = form.folders.contains(&f.folder);
+                        if ui.checkbox(&mut on, folder_label(f)).changed() {
+                            form.set_folder(&f.folder, on);
+                        }
+                    }
+                    let gone: Vec<String> = form.folders.iter().filter(|c| !list.iter().any(|f| &f.folder == *c)).cloned().collect();
+                    for g in gone {
+                        let mut on = true;
+                        if ui.checkbox(&mut on, format!("{g}  \u{2014}  no longer in the cloud library")).changed() {
+                            form.set_folder(&g, false);
+                        }
+                    }
+                    let chosen: Vec<&FolderInfo> = list.iter().filter(|f| form.folders.contains(&f.folder)).collect();
+                    let (photos, bytes) = (chosen.iter().map(|f| f.photos).sum::<usize>(), chosen.iter().map(|f| f.bytes).sum::<u64>());
+                    let n = form.folders.len();
+                    let line = if n == 0 {
+                        "No folder ticked yet.".to_string()
+                    } else {
+                        format!("{} ticked: {}, {} in all", if n == 1 { "1 folder".to_string() } else { format!("{n} folders") }, photos_text(photos), human_size(bytes))
+                    };
+                    ui.add(egui::Label::new(RichText::new(line).color(t.text)).wrap());
+                }
+            }
+            theme::hint(ui, "A photo you delete on this PC stays deleted. To get it back, untick its folder, save, then tick it again. A folder you untick keeps its photos here but is no longer updated.");
+        });
+    }
+
+    /// Where the cloud library is stored (both roles); the "previews only" choice is the home PC's.
+    fn storage_panel(&mut self, ui: &mut Ui) {
+        let t = theme::CHARCOAL;
+        theme::panel(ui, Some(if self.form.is_other() { "Cloud library" } else { "Storage" }), |ui| {
             let mut kind = if matches!(self.form.storage, Storage::Rclone { .. }) { Kind::Rclone } else { Kind::Local };
             let before = kind;
             ui.horizontal_wrapped(|ui| {
@@ -176,6 +406,7 @@ impl SettingsPanel {
                     Kind::Rclone => Storage::Rclone { remote: String::new(), path: "LightCraft Cloud".into() },
                     Kind::Local => Storage::Local { dir: String::new() },
                 };
+                self.folders = Folders::NotRead;
             }
             let names: Vec<String> = self.remotes.clone().unwrap_or_default();
             match &mut self.form.storage {
@@ -208,30 +439,15 @@ impl SettingsPanel {
                     ui.add_sized([width, 30.0], theme::text_edit(dir).hint_text("/path/to/a/folder")).labelled_by(label.id);
                 }
             }
-            ui.add_space(2.0);
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 16.0;
-                ui.radio_value(&mut self.form.previews_only, false, "Originals and previews");
-                ui.radio_value(&mut self.form.previews_only, true, "Previews only");
-            });
+            if !self.form.is_other() {
+                ui.add_space(2.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 16.0;
+                    ui.radio_value(&mut self.form.previews_only, false, "Originals and previews");
+                    ui.radio_value(&mut self.form.previews_only, true, "Previews only");
+                });
+            }
         });
-
-        theme::gap(ui);
-        theme::panel(ui, None, |ui| {
-            ui.checkbox(&mut self.form.notifications, "Show desktop notifications");
-            ui.checkbox(&mut self.form.start_at_login, "Start when I log in");
-        });
-
-        ui.add_space(14.0);
-        if theme::button(ui, if self.setup { "Save and start" } else { "Save" }, ButtonKind::Primary).clicked() {
-            self.save();
-        }
-        for p in &self.problems {
-            ui.add(egui::Label::new(RichText::new(p).color(t.reject)).wrap());
-        }
-        for d in &self.done {
-            ui.add(egui::Label::new(RichText::new(d).color(t.ok)).wrap());
-        }
     }
 }
 

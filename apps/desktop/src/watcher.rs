@@ -22,6 +22,12 @@ pub fn relevant(source: &Path, exclude: &[String], path: &Path) -> bool {
     !is_excluded(&rel, exclude)
 }
 
+/// Whether a path is a sidecar (`.xmp`, any case): the only files another PC's pass looks at, since the photos themselves never
+/// change on it.
+pub fn is_sidecar(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmp"))
+}
+
 /// Whether this kind of event is a change (not a read).
 pub fn counts(kind: &EventKind) -> bool {
     match kind {
@@ -39,11 +45,17 @@ pub struct FolderWatcher {
 impl FolderWatcher {
     /// `on_change` is called (from the watcher's thread) for every relevant change; keep it quick.
     pub fn start(source: &Path, exclude: Vec<String>, on_change: impl Fn() + Send + 'static) -> Result<FolderWatcher, String> {
+        Self::start_filtered(source, exclude, false, on_change)
+    }
+
+    /// [`FolderWatcher::start`]; with `sidecars_only` only a change to an `.xmp` file counts (another PC's role: a downloaded photo is
+    /// not news to it, a sidecar LightCraft wrote is).
+    pub fn start_filtered(source: &Path, exclude: Vec<String>, sidecars_only: bool, on_change: impl Fn() + Send + 'static) -> Result<FolderWatcher, String> {
         let root = source.to_path_buf();
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             if let Ok(ev) = res
                 && counts(&ev.kind)
-                && ev.paths.iter().any(|p| relevant(&root, &exclude, p))
+                && ev.paths.iter().any(|p| (!sidecars_only || is_sidecar(p)) && relevant(&root, &exclude, p))
             {
                 on_change();
             }
@@ -77,6 +89,29 @@ mod tests {
         assert!(relevant(src, &e, Path::new("/p/Photos/exported"))); // (the folder itself appearing: one useless sync, as before)
         assert!(!relevant(src, &e, Path::new("/elsewhere/a.jpg")));
         assert!(!relevant(src, &e, Path::new("/p/Photos")));
+    }
+
+    #[test]
+    fn only_xmp_files_are_sidecars() {
+        assert!(is_sidecar(Path::new("/p/a.xmp")) && is_sidecar(Path::new("/p/a.jpg.XMP")));
+        assert!(!is_sidecar(Path::new("/p/a.jpg")) && !is_sidecar(Path::new("/p/xmp")) && !is_sidecar(Path::new("/p/a.xmp.tmp")));
+    }
+
+    #[test]
+    fn a_watch_for_sidecars_ignores_photos() {
+        let d = std::env::temp_dir().join(format!("lc-desktop-watch-sc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let _w = FolderWatcher::start_filtered(&d, vec![], true, move || {
+            let _ = tx.send(());
+        })
+        .unwrap();
+        std::fs::write(d.join("a.jpg"), b"x").unwrap();
+        assert!(rx.recv_timeout(Duration::from_millis(700)).is_err(), "a photo is not a sidecar");
+        std::fs::write(d.join("a.xmp"), b"x").unwrap();
+        assert!(rx.recv_timeout(Duration::from_secs(5)).is_ok(), "no event for a sidecar");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

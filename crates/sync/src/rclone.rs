@@ -43,6 +43,9 @@ unsafe impl Sync for Lib {}
 static LIB: OnceLock<Lib> = OnceLock::new();
 static LOAD: Mutex<()> = Mutex::new(());
 
+/// The file name of rclone's library on this system (`librclone.dll` on Windows).
+const LIBRCLONE: &str = if cfg!(windows) { "librclone.dll" } else { "librclone.so" };
+
 /// Load `librclone.so` (from `path`, else by name: Android finds it among the app's libraries) once.
 /// `work_dir` becomes the Go runtime's `TMPDIR` (and `HOME` when it has none, as on Android): set before the
 /// library is loaded, because the Go runtime reads the environment once, when it starts.
@@ -64,7 +67,7 @@ fn lib(path: Option<&Path>, work_dir: Option<&Path>) -> Result<&'static Lib> {
             }
         }
     }
-    let name: PathBuf = path.map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("librclone.so"));
+    let name: PathBuf = path.map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(LIBRCLONE));
     let loaded = unsafe {
         let lib = libloading::Library::new(&name).map_err(|e| Error::Remote(format!("librclone.so not found ({}): {e}", name.display())))?;
         let missing = |what: &str, e: libloading::Error| Error::Remote(format!("{} has no {what}: {e}", name.display()));

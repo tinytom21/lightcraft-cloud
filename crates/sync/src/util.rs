@@ -132,6 +132,43 @@ pub fn write_atomic(dest: &Path, bytes: &[u8]) -> Result<()> {
     })
 }
 
+/// Hard-link `tmp` to `dest`, failing with `AlreadyExists` if `dest` is there: unlike a rename it can never replace a file.
+/// A filesystem without hard links gets a check and a rename (the check cannot be atomic there).
+pub(crate) fn link_no_replace(tmp: &Path, dest: &Path) -> std::io::Result<()> {
+    match std::fs::hard_link(tmp, dest) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
+        Err(_) => match std::fs::symlink_metadata(dest) {
+            Ok(_) => Err(std::io::ErrorKind::AlreadyExists.into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::rename(tmp, dest),
+            Err(e) => Err(e),
+        },
+    }
+}
+
+pub(crate) fn sync_dir(dir: &Path) {
+    if let Ok(f) = std::fs::File::open(dir) {
+        let _ = f.sync_all();
+    }
+}
+
+/// Free bytes on the filesystem holding `path` (or its nearest folder that exists); None when that cannot be told.
+#[cfg(unix)]
+pub(crate) fn free_space(path: &Path) -> Option<u64> {
+    let mut p = path;
+    loop {
+        if let Ok(s) = rustix::fs::statvfs(p) {
+            return Some(s.f_bavail.saturating_mul(s.f_frsize));
+        }
+        p = p.parent()?;
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn free_space(_path: &Path) -> Option<u64> {
+    None
+}
+
 /// Run `f` over `items` on up to `jobs` threads; results in item order.
 pub fn parallel<T: Sync, R: Send>(items: &[T], jobs: usize, f: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let next = AtomicUsize::new(0);

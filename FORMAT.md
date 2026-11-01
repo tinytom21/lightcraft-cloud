@@ -137,7 +137,42 @@ The format stays 1: these are new files in new folders, which a client that does
 * The weekly purge removes `imports-done/` day folders like `inbox-done/` (same age limit, same backup check). `imports/`
   itself is never purged.
 
+## A client that is a PC (another PC)
+A second PC keeps a full copy of some folders of the library in a photo folder of its own, with its own LightCraft library, and sends
+its edits back. The home PC stays the master. This adds no files or fields to the format (it stays 1): the other PC reads what the
+phone reads and writes what the phone writes, plus the imports above. **It never writes `originals/` or `mobile/`**, and it never
+reads another device's inbox.
+
+* **What it keeps.** The user picks folders from the manifest (the folders `path` values sit in). A chosen folder means the photos
+  directly in it, not its subfolders. For each photo of a chosen folder (alternates included, each by its own `id`) the PC downloads
+  `originals/<path>` and its sidecar to `<its photo folder>/<path>`. A download is written next to its target as a temporary file,
+  accepted only when its content hash equals `id` (and its size `size`), then linked into place by a call that cannot replace an
+  existing file, with `mtime` set from the manifest (never into the future). The sidecar goes in before the photo. A different file
+  already at the target is never replaced. A manifest path that is absolute, has a `..` or `.` component, an empty component or a
+  backslash is not written. A pass that is cut off is finished by the next; what arrived is kept.
+* **Edits go out.** A local sidecar whose bytes differ from the ones last downloaded or sent, and whose `sidecarVersion` is not the
+  manifest's, is an edit. The PC sends it to `inbox/<device>/<id>-<UTCstamp>-<base>.xmp` like a phone (never overwriting, stamps
+  strictly increasing per photo), with `base` the version it started from: the manifest's `sidecarVersion` when it last downloaded
+  or saw the home PC's sidecar, else the version of its own previous edit (the home PC keeps every inbox file it received), else
+  `none`. An edit is sent once. `device` follows the inbox's name rule, and must not be a phone's name.
+* **The home PC's version comes back.** When the manifest's `sidecarVersion` changes and the local sidecar has no unsent edit, the PC
+  replaces the local sidecar with the home PC's (temporary file, then rename), keeping the old one in its own history. When both
+  changed, the PC sends its edit first and **leaves its local sidecar alone**: the home PC merges (conflict policy above), the
+  merged result becomes the manifest's version, and a later pass takes it. Until the manifest names a version other than the one it
+  had when the edit was sent, the PC treats its edit as waiting and does not replace anything. If the home PC kept its own version
+  instead of applying the edit, the PC keeps its local edit until the home PC's sidecar changes again. A local edit is never
+  discarded: a replaced sidecar is always kept in the PC's history first.
+* **Deletions.** Only the home PC's deletions spread: a photo whose `id` is no longer in the manifest, in a chosen folder, is moved
+  (with its sidecar) to the PC's own `removed/<date>/` folder, never deleted, and only if its bytes still hash to `id`. More
+  removals in one pass than the PC's `max_delete` are refused as a whole (an emptied or damaged manifest looks like that).
+  Deleting a photo on the PC affects only that PC: the PC remembers the photo as left out and does not download it again, however the
+  home PC changes it. It comes back when the user un-chooses the photo's folder and chooses it again (un-choosing forgets what the PC
+  remembers about the folder's photos and leaves the files where they are; choosing again downloads what is missing). When the home
+  PC deletes the photo too, the memory goes with it.
+* **Disk space.** Before a download the PC checks that the file's size plus a safety margin (256 MiB by default) is free, and stops
+  with a clear message when it is not.
+
 ## Rules
-* PC is master. `originals/` and `mobile/` are written only by the publisher.
+* PC is master. `originals/` and `mobile/` are written only by the publisher (the home PC).
 * Clients must ignore unknown fields (and unknown files). A breaking change bumps `format`; clients must refuse
   a `format` higher than they know.

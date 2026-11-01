@@ -1,10 +1,13 @@
 //! The Setup / Settings form without the window: what the user can change, the checks, and saving (the config file, and the
 //! autostart entry when the "Start when I log in" box was changed). The egui panel in `ui` only draws and edits a [`Form`].
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use lightcraft_cloud_client::valid_device;
+
 use crate::autostart;
-use crate::config::{Config, File, expand, local_remote};
+use crate::config::{Config, File, Role, expand, local_remote};
 
 /// Where the cloud library lives: one of the user's rclone remotes and a folder on it, or (for a synced folder) a folder on
 /// this PC.
@@ -45,7 +48,13 @@ pub struct SaveEnv {
 
 #[derive(Debug, Clone)]
 pub struct Form {
+    /// What this PC is. The light build has no choice: it is always another PC.
+    pub role: Role,
     pub source: String,
+    /// Role other: the folders of the cloud library to keep a copy of (relative to `originals/`).
+    pub folders: BTreeSet<String>,
+    /// Role other: this PC's name in the cloud library; empty: the host name.
+    pub device: String,
     /// One folder-name pattern per line.
     pub exclude: String,
     pub storage: Storage,
@@ -61,7 +70,10 @@ impl Form {
     /// The form for a config file's settings; `start_at_login`: whether the autostart entry exists now.
     pub fn from_file(file: &File, start_at_login: bool) -> Form {
         Form {
+            role: if cfg!(feature = "home") { file.role } else { Role::Other },
             source: file.source.clone(),
+            folders: file.folders.iter().map(|f| f.trim().trim_matches('/').to_string()).collect(),
+            device: file.device.clone().unwrap_or_default(),
             exclude: file.exclude.join("\n"),
             storage: match file.remote.as_deref() {
                 Some(spec) => Storage::parse(spec),
@@ -77,7 +89,37 @@ impl Form {
 
     /// The form of a first run: nothing chosen yet but the usual folder names.
     pub fn first_run(start_at_login: bool) -> Form {
-        Form::from_file(&File::default(), start_at_login)
+        let mut f = Form::from_file(&File::default(), start_at_login);
+        if !cfg!(feature = "home") {
+            f.source.clear(); // (the home PC's usual folder is not offered to another PC)
+        }
+        f
+    }
+
+    /// Choose what this PC is. Another PC's photo folder is its own to choose: the home PC's usual folder is not offered for it.
+    pub fn set_role(&mut self, role: Role) {
+        if role == self.role {
+            return;
+        }
+        let usual = File::default().source;
+        if role == Role::Other && self.source == usual {
+            self.source.clear();
+        } else if role == Role::Home && self.source.trim().is_empty() {
+            self.source = usual;
+        }
+        self.role = role;
+    }
+
+    pub fn is_other(&self) -> bool {
+        self.role == Role::Other
+    }
+
+    pub fn set_folder(&mut self, folder: &str, on: bool) {
+        if on {
+            self.folders.insert(folder.to_string());
+        } else {
+            self.folders.remove(folder);
+        }
     }
 
     pub fn exclude_list(&self) -> Vec<String> {
@@ -87,7 +129,10 @@ impl Form {
     /// The settings this form makes.
     pub fn to_file(&self) -> File {
         let mut f = self.base.clone();
+        f.role = self.role;
         f.source = self.source.trim().to_string();
+        f.folders = self.folders.iter().cloned().collect();
+        f.device = Some(self.device.trim().to_string()).filter(|d| !d.is_empty());
         f.exclude = self.exclude_list();
         f.remote = Some(self.storage.spec());
         f.previews_only = self.previews_only;
@@ -100,7 +145,9 @@ impl Form {
     pub fn problems(&self, remotes: Option<&[String]>) -> Vec<String> {
         let mut p = Vec::new();
         let source = self.source.trim();
-        if source.is_empty() {
+        if self.is_other() {
+            self.other_problems(source, &mut p);
+        } else if source.is_empty() {
             p.push("Choose the photo folder to publish.".to_string());
         } else {
             match expand(source) {
@@ -131,6 +178,28 @@ impl Form {
         p
     }
 
+    /// Another PC's own checks: its photo folder (made when saved, if its parent is there), the folders to keep, its name.
+    fn other_problems(&self, source: &str, p: &mut Vec<String>) {
+        if source.is_empty() {
+            p.push("Choose the folder on this PC where the photos are kept.".to_string());
+        } else {
+            match expand(source) {
+                Ok(d) if d.is_dir() => {}
+                Ok(d) if d.exists() => p.push(format!("{} is a file, not a folder.", d.display())),
+                Ok(d) if d.parent().is_some_and(|parent| parent.as_os_str().is_empty() || parent.is_dir()) => {} // (made when saved)
+                Ok(d) => p.push(format!("The folder {} cannot be made: the folder above it does not exist.", d.display())),
+                Err(e) => p.push(e),
+            }
+        }
+        if self.folders.is_empty() {
+            p.push("Tick at least one folder to keep on this PC.".to_string());
+        }
+        let device = self.device.trim();
+        if !device.is_empty() && !valid_device(device) {
+            p.push("The name of this PC may use letters, digits, - _ and . only (up to 64 characters).".to_string());
+        }
+    }
+
     /// Check and write the config; apply the autostart box only if it was changed. Returns what was done, or the problems.
     pub fn save(&mut self, env: &SaveEnv, remotes: Option<&[String]>) -> Result<Vec<String>, Vec<String>> {
         let problems = self.problems(remotes);
@@ -138,6 +207,10 @@ impl Form {
             return Err(problems);
         }
         let mut done = Vec::new();
+        if self.is_other() {
+            let dir = expand(self.source.trim()).map_err(|e| vec![e])?;
+            std::fs::create_dir_all(&dir).map_err(|e| vec![format!("{}: {e}", dir.display())])?;
+        }
         self.to_file().save(&env.config_path).map_err(|e| vec![e])?;
         done.push(format!("Saved {}", env.config_path.display()));
         if self.start_at_login != self.login_before {
@@ -179,6 +252,7 @@ mod tests {
         assert_eq!(Storage::parse("a:b c").spec(), "a:b c");
     }
 
+    #[cfg(feature = "home")]
     #[test]
     fn the_form_checks_the_folder_and_the_storage() {
         let d = temp("a");
@@ -197,6 +271,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[cfg(feature = "home")]
     #[test]
     fn saving_writes_the_config_and_leaves_the_rest_alone() {
         let d = temp("b");
@@ -229,6 +304,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[cfg(feature = "home")]
     #[test]
     fn a_bad_form_writes_nothing() {
         let d = temp("c");
@@ -240,6 +316,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[cfg(feature = "home")]
     #[test]
     fn the_login_box_writes_and_removes_the_autostart_entry_only_when_changed() {
         let d = temp("d");
@@ -267,6 +344,68 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[test]
+    fn another_pc_needs_a_folder_here_folders_to_keep_and_a_valid_name() {
+        let d = temp("e");
+        let mut f = Form::first_run(false);
+        f.set_role(Role::Other);
+        assert!(f.source.is_empty(), "the home PC's usual folder is not offered");
+        f.storage = Storage::Local { dir: d.join("lib").to_string_lossy().into_owned() };
+        let p = f.problems(None);
+        assert_eq!(p.len(), 2, "{p:?}"); // (no folder here, nothing ticked)
+        f.source = d.join("pc-photos").to_string_lossy().into_owned(); // (does not exist yet: made when saved)
+        f.set_folder("Lisbon", true);
+        assert!(f.problems(None).is_empty());
+        f.device = "my laptop!".into();
+        assert!(f.problems(None)[0].contains("name of this PC"));
+        f.device = "laptop".into();
+        f.source = d.join("nope/deeper").to_string_lossy().into_owned();
+        assert!(f.problems(None)[0].contains("cannot be made"));
+        f.source = d.join("pc-photos").to_string_lossy().into_owned();
+        f.set_folder("Lisbon", false);
+        f.set_folder("Porto", true);
+        f.set_folder("Faro", true);
+        let e = env(&d);
+        let done = f.save(&e, None).unwrap();
+        assert_eq!(done.len(), 1);
+        assert!(d.join("pc-photos").is_dir());
+        let c = Config::load(Some(&e.config_path)).unwrap();
+        assert_eq!((c.file.role, c.file.folders.clone(), c.file.device.as_deref()), (Role::Other, vec!["Faro".to_string(), "Porto".into()], Some("laptop")));
+        // reopened: the form shows what was saved; the home PC's settings are untouched by an other PC's form
+        let g = Form::from_file(&c.file, false);
+        assert_eq!((g.role, g.folders.len(), g.device.as_str()), (Role::Other, 2, "laptop"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(feature = "home")]
+    #[test]
+    fn a_home_form_writes_role_home_and_no_other_pc_keys_that_matter() {
+        let d = temp("f");
+        let e = env(&d);
+        let mut f = Form::first_run(false);
+        f.source = d.to_string_lossy().into_owned();
+        f.storage = Storage::Local { dir: d.join("lib").to_string_lossy().into_owned() };
+        f.save(&e, None).unwrap();
+        let c = Config::load(Some(&e.config_path)).unwrap();
+        assert_eq!((c.file.role, c.file.folders.is_empty(), c.file.device), (Role::Home, true, None));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_first_run_form_starts_as_the_builds_role() {
+        let f = Form::first_run(false);
+        if cfg!(feature = "home") {
+            assert_eq!((f.role, f.source.as_str()), (Role::Home, "~/Pictures/Photos"));
+        } else {
+            // the light build is another PC: it never offers the home PC's usual photo folder
+            assert_eq!((f.role, f.source.as_str()), (Role::Other, ""));
+        }
+        // and an existing home config opens as another PC's form in the light build only
+        let file = File { role: Role::Home, ..File::default() };
+        assert_eq!(Form::from_file(&file, false).role == Role::Other, !cfg!(feature = "home"));
+    }
+
+    #[cfg(feature = "home")]
     fn enable_marker(entry: &std::path::Path) {
         std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
         std::fs::write(entry, "marker").unwrap();

@@ -237,8 +237,8 @@ impl Home {
     }
 }
 
-fn check_state_dir(dir: &Path) -> Result<()> {
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return Ok(()) };
+pub(crate) fn check_state_dir(dir: &Path) -> Result<()> {
+    let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from) else { return Ok(()) };
     let pictures = std::fs::canonicalize(home.join("Pictures")).unwrap_or_else(|_| home.join("Pictures"));
     // resolve as far as the path exists
     let abs = std::path::absolute(dir).map_err(|e| Error::io(dir.display(), e))?;

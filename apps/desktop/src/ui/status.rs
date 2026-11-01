@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use egui::{Color32, CornerRadius, Label, Margin, RichText, Sense, Stroke, Ui, vec2};
 
-use crate::appstate::{Activity, AppStatus, Notice, relative, upcoming};
+use crate::appstate::{Activity, AppStatus, Notice, OtherView, relative, upcoming};
 use crate::ui::theme;
 
 /// What the panel shows.
@@ -47,7 +47,9 @@ fn list(ui: &mut Ui, title: &str, empty: &str, items: &[Notice], now: SystemTime
                     ui.set_width(LABEL_W);
                     ui.add(Label::new(RichText::new(relative(&n.when, now)).color(t.text_dim)).wrap());
                 });
-                ui.add(Label::new(RichText::new(&n.text).color(color.unwrap_or(t.text))).wrap());
+                // (not being able to reach the cloud library is not an error: amber, like Paused)
+                let shade = if n.text == crate::service::OFFLINE_LINE { t.caution } else { color.unwrap_or(t.text) };
+                ui.add(Label::new(RichText::new(&n.text).color(shade)).wrap());
             });
         }
     });
@@ -98,6 +100,47 @@ pub fn lightcraft_row(s: &AppStatus) -> Option<(String, Option<String>)> {
     Some((text, hint))
 }
 
+/// The rows of another PC: what it holds, what it still has to fetch, what it still has to send.
+fn other_rows(ui: &mut Ui, s: &AppStatus, o: &OtherView, now: SystemTime) {
+    let photos = |n: usize| if n == 1 { "1 photo".to_string() } else { format!("{n} photos") };
+    match &s.last_sync {
+        Some(l) => row(ui, "Last sync", format!("{} ({})", relative(&l.when, now), l.result)),
+        None => row(ui, "Last sync", "never"),
+    }
+    row(ui, "Photos on this PC", o.photos.to_string());
+    row(ui, "Waiting to download", if o.waiting_to_download == 0 { "nothing".to_string() } else { photos(o.waiting_to_download) });
+    row(
+        ui,
+        "Edits waiting to send",
+        match o.edits_waiting {
+            0 => "none".to_string(),
+            1 => "1 edit".to_string(),
+            n => format!("{n} edits"),
+        },
+    );
+    if o.held_back > 0 {
+        row(ui, "At the home PC", format!("{} sent, not merged there yet", if o.held_back == 1 { "1 edit".to_string() } else { format!("{} edits", o.held_back) }));
+    }
+    row(ui, "Photos received", format!("{} from the home PC since the app was set up", photos(o.received)));
+    if let Some((text, hint)) = lightcraft_row(s) {
+        row(ui, "LightCraft", text);
+        if let Some(h) = hint {
+            theme::hint(ui, &h);
+        }
+    }
+    row(
+        ui,
+        "Next sync",
+        match (&s.next_sync, s.paused, s.configured) {
+            (_, _, false) => "after Setup".to_string(),
+            (_, true, _) => "paused (Sync now still works)".to_string(),
+            (_, _, _) if matches!(s.activity, Activity::Syncing { .. }) => "now (syncing)".to_string(),
+            (Some(t), _, _) => upcoming(t, now),
+            (None, _, _) => "not scheduled".to_string(),
+        },
+    );
+}
+
 pub fn show(ui: &mut Ui, v: &StatusView) {
     let t = theme::CHARCOAL;
     theme::title(ui, "Status");
@@ -118,11 +161,16 @@ pub fn show(ui: &mut Ui, v: &StatusView) {
         (Activity::Syncing { reason, .. }, _, _) => (format!("Syncing now ({reason})"), t.caution),
         (_, _, Some(_)) => ("The last sync failed".to_string(), t.reject),
         (_, true, _) => ("Paused".to_string(), t.caution),
+        _ if s.offline => ("Offline: will try again".to_string(), t.caution),
         _ => ("Up to date".to_string(), t.ok),
     };
     state_line(ui, &state_text, color);
     theme::gap(ui);
     theme::panel(ui, None, |ui| {
+        if let Some(o) = &s.other {
+            other_rows(ui, s, o, v.now);
+            return;
+        }
         match &s.last_sync {
             Some(l) => {
                 row(ui, "Last sync", format!("{} ({})", relative(&l.when, v.now), l.result));
@@ -184,7 +232,9 @@ pub fn show(ui: &mut Ui, v: &StatusView) {
             row(ui, "History purge", relative(p, v.now));
         }
     });
-    list(ui, "Newest wins", "No conflicts between phone and PC edits.", &s.notices, v.now, None);
+    if s.other.is_none() {
+        list(ui, "Newest wins", "No conflicts between phone and PC edits.", &s.notices, v.now, None);
+    }
     list(ui, "Problems", "None.", &s.errors, v.now, Some(theme::CHARCOAL.reject));
 }
 

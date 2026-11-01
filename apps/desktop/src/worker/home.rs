@@ -6,24 +6,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lightcraft_cloud_client::home::{Home, InboxSummary, Renderer, State, utc_iso};
-use lightcraft_cloud_client::Remote;
 
 use crate::backup;
 use crate::clock::Clock;
 use crate::config::Config;
-use crate::lightcraft::{LightCraftLink, TcpLink};
-use crate::pending::{self, PendingList};
+use crate::lightcraft::TcpLink;
+use crate::pending;
 use crate::service::{BridgeReport, JobError, PurgeOutcome, SyncOutcome, Worker, WorkerInfo};
-use super::to_job_error;
+use super::{LinkFactory, RemoteFactory, flush_pending, to_job_error};
 
 /// Makes the renderer for one sync (the real one opens the engine's scratch library; tests give a fake one).
 pub type RendererFactory = Box<dyn Fn(&Config) -> Box<dyn Renderer>>;
-
-/// Opens the remote of a config (the real one is [`Config::open_remote`]; tests can count or fake it).
-pub type RemoteFactory = Box<dyn Fn(&Config) -> Result<Arc<dyn Remote>, String>>;
-
-/// Makes the link to LightCraft's control port (the real one is loopback TCP; tests give a fake).
-pub type LinkFactory = Box<dyn Fn(u16) -> Box<dyn LightCraftLink>>;
 
 pub struct HomeWorker {
     /// Where the config is (it may not exist yet: the app then opens Setup).
@@ -168,6 +161,7 @@ impl Worker for HomeWorker {
             source_name,
             notices: newest_wins_notices(&report.inbox),
             failed: report.failed.len(),
+            ..SyncOutcome::default()
         })
     }
 
@@ -184,15 +178,7 @@ impl Worker for HomeWorker {
     }
 
     fn lightcraft_flush(&mut self, retry_given_up: bool) -> BridgeReport {
-        let Some(cfg) = self.cfg.as_ref() else { return BridgeReport::default() };
-        let port = cfg.file.lightcraft_control_port;
-        if port == 0 {
-            return BridgeReport::default();
-        }
-        let list = PendingList::new(&cfg.state_dir);
-        let mut link = (self.link)(port);
-        let r = pending::flush(&list, &mut *link, retry_given_up);
-        BridgeReport { port, delivered: r.delivered, waiting: r.waiting, reachable: r.reachable, problems: r.problems, log: r.log }
+        flush_pending(self.cfg.as_ref(), &self.link, retry_given_up)
     }
 
     fn purge(&mut self) -> Result<PurgeOutcome, JobError> {

@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 
 use lightcraft_cloud_client::home::utc_iso;
 
-use crate::appstate::{Activity, AppStatus, LastSync, Persisted};
+use crate::appstate::{Activity, AppStatus, LastSync, OtherView, Persisted};
 use crate::clock::{Clock, parse_rfc3339};
 use crate::notifier::{self, Notifier};
 use crate::scheduler::{Ended, Job, Reason, Scheduler, Timing};
@@ -21,14 +21,21 @@ pub enum JobError {
     Busy,
     /// A safety check said no; nothing was changed.
     Refused(String),
+    /// The cloud library could not be reached (no network, a remote that is down): nothing was done, and it is not a failure to make a
+    /// fuss about. The detail goes to the log; the user sees one calm line.
+    Offline(String),
     Failed(String),
 }
+
+/// The one line the Problems list gets when the cloud library cannot be reached (however often that happens).
+pub const OFFLINE_LINE: &str = "Cannot reach the cloud library right now (offline?). The app tries again later.";
 
 impl JobError {
     pub fn text(&self) -> String {
         match self {
             JobError::Busy => "another run holds the lock".into(),
             JobError::Refused(m) => format!("refused: {m}"),
+            JobError::Offline(m) => format!("offline: {m}"),
             JobError::Failed(m) => m.clone(),
         }
     }
@@ -60,6 +67,12 @@ pub struct SyncOutcome {
     pub imports_left: usize,
     /// Things about the imports the user can act on (disk full, a folder that cannot be written), one line each.
     pub import_problems: Vec<String>,
+    /// The other PC's role: the numbers of the pass (None on the home PC).
+    pub other: Option<OtherView>,
+    /// Photos an other PC downloaded in this sync.
+    pub downloaded: usize,
+    /// Things the user can act on, one line each (the other PC's role).
+    pub problems: Vec<String>,
 }
 
 /// What telling LightCraft about the adopted photos did (see [`crate::pending`]).
@@ -111,6 +124,10 @@ pub trait Worker {
     /// LightCraft bridge does nothing. `retry_given_up`: the first try after the app started also retries the photos given up on.
     fn lightcraft_flush(&mut self, _retry_given_up: bool) -> BridgeReport {
         BridgeReport::default()
+    }
+    /// Whether this worker is another PC's (the status then shows that role's rows).
+    fn is_other(&self) -> bool {
+        false
     }
     /// The weekly purge.
     fn purge(&mut self) -> Result<PurgeOutcome, JobError>;
@@ -196,6 +213,12 @@ impl<W: Worker> Service<W> {
     fn publish(&mut self) {
         self.status.updated = self.iso(self.clock.now());
         self.status.configured = self.info.configured;
+        // (the rows of the other-PC role show as soon as the config says so, with zeros until the first pass)
+        if !self.worker.is_other() {
+            self.status.other = None;
+        } else if self.status.other.is_none() {
+            self.status.other = Some(OtherView::default());
+        }
         self.status.paused = self.sched.paused();
         self.status.next_sync = self.sched.next_sync_at().map(|t| self.iso(t));
         if let Err(e) = self.status.save(&self.state_dir) {
@@ -288,6 +311,16 @@ impl<W: Worker> Service<W> {
                         self.status.push_error(&now, p.clone());
                     }
                 }
+                for p in &o.problems {
+                    if !self.status.errors.iter().any(|e| e.text == *p) {
+                        self.status.push_error(&now, p.clone());
+                    }
+                }
+                if let Some(mut view) = o.other.clone() {
+                    view.received = self.status.other.as_ref().map_or(0, |v| v.received) + o.downloaded;
+                    self.status.other = Some(view);
+                }
+                self.status.offline = false;
                 self.status.last_error = None;
                 self.announced = None;
                 let result = if o.failed == 0 { "ok".to_string() } else { format!("ok, {} photos failed", o.failed) };
@@ -305,11 +338,24 @@ impl<W: Worker> Service<W> {
                 if o.kept > 0 && self.info.notify {
                     self.notifier.notify(notifier::TITLE, &notifier::edits_kept(o.kept));
                 }
-                if o.imported > 0 {
+                if o.downloaded > 0 && self.info.notify {
+                    self.notifier.notify(notifier::TITLE, &notifier::photos_downloaded(o.downloaded));
+                }
+                if o.imported > 0 || o.downloaded > 0 {
                     self.run_bridge();
                 }
                 Ended::Done
             }
+            Err(JobError::Offline(detail)) => {
+                // calm: the detail in the log, one line in Problems however often it happens, no notification, no "failed" state
+                self.say(format!("sync: cannot reach the cloud library: {detail}"));
+                if self.status.errors.first().is_none_or(|e| e.text != OFFLINE_LINE) {
+                    self.status.push_error(&now, OFFLINE_LINE);
+                }
+                self.status.offline = true;
+                Ended::Done
+            }
+
             Err(JobError::Busy) => {
                 self.say("sync skipped: another run holds the lock");
                 Ended::Busy
@@ -319,7 +365,11 @@ impl<W: Worker> Service<W> {
                 self.say(format!("sync failed: {text}"));
                 let photos = self.status.last_sync.as_ref().map_or(0, |l| l.photos); // (what was published before still is)
                 self.status.last_sync = Some(LastSync { when: now.clone(), ok: false, result: text.clone(), photos, applied: 0, merged: 0, kept: 0 });
-                self.status.push_error(&now, text.clone());
+                // (a refusal that repeats, because nothing changed, is listed once; the other failures are listed each time, as before)
+                let again = matches!(e, JobError::Refused(_)) && self.status.errors.first().is_some_and(|l| l.text == text);
+                if !again {
+                    self.status.push_error(&now, text.clone());
+                }
                 self.status.last_error = Some(text.clone());
                 if self.info.notify && self.announced.as_deref() != Some(text.as_str()) {
                     self.notifier.notify(notifier::TITLE, notifier::publisher_failed());

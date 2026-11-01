@@ -25,7 +25,7 @@ use crate::notifier::{DesktopNotifier, NoNotifier, Notifier};
 use crate::scheduler::Timing;
 use crate::service::{Command, Service, run_loop};
 use crate::watcher::FolderWatcher;
-use crate::worker::log_path;
+use crate::worker::{OtherWorker, RoleWorker, log_path};
 
 pub struct RunOptions {
     pub config: Option<PathBuf>,
@@ -83,7 +83,9 @@ fn spawn_config_thread(config_path: PathBuf, cmd: Sender<Command>, stop: Receive
                 _watcher = None; // (stop watching the old folder first)
                 if let Ok(c) = Config::load(Some(&config_path)) {
                     let tx = cmd.clone();
-                    match FolderWatcher::start(&c.source, c.file.exclude.clone(), move || {
+                    // (another PC looks at sidecars only: its photos only ever arrive from the cloud library)
+                    let sidecars_only = c.file.role == config::Role::Other;
+                    match FolderWatcher::start_filtered(&c.source, c.file.exclude.clone(), sidecars_only, move || {
                         let _ = tx.send(Command::FolderChanged);
                     }) {
                         Ok(w) => _watcher = Some(w),
@@ -151,22 +153,23 @@ impl Drop for Windows {
     }
 }
 
-/// The full build's worker: the home PC's, publishing with LightCraft's engine as the renderer.
-#[cfg(feature = "home")]
-fn make_worker(config_path: PathBuf, clock: Arc<dyn crate::clock::Clock>) -> crate::worker::HomeWorker {
-    use crate::engine::LazyRenderer;
-    crate::worker::HomeWorker::new(
-        config_path,
-        Box::new(|cfg: &Config| Box::new(LazyRenderer::new(cfg.state_dir.join("lib")))),
-        Box::new(|cfg: &Config| cfg.open_remote()),
-        clock,
-    )
-}
-
-/// The light build's worker (no engine, so no publishing).
-#[cfg(not(feature = "home"))]
-fn make_worker(config_path: PathBuf, _clock: Arc<dyn crate::clock::Clock>) -> crate::worker::LightWorker {
-    crate::worker::LightWorker::new(config_path)
+/// The worker for the config's role. The full build can be the home PC (publishing, with LightCraft's engine as the renderer) or
+/// another PC; the light build only another PC.
+fn make_worker(config_path: PathBuf, clock: Arc<dyn crate::clock::Clock>) -> RoleWorker {
+    #[cfg(feature = "home")]
+    let home: Option<Box<dyn crate::service::Worker>> = {
+        use crate::engine::LazyRenderer;
+        Some(Box::new(crate::worker::HomeWorker::new(
+            config_path.clone(),
+            Box::new(|cfg: &Config| Box::new(LazyRenderer::new(cfg.state_dir.join("lib")))),
+            Box::new(|cfg: &Config| cfg.open_remote()),
+            clock.clone(),
+        )))
+    };
+    #[cfg(not(feature = "home"))]
+    let home: Option<Box<dyn crate::service::Worker>> = None;
+    let other = OtherWorker::new(config_path.clone(), Box::new(|cfg: &Config| cfg.open_remote()), clock);
+    RoleWorker::new(config_path, home, Box::new(other))
 }
 
 pub fn run(opts: RunOptions) -> Result<Ended, String> {

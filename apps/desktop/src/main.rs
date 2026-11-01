@@ -13,7 +13,6 @@
 //! the sidecars, like the Python tool `lc-cloud`, with the same remote layout (FORMAT.md). It keeps its own config and
 //! state (`~/.config/lightcraft-cloud-desktop/`, `~/.local/state/lightcraft-cloud-desktop/`).
 
-#[cfg(feature = "home")]
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -23,7 +22,7 @@ use lightcraft_cloud_client::Error;
 #[cfg(feature = "home")]
 use lightcraft_cloud_client::home::Home;
 use lightcraft_cloud_client::home::utc_iso;
-use lightcraft_cloud_desktop::config::Config;
+use lightcraft_cloud_desktop::config::{Config, Role};
 use lightcraft_cloud_desktop::{app, ui};
 
 const USAGE: &str = "\
@@ -45,6 +44,9 @@ USAGE:
       Delete cloud history/inbox-done day folders older than N days (default device_history_days = 30), only if the
       newest backup (photo_backup, restic) is at most 48 hours old.
   lightcraft-cloud-desktop --version | --help
+
+On another PC (config: role = other; the light build is always one) `sync --once` makes one pass: it downloads the chosen
+folders, sends this PC's sidecar edits to the home PC and takes back its newer ones; `status` shows the counts.
 
 Config: --config FILE, else ~/.config/lightcraft-cloud-desktop/config.toml (TOML; see the README).
 State:  ~/.local/state/lightcraft-cloud-desktop/ (or `state_dir` in the config).
@@ -170,7 +172,71 @@ fn run(a: Args) -> std::result::Result<(), Failure> {
         _ => {}
     }
     let cfg = Config::load(a.config.as_deref())?;
+    if cfg.file.role == Role::Other {
+        return run_other(a, cfg);
+    }
     run_command(a, cfg)
+}
+
+/// The commands of another PC (both builds): a pass of the other-PC role, and its status.
+fn run_other(a: Args, cfg: Config) -> std::result::Result<(), Failure> {
+    use lightcraft_cloud_client::other::Other;
+    use lightcraft_cloud_desktop::pending::PendingList;
+    let mut other = Other::new(cfg.other_config()?, cfg.open_remote()?)?;
+    let logfile = lightcraft_cloud_desktop::worker::log_path(&cfg.state_dir);
+    let log_to_file = !a.dry;
+    other.set_logger(move |m| {
+        let line = format!("{} {m}", utc_iso(SystemTime::now()));
+        println!("{line}");
+        if log_to_file {
+            if let Some(dir) = logfile.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&logfile) {
+                let _ = writeln!(f, "{line}");
+            }
+        }
+    });
+    if cfg.file.lightcraft_control_port != 0 {
+        let list = PendingList::new(&cfg.state_dir);
+        other.set_adopted_hook(move |p| list.add(p, &utc_iso(SystemTime::now())));
+    }
+    match a.cmd.as_str() {
+        "sync" => {
+            if !a.once {
+                return Err(Failure::Error("only `sync --once` exists so far (there is no background mode yet)".into()));
+            }
+            if a.dry {
+                return Err(Failure::Refused("--dry-run is not available on another PC".into()));
+            }
+            let r = other.sync()?;
+            println!(
+                "{} photos downloaded, {} sidecars updated from the home PC, {} edits sent ({} waiting for the home PC to merge), {} moved aside, {} left out",
+                r.downloaded.len(),
+                r.sidecars_updated.len(),
+                r.edits_sent,
+                r.held_back,
+                r.removed.len(),
+                r.left_out
+            );
+            println!("on this PC: {} photos; waiting to download: {}; edits waiting to send: {}", r.photos, r.waiting_to_download, r.edits_waiting);
+            for p in &r.problems {
+                println!("PROBLEM: {p}");
+            }
+            Ok(())
+        }
+        "status" => {
+            let s = other.status()?;
+            println!("role:       another PC ({}), folders: {}", cfg.device(), cfg.file.folders.join(", "));
+            println!("last pass:  {}", s.last_pass.as_deref().unwrap_or("never"));
+            println!("on this PC: {} photos", s.photos);
+            println!("waiting to download: {}", s.waiting_to_download);
+            println!("edits waiting to send: {}", s.edits_waiting);
+            Ok(())
+        }
+        "inbox-check" | "purge-history" => Err(Failure::Refused(format!("{} is for the home PC; this is another PC", a.cmd))),
+        other => Err(Failure::Error(format!("unknown command {other}\n\n{USAGE}"))),
+    }
 }
 
 /// The light build has no engine and publishes nothing; the commands below are the home PC's.

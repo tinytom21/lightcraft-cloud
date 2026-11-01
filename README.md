@@ -4,7 +4,8 @@ LightCraft Cloud keeps your photo library in step between your PCs and your phon
 original photos and is the only place they are ever changed. Each PC publishes its photo folder to any
 [rclone](https://rclone.org) remote (Google Drive, S3, WebDAV, ...) together with thumbnails and small smart previews.
 The LightCraft phone app browses that library, downloads a preview to edit, and sends the edits back as XMP sidecars, which
-the PC then applies. Originals are only ever mirrored one way, and photo files are never modified.
+the PC then applies. Originals are only ever mirrored one way, and photo files are never modified. Other PCs can keep a copy of
+the folders you choose and send their edits back the same way.
 
 Remote layout and the inbox protocol: [FORMAT.md](FORMAT.md).
 Phone app: https://github.com/artcraft-android/lightcraft-android (cloud library support is a pending PR).
@@ -14,7 +15,7 @@ Phone app: https://github.com/artcraft-android/lightcraft-android (cloud library
 | Path | What it is |
 | --- | --- |
 | `crates/sync` | Rust crate `lightcraft-cloud-client`: the sync client shared by the apps (talks to the remote through librclone, reads the manifest, fetches thumbnails and previews, sends edits back; the phone app uses it) and, in its `home` module, the PC side: publishing a photo folder, applying the phone's edits, merging sidecars. |
-| `apps/desktop` | `lightcraft-cloud-desktop`: the PC app: an always-running tray app (and the command line). Renders thumbnails and smart previews with LightCraft's engine. See "Desktop app" below. |
+| `apps/desktop` | `lightcraft-cloud-desktop`: the PC app: an always-running tray app (and the command line). Two builds: the full one is the home PC (renders thumbnails and smart previews with LightCraft's engine) or another PC; the light one (`--no-default-features`, no engine) is another PC only. See "Desktop app" and "Another PC" below. |
 | `tools/parity` | The harness that runs the Python tool and the Rust app on the same generated photos and compares everything they write. |
 | `legacy/` | The current PC tool, `lc-cloud`, written in Python. It is still what runs the sync today; see "Legacy tool" below. |
 
@@ -26,6 +27,12 @@ Rust 1.99.0 (`rust-toolchain.toml` picks it). librclone is loaded at run time, s
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+The desktop app has two builds. The default one (feature `home`) is the full app and needs LightCraft's engine to render
+previews. `cargo build --release -p lightcraft-cloud-desktop --no-default-features` is the light build for another PC: the same
+tray app, windows and sync client, with no LightCraft crate besides the shared sync crate in `cargo tree`, and a much smaller
+binary. Given a config for the home PC it says so and does nothing. Run the tests and clippy for both
+(`cargo test -p lightcraft-cloud-desktop --no-default-features`).
 
 The tests that talk to a real rclone need a host build of `librclone.so`. Point `LIBRCLONE` at it, for example
 `LIBRCLONE=~/src/lightcraft-android/apps/lightcraft-android/librclone-host/librclone.so cargo test --workspace`
@@ -99,6 +106,52 @@ keyring arrives with sign-in / pairing.
 
 One photo folder per app for now (the sync, its state and the manifest are per folder).
 
+### Another PC
+
+A second PC (a laptop, say) keeps a full copy of the folders you choose, in a photo folder of its own, and sends its edits to the
+home PC. The home PC stays the master: it publishes, merges and deletes; the other PC never writes the cloud library's `originals/` or
+`mobile/` (its edits travel through `inbox/<device>/`, like a phone's, see [FORMAT.md](FORMAT.md)).
+
+Set it up in Setup: **This is another PC**, pick where the cloud library is, the folder on this PC for the photos, and tick the
+folders to keep (the list is read from the cloud library, with each folder's photos and size). In the config:
+
+```toml
+role = "other"
+source = "~/Pictures/LightCraft Cloud"   # the local photo folder: the chosen folders are downloaded here
+remote = "gdrive:LightCraft Cloud"
+folders = ["261101 - Lisbon", "2025/Porto"]   # relative to the library's originals/; the photos directly in each
+device = "laptop"                          # optional; default: this PC's host name
+```
+
+Add the photo folder to LightCraft on that PC, with LightCraft's automatic writing of sidecars on. Every 15 minutes, and 30 seconds
+after a sidecar changes (5 minutes at the most, the same watcher rule as the home PC; photos arriving do not count), the app:
+
+* downloads what is missing from the chosen folders (originals, sidecars, raw+JPEG partners), checks each file against its content
+  hash, never replaces a file, and keeps going where it left off if the network drops. It checks the free disk space first and says
+  so when it is short;
+* sends a sidecar LightCraft changed here to the inbox (once), and takes the home PC's newer sidecar when this PC has no edit
+  waiting (the old one is kept in `<state>/history/`). If both changed, the edit here goes first and the file here is left alone
+  until the home PC's merge comes back, so nothing you did here is lost;
+* moves a photo the home PC deleted (with its sidecar) to `<state>/removed/<date>/`, never deleting it. It does that only for a
+  file that is still exactly what was received, and refuses a pass that would move more than `max_delete` photos;
+* tells your running LightCraft to add the photos it downloaded (the same list and link as on the home PC, see below).
+
+**Deleting on this PC** only affects this PC. A photo you delete here is not downloaded again, even when the home PC changes it.
+To get it back, untick its folder in Settings, save, then tick it again and save. A folder you untick is no longer updated; its
+photos stay where they are.
+
+What LightCraft has to do: a **new photo** is added through its control port. A **sidecar the app replaced** is a file LightCraft
+did not write, so use LightCraft's own "re-read changed sidecars" (Synchronize Folder) to see it; the app has no command to ask
+LightCraft to do that for you. A photo moved to `removed/` leaves a missing file in LightCraft; remove it there.
+
+The tray and the pause rules are the same. Being offline is a calm state: one line in Problems, no notification, a retry at the
+next pass. The app never looks at other devices' edits in the inbox. The device name must not be a phone's: the first pass refuses a
+name that already has files in `inbox/`.
+
+Limits for now: a folder means the photos directly in it (tick each subfolder you want); a photo moved by the home PC stays where
+this PC has it; if the home PC keeps its own sidecar instead of applying yours, your edit stays here until its sidecar changes
+again; the free-disk-space check is Linux only so far.
+
 ### Config
 
 Default `~/.config/lightcraft-cloud-desktop/config.toml` (`$XDG_CONFIG_HOME` is honoured), or `--config FILE`. TOML; unknown keys
@@ -108,7 +161,10 @@ are ignored, so a Python config can be reused. State in `~/.local/state/lightcra
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `remote` | **none, required** | an rclone `remote:path` (a crypt remote works: `lccrypt:`), or a local folder (starts with `/`, `~` or `.`; for tests). There is deliberately no default: nothing is published to a remote nobody named. |
-| `source` | `~/Pictures/Photos` | folder to publish |
+| `role` | `"home"` | `"home"` (publishes) or `"other"` (keeps a copy of some folders; see "Another PC") |
+| `source` | `~/Pictures/Photos` | folder to publish; on another PC, the local photo folder |
+| `folders` | `[]` | role `other`: the cloud library folders to keep, relative to `originals/` |
+| `device` | the host name, made valid | role `other`: this PC's name in `inbox/<device>/`; not a phone's name |
 | `exclude` | `[]` | folder-name patterns (fnmatch, case-sensitive) skipped at any depth |
 | `pair_primary` | `"jpeg"` | which file of a raw+JPEG pair is the photo (`"jpeg"` or `"raw"`); the other becomes an alternate |
 | `max_delete` | `50` | refuse when more published photos vanished than this since the last run; also the most files one mirror removes |
@@ -254,7 +310,10 @@ See [legacy/config.example.toml](legacy/config.example.toml). All keys are optio
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `source` | `~/Pictures/Photos` | folder to publish |
+| `role` | `"home"` | `"home"` (publishes) or `"other"` (keeps a copy of some folders; see "Another PC") |
+| `source` | `~/Pictures/Photos` | folder to publish; on another PC, the local photo folder |
+| `folders` | `[]` | role `other`: the cloud library folders to keep, relative to `originals/` |
+| `device` | the host name, made valid | role `other`: this PC's name in `inbox/<device>/`; not a phone's name |
 | `remote` | `gdrive:LightCraft Cloud` | rclone `remote:path`; a crypt remote works too (see "Encrypting the remote") |
 | `exclude` | `[]` | folder-name patterns (fnmatch, case-sensitive) skipped at any depth |
 | `pair_primary` | `"jpeg"` | which file of a RAW+JPEG pair is primary (`"jpeg"` or `"raw"`); the other becomes an alternate |

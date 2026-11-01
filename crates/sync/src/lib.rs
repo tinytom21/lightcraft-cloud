@@ -9,6 +9,7 @@ mod error;
 pub mod home;
 mod library;
 mod manifest;
+pub mod other;
 mod rclone;
 mod remote;
 mod util;
