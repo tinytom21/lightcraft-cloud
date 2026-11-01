@@ -24,6 +24,7 @@ use serde_json::{Value, json};
 use super::hash::content_hash_file;
 use super::scan::{is_excluded, is_photo, is_skipped_name, stem};
 use super::{Home, State, validate_xmp};
+use crate::progress::Stage;
 use crate::util::{free_space, iso, link_no_replace, parse_iso, sync_dir, temp_beside};
 use crate::{Error, Result, valid_device};
 
@@ -470,7 +471,9 @@ impl Home {
             }
         }
         let mut run = Run { root: &root, tmp, date: self.today(), known };
-        for ((device, fid), note_size) in &listing.notes {
+        self.rp.stage(Stage::Importing, listing.notes.len() as u64, 0);
+        for (n, ((device, fid), note_size)) in listing.notes.iter().enumerate() {
+            self.rp.at(n as u64);
             let label = format!("{device}/{fid}");
             let files = listing.data.get(&(device.clone(), fid.clone())).cloned().unwrap_or_default();
             let key = format!("import-wait:{label}");
@@ -543,6 +546,7 @@ impl Home {
                 }
             }
         }
+        self.rp.finish();
         if !dry {
             let _ = std::fs::remove_dir_all(&run.tmp);
         }

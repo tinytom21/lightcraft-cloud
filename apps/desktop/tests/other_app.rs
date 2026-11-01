@@ -513,3 +513,112 @@ fn the_photos_that_were_there_at_the_start_wait_for_send_them_and_the_status_cou
     assert_eq!(notes_in_cloud(&e), 2);
     assert_eq!(svc.status().other.as_ref().map(|o| o.held), Some(0));
 }
+
+/// A remote whose downloads each take a moment, so that a pass lasts long enough to be seen from the side.
+struct Slowly {
+    inner: DirRemote,
+    pause: Duration,
+}
+
+impl Remote for Slowly {
+    fn list(&self, dir: &str, recursive: bool) -> Result<Vec<RemoteEntry>, Error> {
+        self.inner.list(dir, recursive)
+    }
+    fn get(&self, path: &str, local: &Path) -> Result<(), Error> {
+        if path.ends_with(".jpg") {
+            std::thread::sleep(self.pause);
+        }
+        self.inner.get(path, local)
+    }
+    fn put(&self, local: &Path, path: &str) -> Result<(), Error> {
+        self.inner.put(local, path)
+    }
+}
+
+#[test]
+fn a_real_pass_publishes_its_download_progress_while_it_runs_and_leaves_none_behind() {
+    use lightcraft_cloud_client::Stage;
+    use lightcraft_cloud_desktop::appstate::{Activity, AppStatus};
+    let e = env("progress", "other");
+    let spy = Spy::default();
+    let mut other = OtherWorker::new(
+        e.config.clone(),
+        Box::new(|cfg: &Config| {
+            let dir = lightcraft_cloud_desktop::config::local_remote(cfg.remote_spec()?)?.unwrap();
+            Ok(Arc::new(Slowly { inner: DirRemote::new(dir), pause: Duration::from_millis(120) }) as Arc<dyn Remote>)
+        }),
+        e.clock.clone(),
+    );
+    other.set_retry_delay(Duration::ZERO);
+    let worker = RoleWorker::new(e.config.clone(), None, Box::new(other));
+    let seen: Arc<Mutex<Vec<AppStatus>>> = Arc::default();
+    let s2 = seen.clone();
+    let mut svc = Service::new(
+        worker,
+        e.clock.clone(),
+        Box::new(spy.clone()),
+        e.state.clone(),
+        Timing::default(),
+        Box::new(move |s| s2.lock().unwrap().push(s.clone())),
+        Box::new(|_| {}),
+    );
+    svc.set_progress_interval(Duration::from_millis(30));
+    run_due(&mut svc, &e, 20);
+    assert!(e.photos.join("Lisbon/A.jpg").exists() && e.photos.join("Lisbon/B.jpg").exists());
+    let all = seen.lock().unwrap().clone();
+    let stages: Vec<Stage> = all.iter().filter_map(|s| s.activity.progress()).map(|p| p.stage).collect();
+    assert!(stages.contains(&Stage::Downloading), "the pass was seen downloading: {stages:?}");
+    let dl: Vec<_> = all.iter().filter_map(|s| s.activity.progress()).filter(|p| p.stage == Stage::Downloading).collect();
+    assert!(dl.iter().all(|p| p.total_items == 2 && p.total_bytes == 2 * photo("A").len() as u64));
+    assert!(matches!(all.last().unwrap().activity, Activity::Idle));
+    assert!(AppStatus::load(&e.state).unwrap().activity.progress().is_none());
+}
+
+/// For looking at the Status window by hand, not a test: `LC_DEMO_DIR=<scratch folder> cargo test --test other_app demo_ -- --ignored`
+/// runs a pass of another PC against a made-up cloud library (a folder of generated files in the scratch folder, never anything of the
+/// user's) whose downloads are slow, with the app's instance lock held and status.json written as the app writes it, for about a
+/// minute. Open the window on `<dir>/cfg/config.toml` meanwhile.
+#[test]
+#[ignore = "a demo for a screenshot; set LC_DEMO_DIR"]
+fn demo_a_long_download_for_the_status_window() {
+    let Some(dir) = std::env::var_os("LC_DEMO_DIR").map(PathBuf::from) else { return };
+    let _ = std::fs::remove_dir_all(&dir);
+    let (cloud, photos, state, config) = (dir.join("cloud"), dir.join("pc/photos"), dir.join("pc/state"), dir.join("cfg/config.toml"));
+    let mut list = Vec::new();
+    for i in 0..60 {
+        let bytes: Vec<u8> = (0..(2 << 20) + i * 40_000).map(|n| ((n * 31 + i * 7) % 251) as u8).collect();
+        let path = format!("Lisbon/IMG_{i:04}.jpg");
+        put(&cloud, &format!("originals/{path}"), &bytes);
+        list.push(json!({"id": content_hash_bytes(&bytes), "path": path, "size": bytes.len(), "mtime": MTIME}));
+    }
+    put(&cloud, "mobile/manifest.json", json!({"format": 1, "generated": "2026-11-01T09:00:00Z", "photos": list}).to_string().as_bytes());
+    std::fs::create_dir_all(&photos).unwrap();
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "role = \"other\"\nsource = '{}'\nremote = '{}'\nstate_dir = '{}'\nfolders = [\"Lisbon\"]\ndevice = \"demo-laptop\"\nnotify = false\n",
+            photos.display(),
+            cloud.display(),
+            state.display()
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(&state).unwrap();
+    let _instance = lightcraft_cloud_desktop::instance::InstanceLock::acquire(&state).unwrap().expect("a lock of our own");
+    let clock: Arc<dyn lightcraft_cloud_desktop::clock::Clock> = Arc::new(lightcraft_cloud_desktop::clock::SystemClock);
+    let pause: u64 = std::env::var("LC_DEMO_PAUSE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(900);
+    let other = OtherWorker::new(
+        config.clone(),
+        Box::new(move |cfg: &Config| {
+            let dir = lightcraft_cloud_desktop::config::local_remote(cfg.remote_spec()?)?.unwrap();
+            Ok(Arc::new(Slowly { inner: DirRemote::new(dir), pause: Duration::from_millis(pause) }) as Arc<dyn Remote>)
+        }),
+        clock.clone(),
+    );
+    let worker = RoleWorker::new(config.clone(), None, Box::new(other));
+    let mut svc = Service::new(worker, clock, Box::new(Spy::default()), state.clone(), Timing::default(), Box::new(|_| {}), Box::new(|_| {}));
+    svc.handle(Command::SyncNow);
+    assert!(svc.step());
+    eprintln!("demo finished: {:?}", svc.status().last_sync);
+}

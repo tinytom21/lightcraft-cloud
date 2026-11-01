@@ -1166,3 +1166,99 @@ impl Fx {
         std::fs::write(p, data).unwrap();
     }
 }
+
+// ------------------------------------------------------------------ live progress
+
+/// The last snapshot of each stage, in the order the stages came.
+fn last_per_stage(seen: &[lightcraft_cloud_client::Progress]) -> Vec<lightcraft_cloud_client::Progress> {
+    let mut out: Vec<lightcraft_cloud_client::Progress> = Vec::new();
+    for p in seen {
+        match out.last_mut() {
+            Some(l) if l.stage == p.stage && l.started_ms == p.started_ms => *l = *p,
+            _ => out.push(*p),
+        }
+    }
+    out
+}
+
+#[test]
+fn a_progress_hook_sees_the_stages_of_a_sync_with_their_counts_and_each_ends_full_and_changes_nothing_published() {
+    use lightcraft_cloud_client::Stage;
+    let mut fx = Fx::new("progress");
+    let mut r = Fake::default();
+    let mut sizes = 0u64;
+    for i in 0..4 {
+        let data = format!("photo number {i} with some bytes").repeat(i + 1);
+        sizes += data.len() as u64;
+        photo(&fx, &format!("p{i}.jpg"), &data);
+    }
+    let seen: Arc<std::sync::Mutex<Vec<lightcraft_cloud_client::Progress>>> = Arc::default();
+    let sink = seen.clone();
+    fx.home.set_progress_hook(move |p| sink.lock().unwrap().push(*p));
+    fx.home.sync(&mut r, false).unwrap();
+    let stages = last_per_stage(&seen.lock().unwrap());
+    let names: Vec<Stage> = stages.iter().map(|p| p.stage).collect();
+    assert_eq!(
+        names,
+        [
+            Stage::Checking,
+            Stage::Reading,
+            Stage::Previews,
+            Stage::Thumbnails,
+            Stage::LookingAtLibrary,
+            Stage::UploadingOriginals,
+            Stage::LookingAtLibrary,
+            Stage::UploadingThumbnails,
+            Stage::LookingAtLibrary,
+            Stage::UploadingPreviews,
+            Stage::Publishing
+        ],
+        "{stages:?}"
+    );
+    let by = |s: Stage| stages.iter().find(|p| p.stage == s).copied().unwrap();
+    for s in [Stage::Reading, Stage::Previews, Stage::Thumbnails] {
+        let p = by(s);
+        assert_eq!((p.done_items, p.total_items), (4, 4), "{s:?}");
+    }
+    let up = by(Stage::UploadingOriginals);
+    assert_eq!((up.done_items, up.total_items), (4, 4));
+    assert_eq!((up.done_bytes, up.total_bytes), (sizes, sizes), "the bytes of the originals");
+    // within a stage the count only grows, and the clock stamps are the sync's own
+    let all = seen.lock().unwrap().clone();
+    for w in all.windows(2).filter(|w| w[0].stage == w[1].stage && w[0].started_ms == w[1].started_ms) {
+        assert!(w[0].done_items <= w[1].done_items && w[0].done_bytes <= w[1].done_bytes && w[0].last_item_ms <= w[1].last_item_ms);
+    }
+    // the same library, published without a hook, is the same bytes: progress changes nothing that is published
+    let fx2 = Fx::new("progress-plain");
+    let mut r2 = Fake::default();
+    for i in 0..4 {
+        photo(&fx2, &format!("p{i}.jpg"), &format!("photo number {i} with some bytes").repeat(i + 1));
+    }
+    fx2.home.sync(&mut r2, false).unwrap();
+    assert_eq!(fx.remote_tree(), fx2.remote_tree());
+    // a sync with nothing to do says no upload stage
+    seen.lock().unwrap().clear();
+    fx.home.sync(&mut r, false).unwrap();
+    let again: Vec<Stage> = last_per_stage(&seen.lock().unwrap()).iter().map(|p| p.stage).collect();
+    assert!(!again.iter().any(|s| matches!(s, Stage::UploadingOriginals | Stage::Previews | Stage::Thumbnails)), "{again:?}");
+}
+
+#[test]
+fn a_hook_that_panics_or_is_slow_does_not_fail_or_change_a_sync() {
+    let mut fx = Fx::new("progress-panic");
+    let mut r = Fake::default();
+    photo(&fx, "a.jpg", "photo a");
+    photo(&fx, "b.jpg", "photo b");
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let c = calls.clone();
+    fx.home.set_progress_hook(move |_| {
+        if c.fetch_add(1, std::sync::atomic::Ordering::SeqCst).is_multiple_of(2) {
+            panic!("the status file cannot be written");
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    });
+    let rep = fx.home.sync(&mut r, false).unwrap();
+    assert_eq!(rep.photos, 2);
+    assert!(calls.load(std::sync::atomic::Ordering::SeqCst) > 4);
+    assert!(fx.rfile("mobile/manifest.json").is_some());
+}

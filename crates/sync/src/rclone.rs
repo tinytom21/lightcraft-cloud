@@ -199,6 +199,15 @@ impl Remote for RcloneRemote {
         self.lib.call("operations/movefile", &json!({"srcFs": self.fs, "srcRemote": from, "dstFs": self.fs, "dstRemote": to})).map(|_| ())
     }
 
+    /// rclone's own count (`core/stats`) of the bytes the transfers in progress have moved. The call is answered at once, also while a
+    /// `copyfile` blocks another thread; the library is thread-safe.
+    fn bytes_in_flight(&self) -> Option<u64> {
+        let stats = self.lib.call("core/stats", &json!({})).ok()?;
+        // (the field is left out while nothing runs)
+        let running = stats.get("transferring").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        Some(running.iter().filter_map(|t| t.get("bytes").and_then(Value::as_u64)).sum())
+    }
+
     fn remove_empty_dir(&self, dir: &str) -> Result<()> {
         if dir.trim_matches('/').is_empty() {
             return Ok(());
@@ -232,4 +241,51 @@ pub fn list_remotes(librclone: Option<&Path>, config: &Path) -> Result<Vec<Strin
         out.get("remotes").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
     names.sort();
     Ok(names)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `core/stats` can be polled from a second thread while a throttled `copyfile` blocks the first, and shows the file's bytes
+    /// growing (needs `LIBRCLONE`; skipped without). The library is process-wide, so this is the only test in this binary that loads it.
+    #[test]
+    fn bytes_in_flight_grow_while_a_copy_blocks_another_thread() {
+        let Some(so) = std::env::var_os("LIBRCLONE").map(PathBuf::from).filter(|p| p.is_file()) else {
+            eprintln!("skipped: set LIBRCLONE to a librclone.so");
+            return;
+        };
+        let base = std::env::temp_dir().join(format!("lc-rclone-flight-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("remote")).unwrap();
+        std::fs::write(base.join("rclone.conf"), "").unwrap();
+        std::fs::write(base.join("remote/big.bin"), vec![7u8; 6 << 20]).unwrap();
+        let r = RcloneRemote::open(Some(&so), &base.join("rclone.conf"), &base.join("remote").to_string_lossy(), None).unwrap();
+        assert_eq!(r.bytes_in_flight(), Some(0), "idle");
+        // 2 MiB/s: the 6 MiB file takes about 3 seconds
+        r.lib.call("core/bwlimit", &json!({"rate": "2M"})).unwrap();
+        let out = base.join("got.bin");
+        let done = std::sync::atomic::AtomicBool::new(false);
+        let mut seen: Vec<u64> = Vec::new();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                r.get("big.bin", &out).unwrap();
+                done.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            let t0 = std::time::Instant::now();
+            while !done.load(std::sync::atomic::Ordering::SeqCst) && t0.elapsed().as_secs() < 30 {
+                if let Some(b) = r.bytes_in_flight() {
+                    seen.push(b);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        });
+        r.lib.call("core/bwlimit", &json!({"rate": "off"})).unwrap();
+        eprintln!("polled bytes: {seen:?}");
+        assert_eq!(std::fs::read(&out).unwrap().len(), 6 << 20);
+        // (a poll may land just as the file completes and still read all of it)
+        assert!(seen.iter().any(|b| *b > 0 && *b < 6 << 20), "bytes seen while it ran: {seen:?}");
+        assert!(seen.windows(2).filter(|w| w[0] < w[1]).count() >= 2, "growing: {seen:?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

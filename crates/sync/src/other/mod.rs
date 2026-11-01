@@ -36,6 +36,7 @@ use std::time::{Duration, SystemTime};
 
 use crate::home::{AdoptedHook, DEFAULT_IMPORT_FREE_MARGIN};
 use crate::manifest;
+use crate::progress::{Progress, Reporter};
 use crate::util::{iso, temp_beside};
 use crate::{Error, Remote, Result, valid_device};
 
@@ -185,6 +186,8 @@ pub struct Other {
     log: Logger,
     retry_delay: Duration,
     adopted_hook: Option<AdoptedHook>,
+    /// Where the stages of a pass and of an upload step are reported (see [`Other::set_progress_hook`]).
+    rp: Reporter,
 }
 
 impl Other {
@@ -199,7 +202,7 @@ impl Other {
         crate::home::check_state_dir(&cfg.state_dir)?;
         cfg.source = std::path::absolute(&cfg.source).map_err(|e| Error::io(cfg.source.display(), e))?;
         cfg.folders = cfg.folders.iter().map(|f| f.trim().trim_matches('/').to_string()).collect();
-        Ok(Other { cfg, remote, clock: Arc::new(SystemTime::now), log: Arc::new(|m| log::info!("{m}")), retry_delay: Duration::from_secs(2), adopted_hook: None })
+        Ok(Other { cfg, remote, clock: Arc::new(SystemTime::now), log: Arc::new(|m| log::info!("{m}")), retry_delay: Duration::from_secs(2), adopted_hook: None, rp: Reporter::new(None, Arc::new(SystemTime::now)) })
     }
 
     pub fn config(&self) -> &OtherConfig {
@@ -209,6 +212,15 @@ impl Other {
     /// Replace the clock (tests).
     pub fn set_clock(&mut self, clock: impl Fn() -> SystemTime + Send + Sync + 'static) {
         self.clock = Arc::new(clock);
+        self.rp = Reporter::new(self.rp.hook(), self.clock.clone());
+    }
+
+    /// Be told how far a pass or an upload step has come, after every change: the stage (looking at the cloud library, downloading,
+    /// sending, ...), the photos and bytes done of the total where those are known, and when something last finished. Called from the
+    /// thread that syncs, quickly and in order; it must not block. With no hook set nothing is measured. See [`crate::describe`] and
+    /// [`crate::Estimator`] for the words and the time left.
+    pub fn set_progress_hook(&mut self, f: impl Fn(&Progress) + Send + Sync + 'static) {
+        self.rp = Reporter::new(Some(Arc::new(f)), self.clock.clone());
     }
 
     /// Where log lines go (default: the `log` crate at info level).

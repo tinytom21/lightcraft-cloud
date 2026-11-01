@@ -985,3 +985,31 @@ fn a_holiday_end_to_end_files_in_nested_folders_offline_restart_adopted_at_the_s
     w.home_sync();
     assert!(!w.fx.src.join(day1).join("IMG_2.ARW").exists(), "still deleted at home");
 }
+
+#[test]
+fn the_upload_step_reports_the_photos_it_sends_with_their_sizes_and_ends_with_the_full_count() {
+    use lightcraft_cloud_client::{Progress, Stage};
+    let mut w = W::new("progress");
+    import_n(&w, 5, "p");
+    let seen: Arc<Mutex<Vec<Progress>>> = Arc::default();
+    let sink = seen.clone();
+    w.other.set_progress_hook(move |p| sink.lock().unwrap().push(*p));
+    // a bounded step sends three of five: the stage is the three it works on
+    let r = w.other.upload_step(&UploadBudget { max_files: 3, ..UploadBudget::default() }).unwrap();
+    assert_eq!((r.committed, r.more), (3, true));
+    let last = *seen.lock().unwrap().last().unwrap();
+    let each = photo("p0").len() as u64;
+    assert_eq!((last.stage, last.done_items, last.total_items), (Stage::Sending, 3, 3));
+    assert_eq!((last.done_bytes, last.total_bytes), (3 * each, 3 * each));
+    seen.lock().unwrap().clear();
+    let r = w.other.upload_step(&UploadBudget::default()).unwrap();
+    assert!(!r.more);
+    let all = seen.lock().unwrap().clone();
+    let sending: Vec<&Progress> = all.iter().filter(|p| p.stage == Stage::Sending).collect();
+    assert_eq!(sending.last().map(|p| (p.done_items, p.total_items)), Some((2, 2)));
+    assert!(sending.windows(2).all(|x| x[0].done_items <= x[1].done_items));
+    // nothing left to send: the home PC's answers are asked for, and there is no sending stage
+    seen.lock().unwrap().clear();
+    w.other.upload_step(&UploadBudget::default()).unwrap();
+    assert!(!seen.lock().unwrap().iter().any(|p| p.stage == Stage::Sending));
+}

@@ -842,3 +842,87 @@ fn the_folders_to_choose_from_are_read_from_the_manifest_with_sizes_and_photo_co
     );
     let _ = sha_hex(b"");
 }
+
+// ------------------------------------------------------------------------------------------------ live progress
+
+#[test]
+fn a_progress_hook_sees_the_pass_stage_by_stage_and_the_download_ends_with_the_full_count_and_size() {
+    use lightcraft_cloud_client::{Progress, Stage};
+    let mut fx = Fx::new("progress", &["Lisbon"]);
+    fx.publish(vec![ph("Lisbon/A.jpg").sc("Lisbon/A.xmp", xmp(1)), ph("Lisbon/B.jpg"), ph("Lisbon/C.jpg"), ph("Porto/D.jpg")]);
+    let seen: Arc<Mutex<Vec<Progress>>> = Arc::default();
+    let sink = seen.clone();
+    fx.other.set_progress_hook(move |p| sink.lock().unwrap().push(*p));
+    fx.sync();
+    let all = seen.lock().unwrap().clone();
+    let mut stages: Vec<Progress> = Vec::new();
+    for p in &all {
+        match stages.last_mut() {
+            Some(l) if l.stage == p.stage && l.started_ms == p.started_ms => *l = *p,
+            _ => stages.push(*p),
+        }
+    }
+    let names: Vec<Stage> = stages.iter().map(|p| p.stage).collect();
+    assert_eq!(names, [Stage::LookingAtLibrary, Stage::CheckingEdits, Stage::Downloading, Stage::LookingForNewPhotos], "{stages:?}");
+    let sizes: u64 = ["Lisbon/A.jpg", "Lisbon/B.jpg", "Lisbon/C.jpg"].iter().map(|p| photo_bytes(p).len() as u64).sum();
+    let dl = stages[2];
+    assert_eq!((dl.done_items, dl.total_items, dl.done_bytes, dl.total_bytes), (3, 3, sizes, sizes));
+    assert_eq!((stages[1].done_items, stages[1].total_items), (3, 3));
+    // the stamps are the pass's own clock (the fixture's), not the real time
+    assert_eq!(dl.started_ms, 1_793_527_200_000);
+    // a second pass has nothing to download: no download stage to announce
+    seen.lock().unwrap().clear();
+    fx.sync();
+    assert!(!seen.lock().unwrap().iter().any(|p| p.stage == Stage::Downloading));
+}
+
+/// A remote whose `get` takes a few steps and says how far it is, like rclone's `core/stats`.
+struct Slow {
+    inner: DirRemote,
+    moved: std::sync::atomic::AtomicU64,
+}
+
+impl Remote for Slow {
+    fn list(&self, dir: &str, recursive: bool) -> Result<Vec<RemoteEntry>, Error> {
+        self.inner.list(dir, recursive)
+    }
+    fn get(&self, path: &str, local: &Path) -> Result<(), Error> {
+        if path.ends_with(".jpg") {
+            for _ in 0..12 {
+                self.moved.fetch_add(50, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+        let r = self.inner.get(path, local);
+        self.moved.store(0, Ordering::SeqCst);
+        r
+    }
+    fn put(&self, local: &Path, path: &str) -> Result<(), Error> {
+        self.inner.put(local, path)
+    }
+    fn bytes_in_flight(&self) -> Option<u64> {
+        Some(self.moved.load(Ordering::SeqCst))
+    }
+}
+
+#[test]
+fn bytes_moving_inside_a_big_file_are_reported_and_count_as_activity() {
+    use lightcraft_cloud_client::Progress;
+    let mut fx = Fx::new("inflight", &["A"]);
+    fx.publish(vec![ph("A/big.jpg")]);
+    let slow = Arc::new(Slow { inner: DirRemote::new(&fx.remote), moved: Default::default() });
+    let mut o = Other::new(fx.other.config().clone(), slow).unwrap();
+    o.set_retry_delay(Duration::ZERO);
+    let seen: Arc<Mutex<Vec<Progress>>> = Arc::default();
+    let sink = seen.clone();
+    // (the real clock here: the fixture's stands still, and activity is what moves last_item_ms)
+    o.set_progress_hook(move |p| sink.lock().unwrap().push(*p));
+    o.sync().unwrap();
+    let all = seen.lock().unwrap().clone();
+    let during: Vec<&Progress> = all.iter().filter(|p| p.partial_bytes > 0).collect();
+    assert!(during.len() >= 2, "the poller saw the file move: {all:?}");
+    assert!(during.windows(2).any(|w| w[0].partial_bytes < w[1].partial_bytes));
+    assert!(during.iter().all(|p| p.last_item_ms >= p.started_ms && p.last_item_ms > 0), "moving bytes are activity");
+    let fraction = during.iter().filter_map(|p| p.fraction()).fold(0.0f32, f32::max);
+    assert!(fraction > 0.0, "the bar moves inside the file");
+}

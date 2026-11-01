@@ -35,6 +35,7 @@ pub(crate) use scan::{is_photo, is_skipped_name, stem};
 pub use scan::{Entry, FileInfo, Plan, STABLE_SECS, Scan, diff_scan, find_sidecars, fnmatch, is_excluded, published_removals, scan_source};
 pub use state::{Meta, Row, RunLock, State, Uploaded, VersionStore};
 
+use crate::progress::{Progress, Reporter};
 use crate::util::iso;
 use crate::{Error, Remote, Result};
 
@@ -173,6 +174,8 @@ pub struct Home {
     import_crash: Option<String>,
     /// Told of every photo an adoption leaves on disk, before the import is filed away (see [`Home::set_adopted_hook`]).
     adopted_hook: Option<AdoptedHook>,
+    /// Where the stages of a sync are reported (see [`Home::set_progress_hook`]).
+    rp: Reporter,
 }
 
 /// What [`Home::set_adopted_hook`] takes: the absolute path of the photo; `Err(why)` leaves the import waiting.
@@ -182,7 +185,7 @@ impl Home {
     /// Refuses a state folder under `~/Pictures` (keep it out of backups and away from the user's libraries).
     pub fn new(cfg: HomeConfig, remote: Arc<dyn Remote>) -> Result<Self> {
         check_state_dir(&cfg.state_dir)?;
-        Ok(Home { cfg, remote, clock: Arc::new(SystemTime::now), log: Arc::new(|m| log::info!("{m}")), retry_delay: Duration::from_secs(2), import_crash: None, adopted_hook: None })
+        Ok(Home { cfg, remote, clock: Arc::new(SystemTime::now), log: Arc::new(|m| log::info!("{m}")), retry_delay: Duration::from_secs(2), import_crash: None, adopted_hook: None, rp: Reporter::new(None, Arc::new(SystemTime::now)) })
     }
 
     pub fn config(&self) -> &HomeConfig {
@@ -192,6 +195,15 @@ impl Home {
     /// Replace the clock (tests).
     pub fn set_clock(&mut self, clock: impl Fn() -> SystemTime + Send + Sync + 'static) {
         self.clock = Arc::new(clock);
+        self.rp = Reporter::new(self.rp.hook(), self.clock.clone());
+    }
+
+    /// Be told how far a sync has come, after every change: the stage (checking, making previews, uploading originals, ...), the
+    /// photos and bytes done of the total where those are known, and when something last finished. Called from the thread that
+    /// syncs and from the upload threads, quickly and in order; it must not block. With no hook set nothing is measured. See
+    /// [`crate::describe`] and [`crate::Estimator`] for the words and the time left.
+    pub fn set_progress_hook(&mut self, f: impl Fn(&Progress) + Send + Sync + 'static) {
+        self.rp = Reporter::new(Some(Arc::new(f)), self.clock.clone());
     }
 
     /// Where log lines go (default: the `log` crate at info level).

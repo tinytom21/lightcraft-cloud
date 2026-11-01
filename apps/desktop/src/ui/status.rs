@@ -2,7 +2,8 @@
 
 use std::time::SystemTime;
 
-use egui::{Color32, CornerRadius, Label, Margin, RichText, Sense, Stroke, Ui, vec2};
+use egui::{Color32, CornerRadius, Label, Margin, Rect, RichText, Role, Sense, Stroke, Ui, WidgetInfo, pos2, vec2};
+use lightcraft_cloud_client::{Progress, Summary, describe, to_ms};
 
 use crate::appstate::{Activity, AppStatus, Notice, OtherView, Tone, relative, upcoming};
 use crate::ui::settings_panel::human_size;
@@ -81,6 +82,68 @@ fn state_line(ui: &mut Ui, text: &str, color: Color32) {
             ui.painter().circle_stroke(dot.center(), 5.5, Stroke::new(1.0, color.gamma_multiply(0.5)));
             ui.add(Label::new(RichText::new(text).font(theme::semibold(ui.ctx(), 17.0)).color(t.text)).wrap());
         });
+    });
+}
+
+/// How tall the progress bar is.
+const BAR_H: f32 = 8.0;
+
+/// The width of the bar's filled part for `fraction` of `total` (None: the bar does not know; see [`busy_span`]). A bar that has begun
+/// shows at least a sliver, so "just started" is not mistaken for "nothing".
+pub fn fill_width(fraction: f32, total: f32) -> f32 {
+    let f = fraction.clamp(0.0, 1.0);
+    if f <= 0.0 { 0.0 } else { (total * f).max(BAR_H.min(total)) }
+}
+
+/// The moving piece of a bar that cannot say how far it is: where it starts and ends, for `phase` 0..1 (a third of the bar, going to
+/// the right and starting again).
+pub fn busy_span(phase: f32, total: f32) -> (f32, f32) {
+    let len = total / 3.0;
+    let start = (total + len) * phase.rem_euclid(1.0) - len;
+    (start.max(0.0), (start + len).min(total))
+}
+
+/// The progress bar: the Charcoal track with the accent fill. Labelled for screen readers and tests with its percentage.
+pub fn progress_bar(ui: &mut Ui, fraction: Option<f32>) {
+    let t = theme::CHARCOAL;
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), BAR_H), Sense::hover());
+    response.widget_info(|| {
+        let mut info = match fraction {
+            Some(f) => WidgetInfo::labeled(Role::ProgressIndicator, true, format!("Progress {}%", (f * 100.0).floor())),
+            None => WidgetInfo::labeled(Role::ProgressIndicator, true, "Progress, working"),
+        };
+        info.value = fraction.map(|f| (f * 100.0).floor() as f64);
+        info
+    });
+    let round = CornerRadius::same((BAR_H / 2.0) as u8);
+    ui.painter().rect_filled(rect, round, t.inset);
+    ui.painter().rect_stroke(rect, round, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+    let (from, to) = match fraction {
+        Some(f) => (0.0, fill_width(f, rect.width())),
+        None => {
+            // (it moves with the time of the frame; the window asks to be drawn again while it shows)
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+            busy_span((ui.input(|i| i.time) / 1.6) as f32, rect.width())
+        }
+    };
+    if to > from {
+        let fill = Rect::from_min_max(pos2(rect.left() + from, rect.top()), pos2(rect.left() + to, rect.bottom()));
+        ui.painter().rect_filled(fill, round, t.accent);
+    }
+}
+
+/// What the running job says, under the state line: the line, a bar, and a calm note when nothing has moved for a while.
+fn progress_block(ui: &mut Ui, progress: Option<&Progress>, now: SystemTime) {
+    let t = theme::CHARCOAL;
+    let summary = progress.map(|p| describe(p, to_ms(now)));
+    theme::gap(ui);
+    theme::panel(ui, None, |ui| {
+        let Summary { line, note, fraction } = summary.unwrap_or(Summary { line: "Getting started…".into(), note: None, fraction: None });
+        ui.add(Label::new(RichText::new(line).color(t.text)).wrap());
+        progress_bar(ui, fraction);
+        if let Some(n) = note {
+            ui.add(Label::new(RichText::new(n).color(t.caution)).wrap());
+        }
     });
 }
 
@@ -210,6 +273,10 @@ pub fn show_with_actions(ui: &mut Ui, v: &StatusView, refused: &[(String, String
     let health = s.health();
     let (state_text, color) = (health.text, tone_color(health.tone));
     state_line(ui, &state_text, color);
+    // (only while the app is running: a status file left by one that stopped mid-job says nothing true about the time)
+    if v.running && s.activity.is_busy() {
+        progress_block(ui, s.activity.progress(), v.now);
+    }
     theme::gap(ui);
     theme::panel(ui, None, |ui| {
         if let Some(o) = &s.other {

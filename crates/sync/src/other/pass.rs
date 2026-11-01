@@ -9,6 +9,7 @@ use super::state::{Rec, State};
 use super::{Other, OtherReport, OtherStatus, fetch_manifest, folder_of};
 use crate::home::{RunLock, content_hash_file, find_sidecars, stem};
 use crate::manifest::Item;
+use crate::progress::Stage;
 use crate::util::{free_space, is_busy, iso, link_no_replace, parse_iso, parse_stamp, sha256_hex, sidecar_version, replace_file, sync_dir, temp_beside, utc_stamp, write_atomic};
 use crate::{Error, Result};
 
@@ -114,6 +115,7 @@ impl Other {
         let mut rep = OtherReport::default();
         let r = self.pass(&mut st, &mut rep);
         // (local work only: a PC that is offline still notices what was imported)
+        self.rp.stage(Stage::LookingForNewPhotos, 0, 0);
         self.pickup(&st, &mut rep);
         if r.is_ok() {
             st.last_pass = Some(iso(self.now()));
@@ -233,6 +235,7 @@ impl Other {
 
     fn pass(&self, st: &mut State, rep: &mut OtherReport) -> Result<()> {
         let tmp = self.cfg.state_dir.join("manifest.json.tmp");
+        self.rp.stage(Stage::LookingAtLibrary, 0, 0);
         let parsed = self.retry(|| fetch_manifest(&*self.remote, &tmp))?;
         self.claim_device(st)?;
         // every id the library ever had, for good: what was deleted there is never sent back from here
@@ -266,7 +269,9 @@ impl Other {
         }
         let mut sidecars = SidecarsByFolder::new();
         let mut todo: Vec<&Item> = Vec::new();
-        for item in &items {
+        self.rp.stage(Stage::CheckingEdits, items.len() as u64, 0);
+        for (n, item) in items.iter().enumerate() {
+            self.rp.at(n as u64);
             let id = item.id.as_str();
             if !st.photos.contains_key(id)
                 && let Some(e) = ledger.get(id)
@@ -353,6 +358,7 @@ impl Other {
                 Err(e) => push_unique(&mut rep.problems, format!("{}: {e}", item.path)),
             }
         }
+        self.rp.finish();
         // edits to imported photos the home PC does not have yet wait here (they are not sent early)
         for e in ledger.values().filter(|e| !st.photos.contains_key(&e.id)) {
             if self.ledger_edit_waiting(e) {
@@ -360,7 +366,7 @@ impl Other {
             }
         }
         rep.queue = ImportQueue::new(&self.cfg.state_dir).status();
-        let download = self.download(st, todo, rep);
+        let download = self.rp.watch(&*self.remote, || self.download(st, todo, rep));
         rep.photos = items.iter().filter(|i| st.photos.get(&i.id).is_some_and(|r| !r.gone)).count();
         rep.waiting_to_download = items.iter().filter(|i| !st.photos.contains_key(&i.id)).count();
         st.waiting = rep.waiting_to_download;
@@ -668,6 +674,8 @@ impl Other {
             return Ok(());
         }
         todo.sort_by(|a, b| a.path.cmp(&b.path));
+        let sizes_known = todo.iter().all(|i| i.size.is_some());
+        self.rp.stage(Stage::Downloading, todo.len() as u64, if sizes_known { todo.iter().filter_map(|i| i.size).sum() } else { 0 });
         let mut staged: Vec<Staged> = Vec::new();
         let mut staged_bytes = 0u64;
         let mut cleaned: HashSet<PathBuf> = HashSet::new();
@@ -692,7 +700,10 @@ impl Other {
                 );
                 break;
             }
-            match self.stage(item, &mut cleaned, rep) {
+            let staged_one = self.stage(item, &mut cleaned, rep);
+            self.rp.partial(0);
+            self.rp.item_done(item.size.unwrap_or(0));
+            match staged_one {
                 Ok(Some(s)) => {
                     staged_bytes += s.size;
                     staged.push(s);

@@ -12,6 +12,7 @@ use lightcraft_cloud_client::{Error, Remote};
 
 use crate::config::{Config, Role};
 use crate::lightcraft::LightCraftLink;
+use crate::live::Feed;
 use crate::pending::{self, PendingList};
 use crate::service::{BridgeReport, JobError, PurgeOutcome, QueueView, SyncOutcome, UploadOutcome, Worker, WorkerInfo};
 
@@ -142,6 +143,13 @@ impl Worker for RoleWorker {
             Role::Other => o,
             Role::Home => h,
         }
+    }
+
+    fn set_progress(&mut self, feed: Arc<Feed>) {
+        if let Some(h) = self.home.as_mut() {
+            h.set_progress(feed.clone());
+        }
+        self.other.set_progress(feed);
     }
 
     fn sync(&mut self) -> Result<SyncOutcome, JobError> {

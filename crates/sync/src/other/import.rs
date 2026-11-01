@@ -23,6 +23,7 @@ use super::Other;
 use super::pass::push_unique;
 use super::state::State;
 use crate::home::{RunLock, content_hash_file, rel_join};
+use crate::progress::Stage;
 use crate::util::{iso, parse_iso, write_atomic};
 use crate::{Error, Result};
 
@@ -365,21 +366,36 @@ impl Other {
             }
         }
         if entries.iter().any(|e| e.uploaded.is_some() && e.result.is_none()) {
+            self.rp.stage(Stage::AskingHome, 0, 0);
             self.collect_results(&queue, &mut entries, &mut rep)?;
         }
         let started = Instant::now();
-        let remote_files = if entries.iter().any(OutEntry::waiting_to_upload) { Some(self.list_outgoing()?) } else { None };
-        for (taken, e) in entries.iter_mut().filter(|e| e.waiting_to_upload()).enumerate() {
-            if taken >= budget.max_files || rep.bytes_sent >= budget.max_bytes || started.elapsed() >= budget.max_time {
-                rep.more = true;
-                break;
-            }
-            match self.upload_one(&queue, e, remote_files.as_ref().unwrap_or(&HashMap::new()), &mut rep) {
-                Ok(()) => {}
-                Err(err @ Error::Remote(_)) => return Err(err),
-                Err(err) => push_unique(&mut rep.problems, format!("{}: {err}", e.name)),
-            }
+        if entries.iter().any(OutEntry::waiting_to_upload) {
+            self.rp.stage(Stage::LookingAtLibrary, 0, 0);
         }
+        let remote_files = if entries.iter().any(OutEntry::waiting_to_upload) { Some(self.list_outgoing()?) } else { None };
+        let batch = || entries.iter().filter(|e| e.waiting_to_upload()).take(budget.max_files);
+        if batch().next().is_some() {
+            self.rp.stage(Stage::Sending, batch().count() as u64, batch().map(|e| e.size).sum());
+        }
+        let sending: Result<()> = self.rp.watch(&*self.remote, || {
+            for (taken, e) in entries.iter_mut().filter(|e| e.waiting_to_upload()).enumerate() {
+                if taken >= budget.max_files || rep.bytes_sent >= budget.max_bytes || started.elapsed() >= budget.max_time {
+                    rep.more = true;
+                    break;
+                }
+                let sent = self.upload_one(&queue, e, remote_files.as_ref().unwrap_or(&HashMap::new()), &mut rep);
+                self.rp.partial(0);
+                self.rp.item_done(e.size);
+                match sent {
+                    Ok(()) => {}
+                    Err(err @ Error::Remote(_)) => return Err(err),
+                    Err(err) => push_unique(&mut rep.problems, format!("{}: {err}", e.name)),
+                }
+            }
+            Ok(())
+        });
+        sending?;
         rep.queue = queue.status();
         Ok(rep)
     }

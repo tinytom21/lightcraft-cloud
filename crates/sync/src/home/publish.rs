@@ -13,6 +13,7 @@ use super::manifest::{ManifestPhoto, build_manifest_photos, manifest_ids};
 use super::scan::{FileInfo, Plan, Scan, diff_scan, ext_lower, in_scope, published_removals, scan_source_settled, walk_source};
 use super::state::{Meta, Row, RunLock, State, Uploaded};
 use super::{Added, Home, PhotoInfo, Renderer};
+use crate::progress::Stage;
 use crate::util::{iso, parallel, utc_stamp, write_atomic};
 use crate::{Error, FORMAT, Result};
 
@@ -159,6 +160,7 @@ impl Home {
         report.imports = imports;
         // (2) scan
         self.logln("step 2/6: scan source");
+        self.rp.stage(Stage::Checking, 0, 0);
         let versions = self.versions();
         let settled: Vec<String> = report.inbox.written.iter().chain(&report.imports.written).cloned().collect();
         let scan = scan_source_settled(&cfg.source, self.now(), &cfg.exclude, (!dry).then_some(&versions), &settled);
@@ -252,6 +254,7 @@ impl Home {
         }
         // (6) the manifest, last
         self.logln("step 6/6: manifest");
+        self.rp.stage(Stage::Publishing, 0, 0);
         report.manifest_uploaded = self.publish_manifest(st, &photos)?;
         report.photos = photos.len();
         st.set("last_run", &iso(self.now()));
@@ -288,7 +291,10 @@ impl Home {
         let mut infos: BTreeMap<String, PhotoInfo> = BTreeMap::new();
         let mut dups: BTreeSet<&String> = BTreeSet::new();
         let mut added: Vec<&String> = Vec::new();
-        for &p in &todo_import {
+        let rereads = plan.sc_changed.iter().filter(|p| known.get(*p).is_some_and(|r| r.status == "ok")).count();
+        self.rp.stage(Stage::Reading, (todo_import.len() + rereads) as u64, 0);
+        for (n, &p) in todo_import.iter().enumerate() {
+            self.rp.at(n as u64);
             match renderer.add(&src.join(p)) {
                 Ok(Added::Photo(i)) => {
                     infos.insert(p.clone(), i);
@@ -301,8 +307,11 @@ impl Home {
             }
         }
         // sidecar changed: read it again
+        let mut reread_n = 0;
         for p in &plan.sc_changed {
             if known.get(p).is_some_and(|r| r.status == "ok") {
+                self.rp.at((todo_import.len() + reread_n) as u64);
+                reread_n += 1;
                 match renderer.reread(&src.join(p)) {
                     Ok(i) => {
                         infos.insert(p.clone(), i);
@@ -311,9 +320,12 @@ impl Home {
                 }
             }
         }
+        self.rp.finish();
         // smart previews for newly imported photos
         let mut keys: HashMap<String, String> = HashMap::new();
-        for p in added {
+        self.rp.stage(Stage::Previews, added.len() as u64, 0);
+        for (n, p) in added.into_iter().enumerate() {
+            self.rp.at(n as u64);
             let h = &infos[p].content_hash;
             let tmp = previews.join(format!(".tmp-{h}.lcsp"));
             match renderer.smart_preview(&src.join(p), &tmp) {
@@ -328,8 +340,11 @@ impl Home {
                 }
             }
         }
+        self.rp.finish();
         // thumbnails: new + sidecar-changed, rendered with the current edits
-        for (p, i) in &infos {
+        self.rp.stage(Stage::Thumbnails, infos.len() as u64, 0);
+        for (n, (p, i)) in infos.iter().enumerate() {
+            self.rp.at(n as u64);
             let h = &i.content_hash;
             let tmp = thumbs.join(format!(".tmp-{h}.jpg"));
             match renderer.thumbnail(&src.join(p), cfg.thumb_px, cfg.thumb_quality, &tmp) {
@@ -344,6 +359,7 @@ impl Home {
                 }
             }
         }
+        self.rp.finish();
         if let Err(e) = renderer.finish() {
             self.logln(format!("WARNING: could not save the scratch library: {e}"));
         }
@@ -431,6 +447,9 @@ impl Home {
         suffix: &str,
         dry: bool,
     ) -> Result<MirrorStats> {
+        if !dry {
+            self.rp.stage(Stage::LookingAtLibrary, 0, 0);
+        }
         let remote: BTreeMap<String, u64> = match self.remote.list(prefix, true) {
             Ok(v) => v.into_iter().filter(|e| !e.is_dir).map(|e| (e.path, e.size)).collect(),
             Err(Error::NotFound(_)) => BTreeMap::new(),
@@ -471,13 +490,26 @@ impl Home {
         }
         // uploads (a replaced copy moves to history first)
         let jobs: Vec<(&str, bool)> = new.iter().map(|r| (*r, false)).chain(replace.iter().map(|r| (*r, true))).collect();
-        let results = parallel(&jobs, JOBS, |(rel, replacing)| -> Result<()> {
-            if *replacing {
-                let backup = format!("history/{date}/{backup_sub}/{}", with_suffix(rel, suffix));
-                self.retry(|| self.remote.move_file(&format!("{prefix}/{rel}"), &backup))?;
-            }
-            self.retry(|| self.remote.put(&local[rel].abs, &format!("{prefix}/{rel}")))
-        });
+        if !jobs.is_empty() {
+            let stage = match prefix {
+                "originals" => Stage::UploadingOriginals,
+                "mobile/thumbs" => Stage::UploadingThumbnails,
+                _ => Stage::UploadingPreviews,
+            };
+            self.rp.stage(stage, jobs.len() as u64, jobs.iter().map(|(r, _)| local[r].size).sum());
+        }
+        let results = self.rp.watch(&*self.remote, || parallel(&jobs, JOBS, |(rel, replacing)| -> Result<()> {
+            let sent = (|| {
+                if *replacing {
+                    let backup = format!("history/{date}/{backup_sub}/{}", with_suffix(rel, suffix));
+                    self.retry(|| self.remote.move_file(&format!("{prefix}/{rel}"), &backup))?;
+                }
+                self.retry(|| self.remote.put(&local[rel].abs, &format!("{prefix}/{rel}")))
+            })();
+            // (a file that failed is counted too: the stage ends when every upload has been tried)
+            self.rp.item_done(local[rel].size);
+            sent
+        }));
         let mut first_err = None;
         for ((rel, _), r) in jobs.iter().zip(results) {
             match r {

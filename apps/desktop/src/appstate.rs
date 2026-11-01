@@ -12,6 +12,8 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+use lightcraft_cloud_client::{Progress, describe, to_ms};
+
 use crate::clock::parse_rfc3339;
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -55,11 +57,38 @@ pub enum Activity {
     Syncing {
         since: String,
         reason: String,
+        /// How far the job is (written about once a second while it runs). Absent in a status file from an older version.
+        #[serde(default)]
+        progress: Option<Progress>,
     },
     /// Photos imported on this PC are being sent to the home PC (a short, bounded job).
     Uploading {
         since: String,
+        #[serde(default)]
+        progress: Option<Progress>,
     },
+}
+
+impl Activity {
+    /// The same activity with `p` as its progress (Idle has none).
+    pub fn with_progress(&self, p: Progress) -> Activity {
+        match self {
+            Activity::Syncing { since, reason, .. } => Activity::Syncing { since: since.clone(), reason: reason.clone(), progress: Some(p) },
+            Activity::Uploading { since, .. } => Activity::Uploading { since: since.clone(), progress: Some(p) },
+            Activity::Idle => Activity::Idle,
+        }
+    }
+
+    pub fn progress(&self) -> Option<&Progress> {
+        match self {
+            Activity::Syncing { progress, .. } | Activity::Uploading { progress, .. } => progress.as_ref(),
+            Activity::Idle => None,
+        }
+    }
+
+    pub fn is_busy(&self) -> bool {
+        !matches!(self, Activity::Idle)
+    }
 }
 
 /// A line of the Status window's lists.
@@ -189,6 +218,14 @@ impl AppStatus {
         TrayState::of(self)
     }
 
+    /// The tray icon's tooltip: while a job runs and has reported, what it is doing (the Status window's line); else the state's words.
+    pub fn tooltip(&self, now: SystemTime) -> String {
+        match self.activity.progress() {
+            Some(p) => fit_tooltip(&format!("LightCraft Cloud: {}", describe(p, to_ms(now)).one_line())),
+            None => self.tray_state().tooltip().to_string(),
+        }
+    }
+
     /// Everything that is waiting, in the words the state line uses (empty: nothing is).
     pub fn waiting_items(&self) -> Vec<String> {
         let photos = |n: usize| if n == 1 { "1 photo".to_string() } else { format!("{n} photos") };
@@ -273,6 +310,19 @@ impl AppStatus {
         }
         h(HealthKind::UpToDate, Tone::Ok, "Up to date".to_string())
     }
+}
+
+/// The longest tooltip every system takes (Windows cuts at 127 characters).
+pub const TOOLTIP_MAX: usize = 120;
+
+/// `text`, cut at a word to fit a tooltip, with an ellipsis.
+pub fn fit_tooltip(text: &str) -> String {
+    if text.chars().count() <= TOOLTIP_MAX {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(TOOLTIP_MAX - 1).collect();
+    let cut = cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head);
+    format!("{}…", cut.trim_end_matches([' ', ',', ';', '.', ':', '·']))
 }
 
 /// How the state line is coloured.
@@ -430,7 +480,7 @@ mod tests {
         let mut s = AppStatus {
             configured: true,
             edits_applied: 4,
-            activity: Activity::Syncing { since: "t".into(), reason: "timer".into() },
+            activity: Activity::Syncing { since: "t".into(), reason: "timer".into(), progress: None },
             ..AppStatus::default()
         };
         for i in 0..30 {
@@ -466,9 +516,9 @@ mod tests {
         assert_eq!(s.tray_state(), TrayState::Paused);
         s.last_error = Some("boom".into());
         assert_eq!(s.tray_state(), TrayState::Error);
-        s.activity = Activity::Uploading { since: "t".into() };
+        s.activity = Activity::Uploading { since: "t".into(), progress: None };
         assert_eq!(s.tray_state(), TrayState::Uploading);
-        s.activity = Activity::Syncing { since: "t".into(), reason: "x".into() };
+        s.activity = Activity::Syncing { since: "t".into(), reason: "x".into(), progress: None };
         assert_eq!(s.tray_state(), TrayState::Syncing);
         s.inbox_pending = Some(0);
         s.activity = Activity::Idle;
@@ -551,9 +601,9 @@ mod tests {
         assert_eq!(s.tray_state(), TrayState::Waiting);
         s.last_error = Some("boom".into());
         assert_eq!((s.health().kind, s.health().tone), (HealthKind::Failed, Tone::Bad));
-        s.activity = Activity::Uploading { since: "t".into() };
+        s.activity = Activity::Uploading { since: "t".into(), progress: None };
         assert_eq!((s.health().kind, s.health().tone), (HealthKind::Uploading, Tone::Busy));
-        s.activity = Activity::Syncing { since: "t".into(), reason: "timer".into() };
+        s.activity = Activity::Syncing { since: "t".into(), reason: "timer".into(), progress: None };
         assert_eq!((s.health().kind, s.health().text.as_str()), (HealthKind::Syncing, "Syncing now (timer)"));
         let mut s = other_settled();
         s.paused = true;

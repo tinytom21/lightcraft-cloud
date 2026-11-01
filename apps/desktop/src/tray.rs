@@ -123,7 +123,8 @@ mod native {
         icon: TrayIcon,
         pause: MenuItem,
         ids: Vec<(MenuId, MenuAction)>,
-        shown: Option<(TrayState, bool)>,
+        /// What the icon and the menu show now: the state, Paused, and the tooltip (it carries the running job's line).
+        shown: Option<(TrayState, bool, String)>,
     }
 
     fn icon_of(state: TrayState) -> Result<Icon, String> {
@@ -150,7 +151,7 @@ mod native {
             let icon = TrayIconBuilder::new()
                 .with_menu(Box::new(menu))
                 .with_icon(icon_of(state)?)
-                .with_tooltip(state.tooltip())
+                .with_tooltip(status.tooltip(std::time::SystemTime::now()))
                 .with_title("LightCraft Cloud")
                 .build()
                 .map_err(|e| e.to_string())?;
@@ -161,24 +162,30 @@ mod native {
                 (se.id().clone(), MenuAction::Settings),
                 (quit.id().clone(), MenuAction::Quit),
             ];
-            Ok(Tray { icon, pause, ids, shown: Some((state, status.paused)) })
+            Ok(Tray { icon, pause, ids, shown: Some((state, status.paused, status.tooltip(std::time::SystemTime::now()))) })
         }
 
         pub fn action(&self, id: &MenuId) -> Option<MenuAction> {
             self.ids.iter().find(|(i, _)| i == id).map(|(_, a)| *a)
         }
 
-        /// Follow the status: icon, tooltip, and the Pause/Resume label (only when something changed).
+        /// Follow the status: icon, tooltip, and the Pause/Resume label, each only when it changed (a running job's status arrives about
+        /// once a second, and most of those change nothing the tray shows: the time left moves by the minute).
         pub fn update(&mut self, status: &AppStatus) {
-            let now = (status.tray_state(), status.paused);
-            if self.shown == Some(now) {
-                return;
-            }
-            if let Ok(i) = icon_of(now.0) {
+            let now = (status.tray_state(), status.paused, status.tooltip(std::time::SystemTime::now()));
+            let (state_changed, paused_changed, tip_changed) = match &self.shown {
+                Some(s) => (s.0 != now.0, s.1 != now.1, s.2 != now.2),
+                None => (true, true, true),
+            };
+            if state_changed && let Ok(i) = icon_of(now.0) {
                 let _ = self.icon.set_icon(Some(i));
             }
-            let _ = self.icon.set_tooltip(Some(now.0.tooltip()));
-            self.pause.set_text(pause_label(now.1));
+            if tip_changed {
+                let _ = self.icon.set_tooltip(Some(&now.2));
+            }
+            if paused_changed {
+                self.pause.set_text(pause_label(now.1));
+            }
             self.shown = Some(now);
         }
     }

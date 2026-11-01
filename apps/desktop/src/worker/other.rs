@@ -14,6 +14,7 @@ use crate::appstate::OtherView;
 use crate::clock::Clock;
 use crate::config::Config;
 use crate::lightcraft::TcpLink;
+use crate::live::Feed;
 use crate::pending::PendingList;
 use crate::service::{BridgeReport, JobError, PurgeOutcome, QueueView, SyncOutcome, UploadOutcome, Worker, WorkerInfo};
 
@@ -25,12 +26,14 @@ pub struct OtherWorker {
     clock: Arc<dyn Clock>,
     link: LinkFactory,
     retry_delay: Option<std::time::Duration>,
+    /// Where a pass and an upload step report how far they are.
+    progress: Option<Arc<Feed>>,
 }
 
 impl OtherWorker {
     pub fn new(config_path: PathBuf, remote: RemoteFactory, clock: Arc<dyn Clock>) -> OtherWorker {
         let link: LinkFactory = Box::new(|port| Box::new(TcpLink::new(port)));
-        let mut w = OtherWorker { config_path, cfg: None, config_error: None, remote, clock, link, retry_delay: None };
+        let mut w = OtherWorker { config_path, cfg: None, config_error: None, remote, clock, link, retry_delay: None, progress: None };
         let _ = w.reload();
         w
     }
@@ -68,6 +71,10 @@ impl OtherWorker {
         });
         if let Some(d) = self.retry_delay {
             other.set_retry_delay(d);
+        }
+        if let Some(feed) = &self.progress {
+            let feed = feed.clone();
+            other.set_progress_hook(move |p| feed.report(p));
         }
         // (the photos this PC downloads are queued for LightCraft in the same durable list the home PC's adopted photos use)
         if cfg.file.lightcraft_control_port != 0 {
@@ -182,6 +189,10 @@ impl Worker for OtherWorker {
             let _ = self.reload();
         }
         Ok(outcome_of(&report))
+    }
+
+    fn set_progress(&mut self, feed: Arc<Feed>) {
+        self.progress = Some(feed);
     }
 
     /// Nothing to poll: this PC does not look at other devices' edits.

@@ -348,3 +348,62 @@ fn port_zero_turns_the_feature_off_nothing_is_queued_or_sent() {
     assert!(!e.state.join("lightcraft-pending").exists());
     assert_eq!((svc.status().lightcraft_port, svc.status().lightcraft_waiting), (0, 0));
 }
+
+/// A remote whose uploads each take a moment (for the demo below).
+struct SlowPuts {
+    inner: lightcraft_cloud_client::DirRemote,
+    pause: Duration,
+}
+
+impl lightcraft_cloud_client::Remote for SlowPuts {
+    fn list(&self, dir: &str, recursive: bool) -> Result<Vec<lightcraft_cloud_client::RemoteEntry>> {
+        self.inner.list(dir, recursive)
+    }
+    fn get(&self, path: &str, local: &Path) -> Result<()> {
+        self.inner.get(path, local)
+    }
+    fn put(&self, local: &Path, path: &str) -> Result<()> {
+        if path.starts_with("originals/") {
+            std::thread::sleep(self.pause);
+        }
+        self.inner.put(local, path)
+    }
+}
+
+/// For looking at the Status window by hand, not a test: `LC_DEMO_DIR=<scratch folder> cargo test --test app demo_ -- --ignored` publishes
+/// a made-up folder of generated photos (in the scratch folder, never anything of the user's) with slow uploads and a trivial renderer,
+/// with the app's instance lock held and status.json written as the app writes it, for about a minute.
+#[test]
+#[ignore = "a demo for a screenshot; set LC_DEMO_DIR"]
+fn demo_a_long_publish_for_the_status_window() {
+    let Some(dir) = std::env::var_os("LC_DEMO_DIR").map(PathBuf::from) else { return };
+    let _ = std::fs::remove_dir_all(&dir);
+    let (photos, remote, state, config) = (dir.join("photos"), dir.join("remote"), dir.join("state"), dir.join("cfg/config.toml"));
+    for i in 0..40 {
+        let bytes: Vec<u8> = (0..(2 << 20) + i * 50_000).map(|n| ((n * 29 + i * 11) % 249) as u8).collect();
+        let p = photos.join(format!("Trip/IMG_{i:04}.jpg"));
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, bytes).unwrap();
+        std::fs::OpenOptions::new().write(true).open(&p).unwrap().set_modified(std::time::SystemTime::now() - Duration::from_secs(86_400)).unwrap();
+    }
+    std::fs::create_dir_all(&remote).unwrap();
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, format!("source = '{}'\nremote = '{}'\nstate_dir = '{}'\nnotify = false\n", photos.display(), remote.display(), state.display())).unwrap();
+    std::fs::create_dir_all(&state).unwrap();
+    let _instance = lightcraft_cloud_desktop::instance::InstanceLock::acquire(&state).unwrap().expect("a lock of our own");
+    let clock: Arc<dyn Clock> = Arc::new(lightcraft_cloud_desktop::clock::SystemClock);
+    let pause: u64 = std::env::var("LC_DEMO_PAUSE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(2_000);
+    let worker = HomeWorker::new(
+        config.clone(),
+        Box::new(|_cfg: &Config| Box::new(Trivial)),
+        Box::new(move |cfg: &Config| {
+            let dir = lightcraft_cloud_desktop::config::local_remote(cfg.remote_spec()?)?.unwrap();
+            Ok(Arc::new(SlowPuts { inner: lightcraft_cloud_client::DirRemote::new(dir), pause: Duration::from_millis(pause) }) as Arc<dyn lightcraft_cloud_client::Remote>)
+        }),
+        clock.clone(),
+    );
+    let mut svc = Service::new(worker, clock, Box::new(Spy::default()), state, Timing::default(), Box::new(|_| {}), Box::new(|_| {}));
+    svc.handle(Command::SyncNow);
+    assert!(svc.step());
+    eprintln!("demo finished: {:?}", svc.status().last_sync);
+}

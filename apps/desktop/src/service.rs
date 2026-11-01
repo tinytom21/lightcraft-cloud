@@ -3,7 +3,7 @@
 //! [`Service::step`] runs one due job, [`Service::handle`] takes a command, and [`run_loop`] is the thread that drives both.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, SystemTime};
 
@@ -11,6 +11,7 @@ use lightcraft_cloud_client::home::utc_iso;
 
 use crate::appstate::{Activity, AppStatus, LastSync, OtherView, Persisted};
 use crate::clock::{Clock, parse_rfc3339};
+use crate::live::{Feed, Pump};
 use crate::notifier::{self, Notifier};
 use crate::scheduler::{Ended, Job, Reason, Scheduler, Timing};
 
@@ -174,6 +175,9 @@ pub trait Worker {
     fn upload_step(&mut self) -> Result<UploadOutcome, JobError> {
         Ok(UploadOutcome::default())
     }
+    /// Where a job reports how far it is (see [`crate::live`]); a worker that has nothing to report ignores it. Called once, before the
+    /// first job.
+    fn set_progress(&mut self, _feed: Arc<Feed>) {}
     /// Whether this worker is another PC's (the status then shows that role's rows).
     fn is_other(&self) -> bool {
         false
@@ -210,7 +214,7 @@ pub struct Service<W: Worker> {
     persisted: Persisted,
     status: AppStatus,
     info: WorkerInfo,
-    sink: Sink,
+    sink: Arc<Mutex<Sink>>,
     log: LogFn,
     quit: bool,
     /// The failure the user was last told about (the same one is not announced every 15 minutes).
@@ -222,12 +226,19 @@ pub struct Service<W: Worker> {
     bridge_first: bool,
     /// When the last sync wanted to be looked at again (new photos that were not ready yet).
     recheck: Option<SystemTime>,
+    /// What the running job reports (see [`crate::live`]).
+    feed: Arc<Feed>,
+    /// How often a running job's progress is published.
+    progress_every: Duration,
 }
+
+/// How long the end of a job waits for a progress write that is still going on.
+const PUMP_GRACE: Duration = Duration::from_secs(2);
 
 impl<W: Worker> Service<W> {
     /// `sink` is called with the status after every change (the tray follows it); the status is also written to
     /// `<state>/status.json` for the windows.
-    pub fn new(worker: W, clock: Arc<dyn Clock>, notifier: Box<dyn Notifier>, state_dir: PathBuf, timing: Timing, sink: Sink, log: LogFn) -> Self {
+    pub fn new(mut worker: W, clock: Arc<dyn Clock>, notifier: Box<dyn Notifier>, state_dir: PathBuf, timing: Timing, sink: Sink, log: LogFn) -> Self {
         let now = clock.now();
         let persisted = Persisted::load(&state_dir);
         let info = worker.info();
@@ -241,7 +252,28 @@ impl<W: Worker> Service<W> {
         {
             status.last_sync = Some(LastSync { when, ok: result.starts_with("ok"), result, photos, applied: 0, merged: 0, kept: 0 });
         }
-        let mut s = Service { worker, sched, clock, notifier, state_dir, persisted, status, info, sink, log, quit: false, announced: None, imports_stuck: 0, bridge_first: true, recheck: None };
+        let feed = Feed::new(clock.clone());
+        worker.set_progress(feed.clone());
+        let sink = Arc::new(Mutex::new(sink));
+        let mut s = Service {
+            worker,
+            sched,
+            clock,
+            notifier,
+            state_dir,
+            persisted,
+            status,
+            info,
+            sink,
+            log,
+            quit: false,
+            announced: None,
+            imports_stuck: 0,
+            bridge_first: true,
+            recheck: None,
+            feed,
+            progress_every: Duration::from_secs(1),
+        };
         s.publish();
         s.refresh_queue(true);
         s
@@ -249,6 +281,11 @@ impl<W: Worker> Service<W> {
 
     pub fn status(&self) -> &AppStatus {
         &self.status
+    }
+
+    /// How often a running job's progress is published (default one second; tests make it short).
+    pub fn set_progress_interval(&mut self, every: Duration) {
+        self.progress_every = every;
     }
 
     pub fn quit_requested(&self) -> bool {
@@ -278,7 +315,35 @@ impl<W: Worker> Service<W> {
         if let Err(e) = self.status.save(&self.state_dir) {
             self.say(format!("cannot write the status: {e}"));
         }
-        (self.sink)(&self.status);
+        (self.sink.lock().unwrap_or_else(|e| e.into_inner()))(&self.status);
+    }
+
+    /// Publish the running job's progress from a thread of its own until [`Service::stop_pump`]: the job blocks this thread. The status
+    /// the pump writes is this one with the progress filled in, so what it shows is exactly what [`Service::publish`] just wrote. A
+    /// write that fails is noted once and ignored; one that is slow slows only the pump.
+    fn start_pump(&self) -> (Pump, Arc<Mutex<Option<String>>>) {
+        self.feed.reset();
+        let base = self.status.clone();
+        let (state_dir, sink, clock) = (self.state_dir.clone(), self.sink.clone(), self.clock.clone());
+        let failure: Arc<Mutex<Option<String>>> = Arc::default();
+        let f = failure.clone();
+        let pump = Pump::start(self.feed.clone(), self.progress_every, move |p| {
+            let mut st = base.clone();
+            st.activity = base.activity.with_progress(p);
+            st.updated = utc_iso(clock.now());
+            if let Err(e) = st.save(&state_dir) {
+                f.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(e);
+            }
+            (sink.lock().unwrap_or_else(|e| e.into_inner()))(&st);
+        });
+        (pump, failure)
+    }
+
+    fn stop_pump(&self, (pump, failure): (Pump, Arc<Mutex<Option<String>>>)) {
+        pump.stop(PUMP_GRACE);
+        if let Some(e) = failure.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            self.say(format!("cannot write the progress: {e}"));
+        }
     }
 
     fn save_persisted(&self) {
@@ -378,10 +443,12 @@ impl<W: Worker> Service<W> {
 
     fn run_sync(&mut self, reason: Reason) -> Ended {
         let since = self.iso(self.clock.now());
-        self.status.activity = Activity::Syncing { since, reason: reason.label().into() };
+        self.status.activity = Activity::Syncing { since, reason: reason.label().into(), progress: None };
         self.publish();
         self.say(format!("sync ({})", reason.label()));
+        let pump = self.start_pump();
         let result = self.worker.sync();
+        self.stop_pump(pump);
         let now = self.iso(self.clock.now());
         self.status.activity = Activity::Idle;
         match result {
@@ -497,9 +564,11 @@ impl<W: Worker> Service<W> {
     /// lost by waiting.
     fn run_upload(&mut self) -> Ended {
         let since = self.iso(self.clock.now());
-        self.status.activity = Activity::Uploading { since };
+        self.status.activity = Activity::Uploading { since, progress: None };
         self.publish();
+        let pump = self.start_pump();
         let result = self.worker.upload_step();
+        self.stop_pump(pump);
         let now = self.iso(self.clock.now());
         self.status.activity = Activity::Idle;
         match result {

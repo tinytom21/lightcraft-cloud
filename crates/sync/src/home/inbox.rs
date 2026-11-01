@@ -9,6 +9,7 @@ use super::scan::{PHOTO_EXTS, find_sidecars, is_skipped_name, secs_of};
 use super::state::{Row, save_history};
 use super::xmp;
 use super::{Home, State};
+use crate::progress::Stage;
 use crate::util::{parse_stamp, sidecar_version, temp_beside, utc_stamp, write_atomic};
 use crate::{Error, Result};
 
@@ -236,7 +237,9 @@ impl Home {
         let mut cur: HashMap<String, (String, f64)> = HashMap::new(); // sidecars written during this run
         let mut scan_cache: HashMap<String, Found> = HashMap::new();
 
-        for (p, path) in parsed {
+        self.rp.stage(Stage::Inbox, parsed.len() as u64, 0);
+        for (n, (p, path)) in parsed.into_iter().enumerate() {
+            self.rp.at(n as u64);
             let reject = |summary: &mut InboxSummary, why: &str| -> Result<()> {
                 summary.rejected += 1;
                 summary.items.push(format!("reject {path}: {why}"));
@@ -364,6 +367,7 @@ impl Home {
             }
             done()?;
         }
+        self.rp.finish();
         Ok(summary)
     }
 }

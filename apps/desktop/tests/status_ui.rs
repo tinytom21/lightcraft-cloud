@@ -44,7 +44,7 @@ fn the_state_line_is_green_up_to_date_only_when_nothing_waits_and_nothing_is_wro
         ("sent, not answered", Box::new(|s| s.other.as_mut().unwrap().awaiting_home = 3), "3 photos sent, waiting for the home PC", HealthKind::Waiting),
         ("a problem", Box::new(|s| s.active_problems = vec!["IMG_1.jpg is already on this PC with different contents".into()]), "1 problem needs attention", HealthKind::Problem),
         ("offline", Box::new(|s| s.offline = true), "Offline: will try again", HealthKind::Offline),
-        ("uploading", Box::new(|s| s.activity = Activity::Uploading { since: "2026-11-01T12:00:00Z".into() }), "Sending photos to the home PC", HealthKind::Uploading),
+        ("uploading", Box::new(|s| s.activity = Activity::Uploading { since: "2026-11-01T12:00:00Z".into(), progress: None }), "Sending photos to the home PC", HealthKind::Uploading),
     ];
     let mut colours = std::collections::HashSet::new();
     for (what, change, text, kind) in cases {
@@ -175,4 +175,152 @@ fn photos_that_were_here_at_the_start_are_counted_with_a_button_to_send_them() {
     let mut h = status_harness(settled_other());
     h.run();
     assert!(h.query_by_label("Send them").is_none());
+}
+
+// ------------------------------------------------------------------ live progress
+
+fn now_ms() -> u64 {
+    lightcraft_cloud_client::to_ms(now())
+}
+
+fn syncing(progress: Option<lightcraft_cloud_client::Progress>) -> AppStatus {
+    let mut s = settled_other();
+    s.activity = Activity::Syncing { since: "2026-11-01T11:50:00Z".into(), reason: "timer".into(), progress };
+    s
+}
+
+fn download(done: u64, total: u64, done_b: u64, total_b: u64) -> lightcraft_cloud_client::Progress {
+    use lightcraft_cloud_client::{Progress, Stage};
+    Progress {
+        stage: Stage::Downloading,
+        done_items: done,
+        total_items: total,
+        done_bytes: done_b,
+        total_bytes: total_b,
+        started_ms: now_ms() - 120_000,
+        last_item_ms: now_ms() - 3_000,
+        finish_ms: Some(now_ms() + 12 * 60_000),
+        ..Progress::default()
+    }
+}
+
+#[test]
+fn a_download_shows_its_line_with_counts_sizes_and_time_left_and_a_bar_at_the_right_fill() {
+    let gb = 1u64 << 30;
+    let mut h = status_harness(syncing(Some(download(34, 261, gb + gb / 5, 8 * gb))));
+    h.run();
+    h.get_by_label("Syncing now (timer)"); // the state line is as it was
+    h.get_by_label("Downloading 34 of 261 photos · 1.2 of 8.0 GB · about 12 minutes left");
+    h.get_by_label("Progress 15%");
+    assert!(h.query_by_label_contains("No progress for").is_none(), "moving: no note");
+    // the same on the home PC (no other-PC rows), with an upload
+    use lightcraft_cloud_client::{Progress, Stage};
+    let mut s = syncing(Some(Progress {
+        stage: Stage::UploadingOriginals,
+        done_items: 5,
+        total_items: 30,
+        done_bytes: 200 << 20,
+        total_bytes: 1_181_116_006,
+        started_ms: now_ms() - 60_000,
+        last_item_ms: now_ms() - 1_000,
+        finish_ms: Some(now_ms() + 3 * 60_000),
+        ..Progress::default()
+    }));
+    s.other = None;
+    let mut h = status_harness(s);
+    h.run();
+    h.get_by_label("Uploading originals 5 of 30 · 200.0 MB of 1.1 GB · about 3 minutes left");
+    h.get_by_label("Progress 17%");
+}
+
+#[test]
+fn a_stage_without_a_count_is_only_named_and_its_bar_says_it_is_busy() {
+    use lightcraft_cloud_client::{Progress, Stage};
+    let p = Progress { stage: Stage::LookingAtLibrary, started_ms: now_ms() - 5_000, ..Progress::default() };
+    let mut h = status_harness(syncing(Some(p)));
+    h.run();
+    h.get_by_label("Looking at the cloud library…");
+    h.get_by_label("Progress, working");
+    // a job that has not reported yet
+    let mut h = status_harness(syncing(None));
+    h.run();
+    h.get_by_label("Getting started…");
+    // an upload job
+    let mut s = settled_other();
+    s.activity = Activity::Uploading {
+        since: "2026-11-01T11:59:00Z".into(),
+        progress: Some(Progress { stage: Stage::Sending, done_items: 3, total_items: 12, started_ms: now_ms() - 2_000, last_item_ms: now_ms() - 500, ..Progress::default() }),
+    };
+    let mut h = status_harness(s);
+    h.run();
+    h.get_by_label("Sending photos to the home PC"); // the state line
+    h.get_by_label("Sending 3 of 12 photos to the home PC");
+    h.get_by_label("Progress 25%");
+}
+
+#[test]
+fn two_minutes_without_anything_finishing_is_a_calm_note_and_not_an_error() {
+    let mut p = download(34, 261, 100, 1000);
+    p.finish_ms = None;
+    p.started_ms = now_ms() - 30 * 60_000;
+    p.last_item_ms = now_ms() - 3 * 60_000 - 5_000;
+    let mut h = status_harness(syncing(Some(p)));
+    h.run();
+    h.get_by_label("No progress for 3 minutes: still trying, the network may be slow or down");
+    h.get_by_label("Downloading 34 of 261 photos · 100 of 1000 bytes");
+    // the state line is still the busy one; no problem is raised
+    h.get_by_label("Syncing now (timer)");
+    assert!(h.query_by_label_contains("problem").is_none());
+    // one second short of two minutes: no note
+    p.last_item_ms = now_ms() - 119_000;
+    let mut h = status_harness(syncing(Some(p)));
+    h.run();
+    assert!(h.query_by_label_contains("No progress").is_none());
+    // exactly two minutes: the note
+    p.last_item_ms = now_ms() - 120_000;
+    let mut h = status_harness(syncing(Some(p)));
+    h.run();
+    h.get_by_label("No progress for 2 minutes: still trying, the network may be slow or down");
+}
+
+#[test]
+fn nothing_about_progress_shows_when_idle_or_when_the_app_is_not_running() {
+    let mut h = status_harness(settled_other());
+    h.run();
+    assert!(h.query_by_label_contains("Progress").is_none() && h.query_by_label_contains("Getting started").is_none());
+    // a status left behind by an app that was stopped mid-job must not claim a time
+    let s = syncing(Some(download(34, 261, 1, 2)));
+    let mut h = Harness::new_ui_state(|ui, s: &mut AppStatus| status::show(ui, &StatusView { status: Some(s), running: false, now: now() }), s);
+    h.run();
+    assert!(h.query_by_label_contains("Downloading 34").is_none() && h.query_by_label("Progress 50%").is_none());
+    h.get_by_label_contains("not running");
+}
+
+#[test]
+fn the_bars_fill_is_exact_never_past_the_track_and_a_begun_job_shows_a_sliver() {
+    assert_eq!(status::fill_width(0.0, 400.0), 0.0);
+    assert_eq!(status::fill_width(0.5, 400.0), 200.0);
+    assert_eq!(status::fill_width(1.0, 400.0), 400.0);
+    assert_eq!(status::fill_width(7.0, 400.0), 400.0);
+    assert_eq!(status::fill_width(-1.0, 400.0), 0.0);
+    assert_eq!(status::fill_width(0.001, 400.0), 8.0, "a sliver, so it is not mistaken for nothing");
+    assert_eq!(status::fill_width(0.5, 3.0), 3.0, "and not wider than a tiny track");
+    // the moving piece of a bar that cannot say how far it is stays inside the track
+    for i in 0..=20 {
+        let (a, b) = status::busy_span(i as f32 / 20.0, 300.0);
+        assert!(0.0 <= a && a <= b && b <= 300.0, "{i}: {a} {b}");
+    }
+    assert_eq!(status::busy_span(0.5, 300.0).1 - status::busy_span(0.5, 300.0).0, 100.0);
+}
+
+#[test]
+fn the_tray_tooltip_is_the_same_line_and_fits_where_tooltips_are_short() {
+    let s = syncing(Some(download(34, 261, 1 << 30, 8 << 30)));
+    assert_eq!(s.tooltip(now()), "LightCraft Cloud: Downloading 34 of 261 photos · 1.0 of 8.0 GB · about 12 minutes left");
+    assert_eq!(settled_other().tooltip(now()), "LightCraft Cloud: up to date");
+    let mut p = download(34, 261, 1 << 30, 8 << 30);
+    p.last_item_ms = now_ms() - 10 * 60_000;
+    let long = syncing(Some(p)).tooltip(now());
+    assert!(long.chars().count() <= lightcraft_cloud_desktop::appstate::TOOLTIP_MAX, "{long}");
+    assert!(long.starts_with("LightCraft Cloud: Downloading 34 of 261 photos") && long.ends_with('…'), "{long}");
 }

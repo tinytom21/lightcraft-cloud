@@ -39,6 +39,12 @@ pub trait Remote: Send + Sync {
     fn remove_empty_dir(&self, _dir: &str) -> Result<()> {
         Ok(())
     }
+    /// Bytes moved so far by the transfers running right now (all threads), if the remote can say that cheaply; `None` if it cannot. Read
+    /// from another thread while a `get` or `put` is blocking, so the app can show that a big file is moving. Only for progress: nothing
+    /// depends on it.
+    fn bytes_in_flight(&self) -> Option<u64> {
+        None
+    }
     /// The entry at `path`, if there is one.
     fn stat(&self, path: &str) -> Result<Option<RemoteEntry>> {
         let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));

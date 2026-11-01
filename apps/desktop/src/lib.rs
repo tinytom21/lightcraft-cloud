@@ -21,6 +21,7 @@ pub mod config;
 pub mod engine;
 pub mod instance;
 pub mod lightcraft;
+pub mod live;
 pub mod notifier;
 pub mod pending;
 pub mod scheduler;

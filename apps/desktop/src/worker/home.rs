@@ -11,6 +11,7 @@ use crate::backup;
 use crate::clock::Clock;
 use crate::config::Config;
 use crate::lightcraft::TcpLink;
+use crate::live::Feed;
 use crate::pending;
 use crate::service::{BridgeReport, JobError, PurgeOutcome, SyncOutcome, Worker, WorkerInfo};
 use super::{LinkFactory, RemoteFactory, flush_pending, to_job_error};
@@ -28,12 +29,14 @@ pub struct HomeWorker {
     remote: RemoteFactory,
     clock: Arc<dyn Clock>,
     link: LinkFactory,
+    /// Where a sync reports how far it is.
+    progress: Option<Arc<Feed>>,
 }
 
 impl HomeWorker {
     pub fn new(config_path: PathBuf, renderer: RendererFactory, remote: RemoteFactory, clock: Arc<dyn Clock>) -> HomeWorker {
         let link: LinkFactory = Box::new(|port| Box::new(TcpLink::new(port)));
-        let mut w = HomeWorker { config_path, cfg: None, config_error: None, renderer, remote, clock, link };
+        let mut w = HomeWorker { config_path, cfg: None, config_error: None, renderer, remote, clock, link, progress: None };
         let _ = w.reload();
         w
     }
@@ -60,6 +63,10 @@ impl HomeWorker {
             move || c.now()
         });
         pending::install_hook(&mut home, &cfg.state_dir, cfg.file.lightcraft_control_port);
+        if let Some(feed) = &self.progress {
+            let feed = feed.clone();
+            home.set_progress_hook(move |p| feed.report(p));
+        }
         let logfile = cfg.state_dir.join("logs").join("lightcraft-cloud-desktop.log");
         home.set_logger(move |m| {
             let line = format!("{} {m}", utc_iso(std::time::SystemTime::now()));
@@ -163,6 +170,10 @@ impl Worker for HomeWorker {
             failed: report.failed.len(),
             ..SyncOutcome::default()
         })
+    }
+
+    fn set_progress(&mut self, feed: Arc<Feed>) {
+        self.progress = Some(feed);
     }
 
     fn inbox_waiting(&mut self) -> Result<usize, String> {

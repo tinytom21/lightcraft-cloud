@@ -72,7 +72,7 @@ fn the_status_panel_shows_the_last_sync_the_inbox_and_the_next_run() {
 #[test]
 fn the_status_panel_says_when_syncing_paused_failed_not_set_up_or_not_running() {
     let mut s = busy_status();
-    s.activity = Activity::Syncing { since: "2026-11-01T12:00:00Z".into(), reason: "Sync now".into() };
+    s.activity = Activity::Syncing { since: "2026-11-01T12:00:00Z".into(), reason: "Sync now".into(), progress: None };
     let mut h = status_harness(Some(s.clone()), true);
     h.run();
     h.get_by_label("Syncing now (Sync now)");
