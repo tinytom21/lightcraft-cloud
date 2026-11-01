@@ -102,7 +102,12 @@ mod tests {
         assert_eq!(secs(parse_rfc3339("2026-11-01T01:00:00+01:00").unwrap()), 1_793_491_200);
         assert_eq!(secs(parse_rfc3339("2026-10-31T19:00:00-05:00").unwrap()), 1_793_491_200);
         let t = parse_rfc3339("2026-11-01T00:00:00.123456789012+00:00").unwrap();
-        assert_eq!((secs(t), t.duration_since(UNIX_EPOCH).unwrap().subsec_nanos()), (1_793_491_200, 123_456_789));
+        // (Windows keeps times to 100 ns, so the last two digits are the system's, not the parser's)
+        let (s, n) = (secs(t), t.duration_since(UNIX_EPOCH).unwrap().subsec_nanos());
+        assert_eq!((s, n / 100), (1_793_491_200, 1_234_567));
+        if !cfg!(windows) {
+            assert_eq!(n, 123_456_789);
+        }
         assert_eq!(secs(parse_rfc3339("2024-02-29T12:00:00Z").unwrap()), 1_709_208_000);
         for bad in ["", "yesterday", "2026-13-01T00:00:00Z", "2026-11-01T00:00:00", "2026-11-01T00:00:00.Z", "2026-11-01T25:00:00Z"] {
             assert!(parse_rfc3339(bad).is_none(), "{bad}");

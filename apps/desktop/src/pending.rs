@@ -251,7 +251,8 @@ pub fn install_hook(home: &mut lightcraft_cloud_client::home::Home, state_dir: &
     home.set_adopted_hook(move |p| list.add(p, &lightcraft_cloud_client::home::utc_iso(std::time::SystemTime::now())));
 }
 
-#[cfg(test)]
+// (written with POSIX paths, which are not absolute on Windows; `windows_tests` below covers the rule there)
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -508,6 +509,32 @@ mod tests {
         let r = flush(&l, &mut link, false);
         assert_eq!(link.sent, vec![s(&["/home/u/Photos/Trip/a.jpg"])]);
         assert_eq!(r.delivered, 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    fn temp(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("lc-pending-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    #[test]
+    fn windows_paths_need_a_drive_or_a_share_to_be_queued_and_keep_their_order() {
+        let d = temp("winlist");
+        let l = PendingList::new(&d);
+        for rel in [r"p\a.jpg", r"\p\a.jpg", "/p/a.jpg", "C:a.jpg"] {
+            assert!(l.add(Path::new(rel), "2026-11-01T10:00:00Z").unwrap_err().contains("not an absolute path"), "{rel}");
+        }
+        l.add(Path::new(r"C:\Photos\Trip\b.jpg"), "2026-11-01T10:00:02Z").unwrap();
+        l.add(Path::new(r"\\nas\photos\a.jpg"), "2026-11-01T10:00:01Z").unwrap();
+        l.add(Path::new(r"C:\Photos\Trip\b.jpg"), "2026-11-01T10:00:09Z").unwrap(); // (twice: unchanged)
+        let got = l.list();
+        assert_eq!(got.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(), [r"\\nas\photos\a.jpg", r"C:\Photos\Trip\b.jpg"]);
         let _ = std::fs::remove_dir_all(&d);
     }
 }

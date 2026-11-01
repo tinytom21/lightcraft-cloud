@@ -91,14 +91,14 @@ jobs:
       - name: Clippy (light build, all targets)
         run: cargo clippy --locked -p lightcraft-cloud-desktop --no-default-features --all-targets -- -D warnings
       - name: Tests, desktop (light build)
-        run: cargo test --locked -p lightcraft-cloud-desktop --no-default-features
+        run: cargo test --locked --no-fail-fast -p lightcraft-cloud-desktop --no-default-features
       - name: Tests, sync crate (with the real librclone)
         shell: bash
         env:
           RUST_BACKTRACE: "1"
         run: |
           export LIBRCLONE="$PWD/out/${{ matrix.lib }}"
-          cargo test --locked -p lightcraft-cloud-client -- --nocapture 2>&1 | tee sync-tests.log
+          cargo test --locked --no-fail-fast -p lightcraft-cloud-client -- --nocapture 2>&1 | tee sync-tests.log
           # the rclone tests must have run against the library, never skipped
           if grep -q 'skipped: set LIBRCLONE' sync-tests.log; then echo "a librclone test was skipped"; exit 1; fi
       - name: Smoke test of the exe

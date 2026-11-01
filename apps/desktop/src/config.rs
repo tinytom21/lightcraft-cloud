@@ -475,10 +475,10 @@ mod tests {
         let exe = bin.join("lightcraft-cloud-desktop");
         let find = |c: Option<&str>, e: Option<&str>| librclone_in(c.map(PathBuf::from), e.map(PathBuf::from), Some(&exe), Some(&home));
         assert_eq!(find(None, None), None);
-        std::fs::write(home_lib.join("librclone.so"), "").unwrap();
-        assert_eq!(find(None, None), Some(home_lib.join("librclone.so")));
-        std::fs::write(bin.join("librclone.so"), "").unwrap();
-        assert_eq!(find(None, None), Some(bin.join("librclone.so")));
+        std::fs::write(home_lib.join(LIBRCLONE), "").unwrap();
+        assert_eq!(find(None, None), Some(home_lib.join(LIBRCLONE)));
+        std::fs::write(bin.join(LIBRCLONE), "").unwrap();
+        assert_eq!(find(None, None), Some(bin.join(LIBRCLONE)));
         assert_eq!(find(None, Some("/env/librclone.so")), Some(PathBuf::from("/env/librclone.so")));
         assert_eq!(find(Some("/cfg/librclone.so"), Some("/env/librclone.so")), Some(PathBuf::from("/cfg/librclone.so")));
         let _ = std::fs::remove_dir_all(&d);

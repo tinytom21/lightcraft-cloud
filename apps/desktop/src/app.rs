@@ -343,16 +343,17 @@ mod tests {
         exe
     }
 
-    /// The same as a batch file (`ui <tab>` arrives as %1 %2).
+    /// The same as a small program (`examples/fake_window.rs`, built beside the tests); it takes the log as its `--config`.
     #[cfg(windows)]
-    fn fake_exe(dir: &Path, log: &Path) -> PathBuf {
-        let exe = dir.join("fake-window.bat");
-        let body = format!(
-            "@echo off\r\necho start %2>>\"{0}\"\r\n:loop\r\nset \"l=\"\r\nset /p l=\r\nif not defined l goto done\r\necho got %l%>>\"{0}\"\r\ngoto loop\r\n:done\r\n",
-            log.display()
-        );
-        std::fs::write(&exe, body).unwrap();
+    fn fake_exe(_dir: &Path, _log: &Path) -> PathBuf {
+        let deps = std::env::current_exe().unwrap();
+        let exe = deps.parent().unwrap().parent().unwrap().join("examples").join("fake_window.exe");
+        assert!(exe.is_file(), "{} is not built", exe.display());
         exe
+    }
+
+    fn fake_config(log: &Path) -> Option<PathBuf> {
+        cfg!(windows).then(|| log.to_path_buf())
     }
 
     fn wait_for(log: &Path, want: &str) -> String {
@@ -372,7 +373,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("log");
-        let mut w = Windows { exe: fake_exe(&dir, &log), config: None, open: None };
+        let mut w = Windows { exe: fake_exe(&dir, &log), config: fake_config(&log), open: None };
         let spawn_lock = || crate::instance::SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         {
             let _g = spawn_lock();
