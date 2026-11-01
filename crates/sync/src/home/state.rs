@@ -113,6 +113,15 @@ impl State {
         self.file.kv.insert(k.to_string(), v.to_string());
     }
 
+    /// The keys that start with `prefix`.
+    pub fn keys_with_prefix(&self, prefix: &str) -> Vec<String> {
+        self.file.kv.keys().filter(|k| k.starts_with(prefix)).cloned().collect()
+    }
+
+    pub fn unset(&mut self, k: &str) {
+        self.file.kv.remove(k);
+    }
+
     pub fn uploaded(&self, remote_path: &str) -> Option<&Uploaded> {
         self.file.uploaded.get(remote_path)
     }

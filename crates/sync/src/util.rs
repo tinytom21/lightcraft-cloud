@@ -72,6 +72,34 @@ pub fn parse_stamp(s: &str) -> Option<SystemTime> {
     Some(if t >= 0 { UNIX_EPOCH + Duration::from_secs(t as u64) } else { UNIX_EPOCH })
 }
 
+/// `YYYY-mm-ddTHH:MM:SSZ`, with optional fractional seconds (`...SS.123Z`): what [`iso`] writes, and a bit more. A real UTC date
+/// from 1970 on, else None.
+pub fn parse_iso(s: &str) -> Option<SystemTime> {
+    let b = s.as_bytes();
+    if b.len() < 20 || !s.is_ascii() || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' || b[b.len() - 1] != b'Z' {
+        return None;
+    }
+    let stamp = format!("{}{}{}T{}{}{}Z", &s[0..4], &s[5..7], &s[8..10], &s[11..13], &s[14..16], &s[17..19]);
+    if !stamp.bytes().enumerate().all(|(i, c)| if i == 8 { c == b'T' } else if i == 15 { c == b'Z' } else { c.is_ascii_digit() }) {
+        return None;
+    }
+    let t = parse_stamp(&stamp)?;
+    if utc_stamp(t) != stamp {
+        return None; // (not a real date, or before 1970)
+    }
+    match &s[19..s.len() - 1] {
+        "" => Some(t),
+        frac => {
+            let digits = frac.strip_prefix('.')?;
+            if digits.is_empty() || digits.len() > 9 || !digits.bytes().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            let nanos = format!("{digits:0<9}").parse::<u32>().ok()?;
+            Some(t + Duration::new(0, nanos))
+        }
+    }
+}
+
 pub fn millis(t: SystemTime) -> u64 {
     t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }

@@ -11,6 +11,10 @@ thumbnails, downloads small smart previews to edit, and sends edits back. **The 
   mobile/previews/<id>.lcsp        LightCraft smart preview (2560 px long edge), flat folder
   inbox/<device>/<id>-<UTCstamp>-<base>.xmp   phone edits; never overwritten
   inbox-done/<UTC date>/<device>/...          processed inbox files (moved, not deleted)
+  imports/<device>/<id>/<file name>           a photo another PC uploads to be added to the PC's photo folder
+  imports/<device>/<id>/<sidecar name>        its XMP sidecar, optional
+  imports/<device>/<id>.json                  the commit note, written LAST; a file with no note is an upload in progress
+  imports-done/<UTC date>/<device>/...        processed imports (moved, not deleted), with <id>.result.json
   history/<UTC date>/...           rclone --backup-dir for anything replaced/deleted under originals/ or mobile/
 ```
 Backup-dir files get a `.HHMMSS` suffix before the extension (`photo.153012.jpg`).
@@ -88,6 +92,50 @@ and contents. Nothing in the format changes. Names are longer underneath (a 12-b
    `lc:settings` while a side has one.
 5. Applying (or merging) writes the sidecar atomically (temp file in the same folder + rename). Photo files are never
    modified. The user then runs Synchronize Folder in LightCraft to pick up the new sidecar.
+
+## Imports (other PC to home PC)
+A second PC can send photos to the home PC, which adds them to its photo folder (and publishes them with the next sync).
+The format stays 1: these are new files in new folders, which a client that does not know about them ignores.
+
+* The uploader puts the files first: `imports/<device>/<id>/<file name>` (the photo's bytes) and, optionally,
+  `imports/<device>/<id>/<sidecar name>`. `device` follows the inbox's device-name rule; `id` is the LightCraft content hash
+  (32 lower-case hex) of the photo's bytes. **Last** it writes the commit note `imports/<device>/<id>.json`. A file with no
+  note is an upload still in progress and is ignored; the home PC never reads, moves or deletes it.
+* The note: `{"format":1,"id":"<32 hex>","folder":"261101 - Lisbon","name":"DSC0001.ARW","size":N,"mtime":"<UTC ISO>",
+  "sidecar":"DSC0001.ARW.xmp" or null}`. `folder` is the photo's folder relative to the uploader's source root, POSIX
+  separators, `""` for the root itself. `name` is the file name. `size` is in bytes; `mtime` is UTC `YYYY-MM-DDTHH:MM:SSZ`
+  (fractional seconds allowed). Unknown fields are ignored.
+* The home PC processes notes in the same sync that applies the inbox, after the inbox and before it scans the folder.
+  It **rejects** a note (status `rejected`, with the reason) when: `format` is not 1; `id` is not 32 lower-case hex or is not
+  the id in the note's file name; `folder`, `name` or `sidecar` is absolute, or has a `..` or `.` component, a backslash, a
+  NUL or other control character, an empty component (`a//b`, a trailing `/`), a component over 255 bytes, a component that
+  ends in a dot or a space, a Windows reserved name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, with or
+  without an extension) or one of `< > : " | ? *`, or a component that starts with `.` (hidden files are never published);
+  `name` is not a photo file type (the extensions the publisher scans) or `sidecar` is not `<stem>.xmp` or `<name>.xmp`; the
+  folder matches the home PC's `exclude` patterns; the sidecar is not an acceptable XMP (the inbox's rule); the folder, once
+  symbolic links in the home PC's photo folder are resolved, would be outside it (or is hidden or excluded); or the
+  downloaded bytes are not `size` bytes with content hash `id`. Nothing is written for a rejected note.
+* A note whose files are not (all) there yet is left for the next sync. If they are still missing 48 hours after the home PC
+  first saw the note it is rejected. A network or disk problem (including too little free disk space: the file's size plus
+  a safety margin, 256 MiB by default, must be free) never rejects; the import waits and the problem is shown.
+* A photo whose `id` the home PC already has (in its published state), or whose bytes already sit at the target, is a
+  `duplicate`; nothing is written. A target name that is taken by a file with other bytes is never overwritten: the photo
+  is written as `<stem>-2<ext>`, `-3`, ... (case-insensitive), and its sidecar is named to match (`<stem>-2.xmp` or
+  `<stem>-2.ext.xmp`). An existing sidecar is never replaced; if one is in the way of a photo with its original name the
+  photo is still added and the result says the sidecar was kept.
+* The home PC writes a sidecar before its photo (so a scan never sees the photo without it) and each file as a temporary
+  file in the same folder, `fsync`, then a link that fails if the name exists, so a race cannot overwrite anything. The
+  photo's mtime is set from the note (never into the future). Only after the photo is on disk does it file the import away,
+  so a crash at any point is repaired by the next sync (identical bytes at the target are a duplicate, not a second copy).
+* Filing away: first `imports-done/<UTC date>/<device>/<id>.result.json`, then the files move to
+  `imports-done/<UTC date>/<device>/<id>/`, and the note to `imports-done/<UTC date>/<device>/<id>.json` last. Files are
+  moved, not deleted. The date is the day of processing.
+* The result: `{"id":"<32 hex>","status":"added"|"duplicate"|"rejected","path":"<path relative to originals/>" or null,
+  "reason": null or text}`. `path` is the photo's final path on the home PC, which differs from `folder/name` when it was
+  renamed (or when a link inside the photo folder was followed); for `duplicate` it is where the photo already is. The
+  uploader reads it to learn the final path.
+* The weekly purge removes `imports-done/` day folders like `inbox-done/` (same age limit, same backup check). `imports/`
+  itself is never purged.
 
 ## Rules
 * PC is master. `originals/` and `mobile/` are written only by the publisher.

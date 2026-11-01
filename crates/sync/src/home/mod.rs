@@ -8,6 +8,8 @@
 //! [`Renderer`] makes the thumbnails and smart previews and describes the photos; the app plugs in its own.
 //! Nothing here opens, locks or writes a LightCraft library.
 
+mod hash;
+mod import;
 mod inbox;
 mod json;
 mod manifest;
@@ -22,6 +24,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+pub use hash::{ContentHasher, content_hash_bytes, content_hash_file, content_hash_reader};
+pub use import::{DEFAULT_IMPORT_FREE_MARGIN, IMPORT_INCOMPLETE_LIMIT_HOURS, ImportNote, ImportSummary, ImportedPhoto, check_import_note};
 pub use inbox::{InboxName, InboxSummary, decide, notify_message, parse_inbox_name, phone_is_newer};
 pub use manifest::{Alternate, ManifestPhoto, build_manifest_photos, manifest_ids};
 pub use publish::{MirrorStats, StatusReport, SyncReport};
@@ -83,6 +87,8 @@ pub struct HomeConfig {
     pub previews_only: bool,
     /// The manifest's `publisher`.
     pub publisher: String,
+    /// Free disk space that must be left over after an imported photo is written (bytes); under that the import waits.
+    pub import_free_margin: u64,
 }
 
 impl HomeConfig {
@@ -98,6 +104,7 @@ impl HomeConfig {
             thumb_quality: 80,
             previews_only: false,
             publisher: format!("lightcraft-cloud {}", env!("CARGO_PKG_VERSION")),
+            import_free_margin: DEFAULT_IMPORT_FREE_MARGIN,
         }
     }
 }
@@ -160,13 +167,15 @@ pub struct Home {
     clock: Clock,
     log: Logger,
     retry_delay: Duration,
+    /// Test seam: the point of an adoption at which to panic, simulating a crash (see `import.rs`).
+    import_crash: Option<String>,
 }
 
 impl Home {
     /// Refuses a state folder under `~/Pictures` (keep it out of backups and away from the user's libraries).
     pub fn new(cfg: HomeConfig, remote: Arc<dyn Remote>) -> Result<Self> {
         check_state_dir(&cfg.state_dir)?;
-        Ok(Home { cfg, remote, clock: Arc::new(SystemTime::now), log: Arc::new(|m| log::info!("{m}")), retry_delay: Duration::from_secs(2) })
+        Ok(Home { cfg, remote, clock: Arc::new(SystemTime::now), log: Arc::new(|m| log::info!("{m}")), retry_delay: Duration::from_secs(2), import_crash: None })
     }
 
     pub fn config(&self) -> &HomeConfig {

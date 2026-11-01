@@ -137,6 +137,17 @@ pub fn show(ui: &mut Ui, v: &StatusView) {
         );
         row(
             ui,
+            "Imports",
+            match s.imports_pending {
+                Some(0) => "no photos from other PCs waiting".to_string(),
+                Some(1) => "1 photo from other PCs waiting".to_string(),
+                Some(n) => format!("{n} photos from other PCs waiting"),
+                None => "not checked yet".to_string(),
+            },
+        );
+        row(ui, "Photos from other PCs", format!("{} in the last sync; {} in all", s.last_imported, s.photos_imported));
+        row(
+            ui,
             "Next sync",
             match (&s.next_sync, s.paused, s.configured) {
                 (_, _, false) => "after Setup".to_string(),

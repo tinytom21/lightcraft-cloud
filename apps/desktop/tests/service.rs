@@ -15,6 +15,8 @@ struct Script {
     /// What the next syncs return (the last one repeats).
     syncs: Vec<Result<SyncOutcome, JobError>>,
     inbox: Vec<Result<usize, String>>,
+    /// Committed imports from other PCs (not recorded in `calls`: the existing scripts list the inbox checks only).
+    imports: Vec<Result<usize, String>>,
     purges: Vec<Result<PurgeOutcome, JobError>>,
     calls: Vec<String>,
     info: Option<WorkerInfo>,
@@ -50,6 +52,10 @@ impl Worker for Fake {
         let mut s = self.0.lock().unwrap();
         s.calls.push("inbox".into());
         next(&mut s.inbox, Ok(0))
+    }
+    fn imports_waiting(&mut self) -> Result<usize, String> {
+        let mut s = self.0.lock().unwrap();
+        next(&mut s.imports, Ok(0))
     }
     fn purge(&mut self) -> Result<PurgeOutcome, JobError> {
         let mut s = self.0.lock().unwrap();
@@ -371,4 +377,96 @@ fn quit_stops_the_loop() {
     lightcraft_cloud_desktop::service::run_loop(&mut r.svc, &rx, &*r.clock);
     assert!(r.svc.quit_requested());
     let _ = r.clock.now();
+}
+
+// ------------------------------------------------------------------ photos other PCs uploaded
+
+fn imported(devices: &[(&str, usize)], left: usize) -> Result<SyncOutcome, JobError> {
+    Ok(SyncOutcome {
+        photos: 5,
+        imported: devices.iter().map(|d| d.1).sum(),
+        import_devices: devices.iter().map(|(d, n)| (d.to_string(), *n)).collect(),
+        imports_left: left,
+        source_name: "Photos".into(),
+        ..SyncOutcome::default()
+    })
+}
+
+#[test]
+fn waiting_imports_start_a_sync_and_are_counted_apart_from_phone_edits() {
+    let mut r = rig("imp1");
+    r.advance(20);
+    r.fake.0.lock().unwrap().imports = vec![Ok(3)];
+    assert_eq!(r.advance(120), ["inbox", "sync"]);
+    let st = r.svc.status();
+    assert_eq!((st.inbox_pending, st.imports_pending), (Some(0), Some(0)), "the sync took them");
+    assert_eq!(st.edits_applied, 0, "photos from other PCs are not phone edits");
+}
+
+#[test]
+fn an_import_that_stays_stuck_does_not_start_a_sync_every_two_minutes() {
+    let mut r = rig("imp2");
+    r.fake.0.lock().unwrap().syncs = vec![imported(&[], 1)]; // (every sync leaves one import waiting, e.g. the disk is full)
+    r.advance(20);
+    r.fake.0.lock().unwrap().imports = vec![Ok(1)];
+    assert_eq!(r.advance(120), ["inbox"], "the same single import is still there: the 15 minute sync retries it");
+    assert_eq!(r.svc.status().imports_pending, Some(1));
+    assert_eq!(r.advance(120), ["inbox"]);
+    r.fake.0.lock().unwrap().imports = vec![Ok(2)];
+    assert_eq!(r.advance(120), ["inbox", "sync"], "a new import does start one");
+}
+
+#[test]
+fn a_failing_imports_check_is_swallowed_and_does_not_hide_phone_edits() {
+    let mut r = rig("imp3");
+    r.advance(20);
+    r.fake.0.lock().unwrap().imports = vec![Err("no network".into())];
+    assert_eq!(r.advance(120), ["inbox"]);
+    assert!(r.svc.status().errors.is_empty() && r.svc.status().last_error.is_none());
+    r.fake.0.lock().unwrap().inbox = vec![Ok(1)];
+    assert_eq!(r.advance(120), ["inbox", "sync"]);
+}
+
+#[test]
+fn photos_added_from_other_pcs_are_announced_once_per_sync_and_counted() {
+    let mut r = rig("imp4");
+    r.fake.0.lock().unwrap().syncs = vec![imported(&[("laptop", 3)], 0), imported(&[("laptop", 1), ("tablet", 2)], 0), imported(&[], 0)];
+    r.advance(20);
+    assert_eq!(r.spy.texts(), ["3 photos added from laptop"]);
+    assert_eq!(r.svc.status().photos_imported, 3);
+    r.svc.handle(Command::SyncNow);
+    r.advance(0);
+    assert_eq!(r.spy.texts(), ["3 photos added from laptop and tablet"]);
+    assert_eq!((r.svc.status().photos_imported, r.svc.status().last_imported), (6, 3));
+    r.svc.handle(Command::SyncNow);
+    r.advance(0);
+    assert!(r.spy.texts().is_empty(), "nothing added, nothing said");
+    assert_eq!(r.svc.status().last_imported, 0);
+    // one photo
+    r.fake.0.lock().unwrap().syncs = vec![imported(&[("laptop", 1)], 0)];
+    r.svc.handle(Command::SyncNow);
+    r.advance(0);
+    assert_eq!(r.spy.texts(), ["1 photo added from laptop"]);
+    // notifications off: still counted
+    let fake = Fake::default();
+    fake.0.lock().unwrap().info = Some(WorkerInfo { configured: true, notify: false, purge: false });
+    fake.0.lock().unwrap().syncs = vec![imported(&[("laptop", 2)], 0)];
+    let mut quiet = rig_in(temp("imp4b"), Arc::new(FakeClock::new()), fake);
+    quiet.advance(20);
+    assert!(quiet.spy.texts().is_empty());
+    assert_eq!(quiet.svc.status().photos_imported, 2);
+}
+
+#[test]
+fn import_problems_reach_the_status_window_once() {
+    let mut r = rig("imp5");
+    let out = || Ok(SyncOutcome { import_problems: vec!["laptop/ab: not enough free disk space".into()], imports_left: 1, ..SyncOutcome::default() });
+    r.fake.0.lock().unwrap().syncs = vec![out()];
+    r.advance(20);
+    r.svc.handle(Command::SyncNow);
+    r.advance(0);
+    let errs: Vec<_> = r.svc.status().errors.iter().map(|e| e.text.clone()).collect();
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(errs[0].contains("not enough free disk space"));
+    assert!(r.svc.status().last_error.is_none(), "the sync itself worked");
 }

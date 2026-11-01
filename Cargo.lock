@@ -2530,9 +2530,11 @@ dependencies = [
  "lightcraft-meta 0.14.0",
  "lightcraft-scenes 0.14.0",
  "log",
+ "rustix 1.1.6",
  "serde",
  "serde_json",
  "sha2",
+ "siphasher",
  "thiserror 2.0.21",
 ]
 

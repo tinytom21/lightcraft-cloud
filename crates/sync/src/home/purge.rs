@@ -16,7 +16,7 @@ pub const MAX_BACKUP_AGE_HOURS: f64 = 48.0;
 /// What [`Home::purge_history`] removed.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PurgeReport {
-    /// Day folders under `history/` and `inbox-done/` on the remote.
+    /// Day folders under `history/`, `inbox-done/` and `imports-done/` on the remote.
     pub folders: usize,
     /// Stored sidecar versions on this PC.
     pub versions: usize,
@@ -36,7 +36,7 @@ impl Home {
         Ok(self.inbox_pending()?.iter().filter(|p| parse_inbox_name(p).is_some()).count())
     }
 
-    /// Delete the remote's `history/` and `inbox-done/` day folders older than `days`, and the stored sidecar versions
+    /// Delete the remote's `history/`, `inbox-done/` and `imports-done/` day folders older than `days`, and the stored sidecar versions
     /// older than that (except those of the current sidecars). `backup_age_hours`: how old the newest backup of the photos
     /// is; more than [`MAX_BACKUP_AGE_HOURS`] (or not a number) and nothing is deleted.
     pub fn purge_history(&self, days: u32, backup_age_hours: f64) -> Result<PurgeReport> {
@@ -48,7 +48,7 @@ impl Home {
         let cutoff_time = self.now().checked_sub(Duration::from_secs(u64::from(days) * 86_400)).unwrap_or(std::time::UNIX_EPOCH);
         let cutoff = iso(cutoff_time)[..10].to_string();
         let mut report = PurgeReport { cutoff: cutoff.clone(), ..PurgeReport::default() };
-        for top in ["history", "inbox-done"] {
+        for top in ["history", "inbox-done", "imports-done"] {
             let entries = match self.remote.list(top, false) {
                 Ok(v) => v,
                 Err(Error::NotFound(_)) => continue,

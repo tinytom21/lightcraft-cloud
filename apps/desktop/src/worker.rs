@@ -142,7 +142,18 @@ impl Worker for HomeWorker {
         let mut renderer = (self.renderer)(cfg);
         let report = home.sync(&mut *renderer, false).map_err(to_job_error)?;
         let source_name = cfg.source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut import_devices: Vec<(String, usize)> = Vec::new();
+        for p in &report.imports.added {
+            match import_devices.iter_mut().find(|d| d.0 == p.device) {
+                Some(d) => d.1 += 1,
+                None => import_devices.push((p.device.clone(), 1)),
+            }
+        }
         Ok(SyncOutcome {
+            imported: report.imports.added.len(),
+            import_devices,
+            imports_left: report.imports.waiting,
+            import_problems: report.imports.errors.clone(),
             photos: report.photos,
             applied: report.inbox.applied,
             merged: report.inbox.merged,
@@ -158,6 +169,12 @@ impl Worker for HomeWorker {
         let cfg = self.the_config().map_err(|e| e.text())?;
         let home = self.home(cfg).map_err(|e| e.text())?;
         home.inbox_waiting().map_err(|e| e.to_string())
+    }
+
+    fn imports_waiting(&mut self) -> Result<usize, String> {
+        let cfg = self.the_config().map_err(|e| e.text())?;
+        let home = self.home(cfg).map_err(|e| e.text())?;
+        home.imports_waiting().map_err(|e| e.to_string())
     }
 
     fn purge(&mut self) -> Result<PurgeOutcome, JobError> {

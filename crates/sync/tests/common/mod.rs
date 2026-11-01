@@ -414,6 +414,10 @@ pub struct Spy {
     pub fail_puts: AtomicUsize,
     /// Moves whose destination contains this fail (always).
     pub fail_move_to: Mutex<Option<String>>,
+    /// The next this-many gets fail with a remote error.
+    pub fail_gets: AtomicUsize,
+    /// Listings of a folder starting with this fail with a remote error (always).
+    pub fail_list_of: Mutex<Option<String>>,
 }
 
 impl Spy {
@@ -424,6 +428,8 @@ impl Spy {
             moves: Mutex::default(),
             fail_puts: AtomicUsize::new(0),
             fail_move_to: Mutex::default(),
+            fail_gets: AtomicUsize::new(0),
+            fail_list_of: Mutex::default(),
         })
     }
     pub fn puts(&self) -> Vec<String> {
@@ -436,9 +442,16 @@ impl Spy {
 
 impl Remote for Spy {
     fn list(&self, dir: &str, recursive: bool) -> Result<Vec<RemoteEntry>> {
+        if self.fail_list_of.lock().unwrap().as_ref().is_some_and(|f| dir.starts_with(f.as_str())) {
+            return Err(Error::Remote("offline".into()));
+        }
         self.inner.list(dir, recursive)
     }
     fn get(&self, path: &str, local: &Path) -> Result<()> {
+        if self.fail_gets.load(Ordering::SeqCst) > 0 {
+            self.fail_gets.fetch_sub(1, Ordering::SeqCst);
+            return Err(Error::Remote("flaky get".into()));
+        }
         self.inner.get(path, local)
     }
     fn put(&self, local: &Path, path: &str) -> Result<()> {

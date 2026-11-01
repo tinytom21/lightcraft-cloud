@@ -16,6 +16,12 @@ thiserror = { workspace = true }
 log = { workspace = true }
 # rclone's librclone, loaded at run time (ISC)
 libloading = { workspace = true }
+# LightCraft's content hash, streamed (the same algorithm and key as the engine's; a test compares them)
+siphasher = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+# free disk space before an imported photo is written
+rustix = { workspace = true }
 
 [dev-dependencies]
 # The phone fork's engine (it has `library.addRemote`, which upstream v0.15.0 lacks), pinned to its v0.1.0 tag. The desktop app keeps

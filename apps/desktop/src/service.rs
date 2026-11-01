@@ -52,6 +52,14 @@ pub struct SyncOutcome {
     pub notices: Vec<String>,
     /// Photos the renderer could not handle.
     pub failed: usize,
+    /// Photos other PCs uploaded that this sync added to the photo folder (not phone edits).
+    pub imported: usize,
+    /// Those photos by the device that sent them, for the notification.
+    pub import_devices: Vec<(String, usize)>,
+    /// Imports still waiting on the remote after the sync (no disk space, files not all uploaded yet, ...).
+    pub imports_left: usize,
+    /// Things about the imports the user can act on (disk full, a folder that cannot be written), one line each.
+    pub import_problems: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,6 +85,11 @@ pub trait Worker {
     fn sync(&mut self) -> Result<SyncOutcome, JobError>;
     /// The cheap inbox poll: how many phone edits wait.
     fn inbox_waiting(&mut self) -> Result<usize, String>;
+    /// The cheap poll for photos other PCs uploaded: how many committed imports wait (one listing). A worker with no imports
+    /// says none.
+    fn imports_waiting(&mut self) -> Result<usize, String> {
+        Ok(0)
+    }
     /// The weekly purge.
     fn purge(&mut self) -> Result<PurgeOutcome, JobError>;
     /// What the sync state says about the last run, for the first status after a start: (ISO time, result, photos published).
@@ -112,6 +125,9 @@ pub struct Service<W: Worker> {
     quit: bool,
     /// The failure the user was last told about (the same one is not announced every 15 minutes).
     announced: Option<String>,
+    /// Imports the last sync left waiting: the 2-minute check starts a sync for imports beyond these, not for the same ones
+    /// again (the 15-minute sync retries those).
+    imports_stuck: usize,
 }
 
 impl<W: Worker> Service<W> {
@@ -131,7 +147,7 @@ impl<W: Worker> Service<W> {
         {
             status.last_sync = Some(LastSync { when, ok: result.starts_with("ok"), result, photos, applied: 0, merged: 0, kept: 0 });
         }
-        let mut s = Service { worker, sched, clock, notifier, state_dir, persisted, status, info, sink, log, quit: false, announced: None };
+        let mut s = Service { worker, sched, clock, notifier, state_dir, persisted, status, info, sink, log, quit: false, announced: None, imports_stuck: 0 };
         s.publish();
         s
     }
@@ -239,6 +255,15 @@ impl<W: Worker> Service<W> {
                 let n = o.applied + o.merged;
                 self.status.edits_applied += n;
                 self.status.inbox_pending = Some(0);
+                self.status.imports_pending = Some(o.imports_left);
+                self.imports_stuck = o.imports_left;
+                self.status.photos_imported += o.imported;
+                self.status.last_imported = o.imported;
+                for p in &o.import_problems {
+                    if !self.status.errors.iter().any(|e| e.text == *p) {
+                        self.status.push_error(&now, p.clone());
+                    }
+                }
                 self.status.last_error = None;
                 self.announced = None;
                 let result = if o.failed == 0 { "ok".to_string() } else { format!("ok, {} photos failed", o.failed) };
@@ -249,6 +274,9 @@ impl<W: Worker> Service<W> {
                 }
                 if n > 0 && self.info.notify {
                     self.notifier.notify(notifier::TITLE, &notifier::edits_applied(n, o.merged, &o.folders, &o.source_name));
+                }
+                if o.imported > 0 && self.info.notify {
+                    self.notifier.notify(notifier::TITLE, &notifier::photos_added(&o.import_devices));
                 }
                 if o.kept > 0 && self.info.notify {
                     self.notifier.notify(notifier::TITLE, &notifier::edits_kept(o.kept));
@@ -276,20 +304,32 @@ impl<W: Worker> Service<W> {
     }
 
     fn run_inbox_check(&mut self) -> Ended {
+        let mut waiting = 0;
         match self.worker.inbox_waiting() {
             Ok(n) => {
                 self.status.inbox_pending = Some(n);
                 if n > 0 {
                     self.say(format!("inbox: {n} pending, starting sync"));
                 }
-                Ended::Waiting(n)
+                waiting += n;
             }
-            Err(e) => {
-                // (a network error is logged and swallowed, like `inbox-check`)
-                self.say(format!("inbox: check failed: {e}"));
-                Ended::Done
-            }
+            // (a network error is logged and swallowed, like `inbox-check`)
+            Err(e) => self.say(format!("inbox: check failed: {e}")),
         }
+        match self.worker.imports_waiting() {
+            Ok(n) => {
+                self.status.imports_pending = Some(n);
+                // (imports the last sync left waiting do not start a sync again; a new one does)
+                self.imports_stuck = self.imports_stuck.min(n);
+                let new = n - self.imports_stuck;
+                if new > 0 {
+                    self.say(format!("imports: {n} waiting, starting sync"));
+                }
+                waiting += new;
+            }
+            Err(e) => self.say(format!("imports: check failed: {e}")),
+        }
+        if waiting > 0 { Ended::Waiting(waiting) } else { Ended::Done }
     }
 
     fn run_purge(&mut self) -> Ended {

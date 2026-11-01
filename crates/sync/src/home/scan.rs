@@ -221,8 +221,8 @@ pub fn scan_source(root: &Path, now: SystemTime, exclude: &[String], versions: O
     scan_source_settled(root, now, exclude, versions, &[])
 }
 
-/// [`scan_source`], where the sidecars in `settled` (this run wrote them whole, atomically) count as stable however new
-/// they are: the files the inbox step has just written are published by the same sync, not the next one.
+/// [`scan_source`], where the files in `settled` (this run wrote them whole, atomically: sidecars the inbox applied, photos and
+/// sidecars the imports adopted) count as stable however new they are: they are published by the same sync, not the next one.
 pub fn scan_source_settled(root: &Path, now: SystemTime, exclude: &[String], versions: Option<&VersionStore>, settled: &[String]) -> Scan {
     let files = walk_source(root, exclude);
     let photos: Vec<String> = files.keys().filter(|r| is_photo(r)).cloned().collect();
@@ -240,7 +240,7 @@ pub fn scan_source_settled(root: &Path, now: SystemTime, exclude: &[String], ver
             sidecar_mtime_ns: None,
             sidecar_target: target[p].clone(),
         };
-        if now_s - secs_of(f.mtime_ns) < STABLE_SECS {
+        if now_s - secs_of(f.mtime_ns) < STABLE_SECS && !settled.contains(p) {
             unstable.insert(p.clone());
         }
         if let Some(sc) = &existing[p] {

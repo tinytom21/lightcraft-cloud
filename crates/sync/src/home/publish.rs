@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use super::import::ImportSummary;
 use super::inbox::InboxSummary;
 use super::manifest::{ManifestPhoto, build_manifest_photos, manifest_ids};
 use super::scan::{FileInfo, Plan, Scan, diff_scan, ext_lower, in_scope, published_removals, scan_source_settled, walk_source};
@@ -46,6 +47,8 @@ pub struct SyncReport {
     pub dry: bool,
     pub plan: Plan,
     pub inbox: InboxSummary,
+    /// Photos other PCs uploaded, adopted into the folder (step 2, after the inbox and before the scan).
+    pub imports: ImportSummary,
     /// Photos that could not be imported by the renderer.
     pub failed: Vec<String>,
     pub originals: MirrorStats,
@@ -68,6 +71,8 @@ pub struct StatusReport {
     pub remote: Option<(usize, u64)>,
     pub remote_error: Option<String>,
     pub inbox_pending: Option<usize>,
+    /// Committed imports (a note with its files) waiting on the remote; `None`: could not be listed.
+    pub imports_pending: Option<usize>,
 }
 
 fn refuse<T>(m: impl Into<String>) -> Result<T> {
@@ -140,10 +145,23 @@ impl Home {
             inbox.applied, inbox.merged, inbox.kept, inbox.rejected, inbox.noop
         ));
         report.inbox = inbox;
+        // (1b) photos other PCs uploaded, adopted into the folder before the scan, so they are published by this same sync
+        let imports = self.process_imports(st, dry)?;
+        if !imports.items.is_empty() || !imports.errors.is_empty() {
+            self.logln(format!(
+                "imports: added={} duplicate={} rejected={} waiting={}",
+                imports.added.len(),
+                imports.duplicates,
+                imports.rejected,
+                imports.waiting
+            ));
+        }
+        report.imports = imports;
         // (2) scan
         self.logln("step 2/6: scan source");
         let versions = self.versions();
-        let scan = scan_source_settled(&cfg.source, self.now(), &cfg.exclude, (!dry).then_some(&versions), &report.inbox.written);
+        let settled: Vec<String> = report.inbox.written.iter().chain(&report.imports.written).cloned().collect();
+        let scan = scan_source_settled(&cfg.source, self.now(), &cfg.exclude, (!dry).then_some(&versions), &settled);
         if scan.entries.is_empty() {
             return refuse(format!("no photos found under {}; refusing (unmounted?)", cfg.source.display()));
         }
@@ -552,6 +570,7 @@ impl Home {
             Err(e) => r.remote_error = Some(e.to_string()),
         }
         r.inbox_pending = self.inbox_pending().ok().map(|v| v.len());
+        r.imports_pending = self.imports_waiting().ok();
         Ok(r)
     }
 }

@@ -19,6 +19,9 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 log = "0.4"
 # rclone's librclone, loaded at run time (ISC)
 libloading = "0.8"
+# LightCraft's content hash (SipHash-1-3, 128 bit), computed from a stream; free space of a folder (statvfs, no unsafe)
+siphasher = "1"
+rustix = { version = "1.1", default-features = false, features = ["std", "fs"] }
 
 # LightCraft's engine (pinned release; no `sam` or `denoise` features: rendering only). The desktop app renders thumbnails and
 # smart previews with it (the sync crate's tests use the phone fork's engine instead, see its Cargo.toml). The other crates are for generating test photos.

@@ -26,6 +26,9 @@ fn busy_status() -> AppStatus {
         configured: true,
         edits_applied: 7,
         inbox_pending: Some(2),
+        imports_pending: Some(3),
+        photos_imported: 12,
+        last_imported: 4,
         next_sync: Some("2026-11-01T12:12:00Z".into()),
         last_sync: Some(LastSync {
             when: "2026-11-01T11:55:00Z".into(),
@@ -51,6 +54,8 @@ fn the_status_panel_shows_the_last_sync_the_inbox_and_the_next_run() {
     h.get_by_label("1234");
     h.get_by_label_contains("3 in the last sync (1 merged with PC changes), 1 kept off by a newer PC sidecar; 7 in all");
     h.get_by_label("2 phone edits waiting");
+    h.get_by_label("3 photos from other PCs waiting");
+    h.get_by_label("4 in the last sync; 12 in all");
     h.get_by_label("in 12 min");
     h.get_by_label_contains("Newest wins: the PC's newer sidecar was kept");
     h.get_by_label_contains("remote: quota exceeded");

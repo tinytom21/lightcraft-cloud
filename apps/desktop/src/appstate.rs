@@ -94,6 +94,12 @@ pub struct AppStatus {
     pub edits_applied: usize,
     /// Phone edits waiting in the remote's inbox, as the last check saw them.
     pub inbox_pending: Option<usize>,
+    /// Photos other PCs uploaded that wait on the remote to be added to the photo folder, as the last check saw them.
+    pub imports_pending: Option<usize>,
+    /// Photos from other PCs added to the photo folder since the app was first started.
+    pub photos_imported: usize,
+    /// ... and by the last sync.
+    pub last_imported: usize,
     /// ISO time of the next scheduled sync (none while paused or not set up).
     pub next_sync: Option<String>,
     pub last_purge: Option<String>,

@@ -22,7 +22,7 @@ use lightcraft_cloud_client::Error;
 use lightcraft_cloud_client::home::{Home, notify_message, utc_iso};
 use lightcraft_cloud_desktop::config::Config;
 use lightcraft_cloud_desktop::engine;
-use lightcraft_cloud_desktop::{app, backup, ui};
+use lightcraft_cloud_desktop::{app, backup, notifier, ui};
 
 const USAGE: &str = "\
 lightcraft-cloud-desktop: keep the cloud library in step with a photo folder
@@ -178,6 +178,16 @@ fn run(a: Args) -> std::result::Result<(), Failure> {
                 let name = cfg.source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 println!("{}", notify_message(n, &report.inbox.folders, &name, report.inbox.merged));
             }
+            if !report.imports.added.is_empty() && !a.dry {
+                let mut devices: Vec<(String, usize)> = Vec::new();
+                for p in &report.imports.added {
+                    match devices.iter_mut().find(|d| d.0 == p.device) {
+                        Some(d) => d.1 += 1,
+                        None => devices.push((p.device.clone(), 1)),
+                    }
+                }
+                println!("{}", notifier::photos_added(&devices));
+            }
             Ok(())
         }
         "status" => {
@@ -193,6 +203,10 @@ fn run(a: Args) -> std::result::Result<(), Failure> {
             match s.inbox_pending {
                 Some(n) => println!("inbox:      {n} pending"),
                 None => println!("inbox:      (could not be listed)"),
+            }
+            match s.imports_pending {
+                Some(n) => println!("imports:    {n} pending"),
+                None => println!("imports:    (could not be listed)"),
             }
             Ok(())
         }
