@@ -32,6 +32,8 @@ pub trait ImportBackend {
     fn folders(&self) -> Vec<String>;
     /// The destination as it will be used, or why it is refused (the home PC's own rule).
     fn check(&self, dest: &str) -> Result<String, String>;
+    /// Whether the link that tells LightCraft about new photos is on (`lightcraft_control_port` is not 0).
+    fn lightcraft_on(&self) -> bool;
     fn scan(&mut self, source: PathBuf, dest: String);
     fn import(&mut self, scan: ImportScan);
     /// Ask the running job to stop (it stops soon, and what was done stays).
@@ -282,7 +284,7 @@ impl ImportPanel {
     fn done(&mut self, ui: &mut Ui) {
         let t = theme::CHARCOAL;
         let Stage::Done(run) = &self.stage else { return };
-        let lines = summary_lines(run);
+        let lines = summary_lines(run, self.backend.lightcraft_on());
         let (cancelled, no_space) = (run.cancelled, run.no_space.clone());
         theme::panel(ui, Some(if cancelled { "Stopped" } else { "Done" }), |ui| {
             for (i, l) in lines.iter().enumerate() {
@@ -346,7 +348,7 @@ pub fn progress_line(p: &Progress) -> String {
 }
 
 /// The lines of the final summary; the first is the headline.
-pub fn summary_lines(r: &ImportRun) -> Vec<String> {
+pub fn summary_lines(r: &ImportRun, lightcraft_link: bool) -> Vec<String> {
     let mut v = Vec::new();
     let did = r.copied + r.resumed;
     v.push(if r.cancelled {
@@ -370,7 +372,12 @@ pub fn summary_lines(r: &ImportRun) -> Vec<String> {
         v.push(format!("and {} more not imported", r.failed.len() - 10));
     }
     if did > 0 {
-        v.push("They are sent to the home PC in the background, whenever this PC is online; Status shows how far that is. LightCraft is told about them too.".into());
+        v.push("They are sent to the home PC in the background, whenever this PC is online; Status shows how far that is.".into());
+        v.push(if lightcraft_link {
+            "LightCraft is told about them too.".into()
+        } else {
+            "LightCraft is not told about them (the link to it is switched off): add the folder in LightCraft yourself.".into()
+        });
         v.push("This folder is now one this PC keeps.".into());
     }
     v
@@ -383,6 +390,7 @@ pub fn summary_lines(r: &ImportRun) -> Vec<String> {
 pub struct ThreadBackend {
     config_path: PathBuf,
     exclude: Vec<String>,
+    link_on: bool,
     photo_folder: PathBuf,
     chosen: Vec<String>,
     rx: Option<Receiver<Event>>,
@@ -397,6 +405,7 @@ impl ThreadBackend {
         Some(ThreadBackend {
             config_path: config_path.to_path_buf(),
             exclude: cfg.file.exclude.clone(),
+            link_on: cfg.file.lightcraft_control_port != 0,
             photo_folder: cfg.source.clone(),
             chosen: cfg.file.folders.clone(),
             rx: None,
@@ -447,6 +456,10 @@ impl ImportBackend for ThreadBackend {
 
     fn check(&self, dest: &str) -> Result<String, String> {
         check_destination(dest, &self.exclude)
+    }
+
+    fn lightcraft_on(&self) -> bool {
+        self.link_on
     }
 
     fn scan(&mut self, source: PathBuf, dest: String) {

@@ -21,6 +21,7 @@ struct Calls {
     cancels: usize,
     events: Vec<Event>,
     progress: Progress,
+    link_off: bool,
 }
 
 #[derive(Clone, Default)]
@@ -34,6 +35,9 @@ impl ImportBackend for Fake {
     }
     fn check(&self, dest: &str) -> Result<String, String> {
         check_destination(dest, &EXCLUDE.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+    fn lightcraft_on(&self) -> bool {
+        !self.0.lock().unwrap().link_off
     }
     fn scan(&mut self, source: PathBuf, dest: String) {
         self.0.lock().unwrap().scans.push((source, dest));
@@ -244,6 +248,8 @@ fn the_summary_says_what_was_done_and_the_chosen_folder_is_handed_to_the_window(
     h.get_by_label_contains("1 photo got another name");
     h.get_by_label_contains("Not imported: P9.ARW");
     h.get_by_label_contains("sent to the home PC in the background");
+    h.get_by_label("LightCraft is told about them too.");
+    assert!(h.query_by_label_contains("add the folder in LightCraft yourself").is_none());
     h.get_by_label_contains("This folder is now one this PC keeps");
     assert_eq!(h.state_mut().take_chosen(), ["261101 - Lisbon"]);
     assert!(h.state_mut().take_chosen().is_empty());
@@ -360,4 +366,58 @@ fn the_home_pc_does_not_read_as_all_done_with_an_import_stuck_or_photos_waiting_
     let mut h = status_harness(s);
     h.run();
     h.get_by_label("1 problem needs attention");
+}
+
+#[test]
+fn with_the_lightcraft_link_off_the_summary_says_to_add_the_folder_by_hand() {
+    let fake = Fake::default();
+    fake.0.lock().unwrap().link_off = true;
+    let mut p = panel(&fake);
+    p.stage = Stage::Importing(Box::new(scan(2, 0, 0)));
+    let run = ImportRun { dest: "261101 - Lisbon".into(), copied: 2, ..ImportRun::default() };
+    fake.0.lock().unwrap().events.push(Event::Imported(Ok(run), None));
+    let mut h = harness(p);
+    h.run();
+    h.get_by_label_contains("LightCraft is not told about them");
+    h.get_by_label_contains("add the folder in LightCraft yourself");
+    assert!(h.query_by_label("LightCraft is told about them too.").is_none());
+}
+
+#[test]
+fn refused_photos_keep_the_state_off_green_show_their_reasons_and_offer_two_ways_out() {
+    use lightcraft_cloud_desktop::appstate::HealthKind;
+    use lightcraft_cloud_desktop::ui::status::{StatusAction, show_with_actions};
+    let mut s = settled_other();
+    s.other.as_mut().unwrap().rejected = 2;
+    assert_eq!(s.health().kind, HealthKind::Problem);
+    assert_eq!(s.health().text, "2 photos the home PC refused");
+    s.other.as_mut().unwrap().rejected = 1;
+    assert_eq!(s.health().text, "1 photo the home PC refused");
+    let refused = vec![("DSC1.ARW".to_string(), "the downloaded DSC1.ARW does not match its note".to_string())];
+    let chosen = std::cell::Cell::new(None);
+    let mut h = Harness::new_ui_state(
+        |ui, s: &mut AppStatus| {
+            if let Some(a) = show_with_actions(ui, &StatusView { status: Some(s), running: true, now: now() }, &refused) {
+                chosen.set(Some(a));
+            }
+        },
+        s.clone(),
+    );
+    h.run();
+    h.get_by_label("1 photo the home PC refused"); // the state line
+    h.get_by_label("Refused by the home PC");
+    h.get_by_label("1 photo, still on this PC");
+    h.get_by_label_contains("DSC1.ARW: the downloaded DSC1.ARW does not match its note");
+    assert!(h.query_by_label("Up to date").is_none());
+    h.get_by_label("Try again").click();
+    h.run();
+    assert_eq!(chosen.take(), Some(StatusAction::TryAgain));
+    h.get_by_label("Keep on this PC only").click();
+    h.run();
+    assert_eq!(chosen.take(), Some(StatusAction::KeepHere));
+    // nothing refused: no row, no buttons, green again
+    let mut h = status_harness(settled_other());
+    h.run();
+    assert!(h.query_by_label("Try again").is_none() && h.query_by_label("Refused by the home PC").is_none());
+    h.get_by_label("Up to date");
 }

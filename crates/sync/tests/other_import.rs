@@ -647,10 +647,11 @@ fn a_rejected_photo_stays_on_this_pc_and_the_reason_is_shown_once() {
     assert_eq!(r.problems.len(), 1, "{:?}", r.problems);
     assert!(r.problems[0].contains("bad.jpg") && r.problems[0].contains("does not match"), "{:?}", r.problems);
     assert_eq!(w.local(&format!("{DEST}/bad.jpg")), photo("corrupt on the way"), "the local file stays");
-    // once: the next step has nothing to say, and the entry is gone
+    // told once, but not forgotten: it is counted until the user deals with it
     let r = w.other.upload_step(&UploadBudget::default()).unwrap();
     assert!(r.problems.is_empty());
-    assert!(w.queue().list().is_empty());
+    assert_eq!(r.queue.rejected, 1);
+    assert_eq!(w.queue().refused().len(), 1);
     assert!(!w.fx.remote_tree().iter().any(|p| p.ends_with("bad.jpg") && p.starts_with("originals")), "the home PC did not take it");
     let rep = w.pass();
     assert_eq!((rep.downloaded.len(), rep.problems.len()), (0, 0), "{rep:?}");
@@ -826,4 +827,91 @@ fn a_holiday_end_to_end_offline_import_restart_adopted_published_seen_without_a_
     // alpha's copy of "card two" was a duplicate of the laptop's: one photo at home
     let n2 = w.fx.tree(&w.fx.src).iter().filter(|p| p.ends_with("IMG_2.ARW")).count();
     assert_eq!(n2, 1);
+}
+
+// ------------------------------------------------------------------ a refusal stays until it is dealt with
+
+/// A photo whose upload was damaged on the way: the home PC refuses it.
+fn refused_photo(w: &W) -> String {
+    w.seed_home();
+    w.home_sync();
+    w.card("bad.jpg", &photo("refused one"));
+    w.import();
+    let id = content_hash_bytes(&photo("refused one"));
+    w.upload_all();
+    let up = w.fx.remote.join(format!("imports/laptop/{id}/bad.jpg"));
+    let mut bytes = std::fs::read(&up).unwrap();
+    bytes[5] ^= 0x55;
+    std::fs::write(&up, bytes).unwrap();
+    w.home_sync();
+    let r = w.other.upload_step(&UploadBudget::default()).unwrap();
+    assert_eq!(r.queue.rejected, 1);
+    id
+}
+
+#[test]
+fn a_refused_photo_stays_counted_across_restarts_and_passes_until_the_user_deals_with_it() {
+    let mut w = W::new("refused-count");
+    let id = refused_photo(&w);
+    for _ in 0..2 {
+        let cfg = w.cfg();
+        w.restart(cfg);
+        w.other.upload_step(&UploadBudget::default()).unwrap();
+        assert_eq!(w.other.import_queue_status().rejected, 1);
+        assert_eq!(w.other.status().unwrap().queue.rejected, 1);
+        assert_eq!(w.pass().queue.rejected, 1);
+    }
+    let e = w.queue().refused().pop().unwrap();
+    assert_eq!(e.id, id);
+    assert!(e.result.unwrap().reason.unwrap().contains("does not match"), "the reason is kept");
+    assert_eq!(w.local(&format!("{DEST}/bad.jpg")), photo("refused one"));
+}
+
+#[test]
+fn try_again_requeues_the_refused_photos_and_a_clean_upload_is_added_even_on_the_same_day() {
+    let mut w = W::new("refused-retry");
+    let id = refused_photo(&w);
+    let cfg = w.cfg();
+    w.restart(cfg); // (the choice is made in another process; the queue is on disk)
+    assert_eq!(w.queue().retry_refused(), 1);
+    assert_eq!(w.queue().retry_refused(), 0);
+    let s = w.other.import_queue_status();
+    assert_eq!((s.rejected, s.to_upload), (0, 1));
+    w.spy.puts();
+    assert_eq!(w.upload_all(), 1);
+    assert!(w.spy.puts().iter().any(|p| p.ends_with("bad.jpg")), "sent again from the file that stayed here");
+    // the home PC has not looked yet: the old refusal (same file name, same day) must not be taken for the answer
+    let r = w.other.upload_step(&UploadBudget::default()).unwrap();
+    assert!(r.results.is_empty(), "{r:?}");
+    assert_eq!(w.other.import_queue_status().awaiting_home, 1);
+    // (the damage was only on the way: the good bytes are what is uploaded now)
+    w.home_sync();
+    let r = w.other.upload_step(&UploadBudget::default()).unwrap();
+    assert_eq!(r.results, [(id.clone(), "added".to_string())], "{r:?}");
+    assert_eq!(w.other.import_queue_status().rejected, 0);
+    assert_eq!(std::fs::read(w.fx.src.join(DEST).join("bad.jpg")).unwrap(), photo("refused one"));
+    assert_eq!(w.local(&format!("{DEST}/bad.jpg")), photo("refused one"));
+}
+
+#[test]
+fn keep_on_this_pc_only_accepts_the_refusal_keeps_the_file_and_never_sends_it_again() {
+    let mut w = W::new("refused-keep");
+    refused_photo(&w);
+    assert_eq!(w.queue().keep_refused(), 1);
+    assert_eq!(w.queue().keep_refused(), 0);
+    let cfg = w.cfg();
+    w.restart(cfg);
+    assert_eq!(w.other.import_queue_status().rejected, 0, "the count is cleared and stays cleared");
+    w.spy.puts();
+    let r = w.other.upload_step(&UploadBudget::default()).unwrap();
+    assert_eq!((r.committed, r.queue.to_upload, r.queue.rejected), (0, 0, 0));
+    assert!(w.spy.puts().is_empty(), "never sent again");
+    assert_eq!(w.local(&format!("{DEST}/bad.jpg")), photo("refused one"));
+    assert_eq!(w.queue().list().len(), 1, "remembered, so the same card is not offered again");
+    w.card("bad.jpg", &photo("refused one"));
+    let s = w.scan(DEST);
+    assert_eq!((s.new.len(), s.on_this_pc), (0, 1));
+    // and the pass does not try to match it with anything
+    let rep = w.pass();
+    assert_eq!((rep.downloaded.len(), rep.queue.rejected), (0, 0));
 }

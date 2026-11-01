@@ -92,6 +92,12 @@ pub struct OutEntry {
     pub announced: bool,
     /// A rejection was given to the user (once).
     pub reported: bool,
+    /// The user chose "Keep on this PC only": the rejection is accepted, the photo is never sent again (the file stays, and a scan
+    /// counts it as known).
+    pub dismissed: bool,
+    /// The user chose "Try again": the old rejection's result file may still be on the remote, so a new answer counts only once the
+    /// home PC has taken the new note away.
+    pub retried: bool,
 }
 
 impl OutEntry {
@@ -103,6 +109,11 @@ impl OutEntry {
     /// The sidecar's path below the photo folder.
     pub fn sidecar_path(&self) -> Option<String> {
         self.sidecar.as_ref().map(|s| rel_join(&self.folder, s))
+    }
+
+    /// The home PC refused it and the user has not dealt with that.
+    pub fn is_refused(&self) -> bool {
+        self.result.as_ref().is_some_and(OutResult::is_rejected) && !self.dismissed
     }
 
     fn waiting_to_upload(&self) -> bool {
@@ -124,6 +135,8 @@ pub struct QueueStatus {
     pub awaiting_home: usize,
     /// Rejections not given to the user yet.
     pub unreported: usize,
+    /// Photos the home PC refused that the user has not dealt with (try again, or keep on this PC only).
+    pub rejected: usize,
 }
 
 /// The upload queue: a folder of one file per photo.
@@ -205,11 +218,46 @@ impl ImportQueue {
             } else if e.result.is_none() {
                 s.awaiting_home += 1;
             }
-            if e.result.as_ref().is_some_and(OutResult::is_rejected) && !e.reported {
-                s.unreported += 1;
+            if e.is_refused() {
+                s.rejected += 1;
+                if !e.reported {
+                    s.unreported += 1;
+                }
             }
         }
         s
+    }
+
+    /// The photos the home PC refused that nobody has dealt with, oldest first.
+    pub fn refused(&self) -> Vec<OutEntry> {
+        self.list().into_iter().filter(OutEntry::is_refused).collect()
+    }
+
+    /// "Try again": queue the refused photos for sending anew (the local files stay). Returns how many.
+    pub fn retry_refused(&self) -> usize {
+        let mut n = 0;
+        for mut e in self.refused() {
+            e.result = None;
+            e.uploaded = None;
+            e.reported = false;
+            e.retried = true;
+            if self.save(&e).is_ok() {
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// "Keep on this PC only": accept the refusals. The photos stay here and are never sent again. Returns how many.
+    pub fn keep_refused(&self) -> usize {
+        let mut n = 0;
+        for mut e in self.refused() {
+            e.dismissed = true;
+            if self.save(&e).is_ok() {
+                n += 1;
+            }
+        }
+        n
     }
 
     /// One copy at a time, across processes.
@@ -942,9 +990,8 @@ impl Other {
         entries.retain(|e| {
             let gone = self.target(&e.path()).is_none_or(|p| !p.is_file());
             let tracked = e.result.as_ref().is_some_and(|r| !r.is_rejected()) && st.photos.contains_key(&e.id);
-            let done_unreported = e.result.as_ref().is_some_and(|r| r.is_rejected()) && e.reported;
             let finished_and_deleted = e.result.is_some() && gone;
-            if tracked || done_unreported || finished_and_deleted {
+            if tracked || finished_and_deleted {
                 queue.remove(&e.id);
                 return false;
             }
@@ -1050,7 +1097,10 @@ impl Other {
             Err(e) => return Err(e),
         };
         let mut days: Vec<String> = days.into_iter().filter(|d| d.is_dir && d.path.as_str() >= from.as_str()).map(|d| d.path).collect();
-        days.sort();
+        // (newest first: after a "try again" an older result of the same photo may still be there)
+        days.sort_by(|a, b| b.cmp(a));
+        // a photo sent again counts as answered only once the home PC has taken its new note away (it files the note last)
+        let note_still_there = if entries.iter().any(|e| e.retried && e.uploaded.is_some() && e.result.is_none()) { self.list_outgoing()? } else { HashMap::new() };
         let dev = &self.cfg.device;
         for day in days {
             let files = match self.retry(|| self.remote.list(&format!("imports-done/{day}/{dev}"), false)) {
@@ -1061,6 +1111,9 @@ impl Other {
             for f in files.into_iter().filter(|f| !f.is_dir) {
                 let Some(id) = f.path.strip_suffix(".result.json") else { continue };
                 let Some(e) = entries.iter_mut().find(|e| e.id == id && e.uploaded.is_some() && e.result.is_none()) else { continue };
+                if e.retried && note_still_there.contains_key(&format!("{id}.json")) {
+                    continue;
+                }
                 let tmp = self.cfg.state_dir.join("outbox").join(format!("{id}.result.json"));
                 if let Some(dir) = tmp.parent() {
                     std::fs::create_dir_all(dir).map_err(|x| Error::io(dir.display(), x))?;
@@ -1080,6 +1133,7 @@ impl Other {
                 let path = v.get("path").and_then(|s| s.as_str()).map(str::to_string);
                 let reason = v.get("reason").and_then(|s| s.as_str()).map(str::to_string);
                 e.result = Some(OutResult { status: status.clone(), path, reason: reason.clone() });
+                e.retried = false;
                 if status == "rejected" {
                     e.reported = true;
                     push_unique(

@@ -169,7 +169,27 @@ fn other_rows(ui: &mut Ui, s: &AppStatus, o: &OtherView, now: SystemTime) {
     );
 }
 
+/// What the user chose in the Status panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusAction {
+    /// Send the photos the home PC refused again.
+    TryAgain,
+    /// Accept the refusals: the photos stay on this PC only.
+    KeepHere,
+}
+
 pub fn show(ui: &mut Ui, v: &StatusView) {
+    let _ = show_with_actions(ui, v, &[]);
+}
+
+/// The photos the home PC refused, as (file name, reason) for the Status panel. Read from the queue by the window.
+pub fn refused_lines(entries: &[lightcraft_cloud_client::other::OutEntry]) -> Vec<(String, String)> {
+    entries.iter().map(|e| (e.name.clone(), e.result.as_ref().and_then(|r| r.reason.clone()).unwrap_or_else(|| "no reason given".into()))).collect()
+}
+
+/// [`show`], with the buttons of the refused-photos row; `refused` lists those photos with the home PC's reason.
+pub fn show_with_actions(ui: &mut Ui, v: &StatusView, refused: &[(String, String)]) -> Option<StatusAction> {
+    let mut action = None;
     let t = theme::CHARCOAL;
     theme::title(ui, "Status");
     ui.add_space(10.0);
@@ -177,7 +197,7 @@ pub fn show(ui: &mut Ui, v: &StatusView) {
         theme::panel(ui, None, |ui| {
             ui.label(RichText::new(if v.running { "The app is starting; nothing to show yet." } else { "The app has not run yet." }).color(t.text));
         });
-        return;
+        return None;
     };
     if !v.running {
         caution(ui, "The app is not running. Start it to keep the cloud library up to date.");
@@ -192,6 +212,9 @@ pub fn show(ui: &mut Ui, v: &StatusView) {
     theme::panel(ui, None, |ui| {
         if let Some(o) = &s.other {
             other_rows(ui, s, o, v.now);
+            if o.rejected > 0 {
+                action = refused_row(ui, o.rejected, refused);
+            }
             return;
         }
         match &s.last_sync {
@@ -259,6 +282,30 @@ pub fn show(ui: &mut Ui, v: &StatusView) {
         list(ui, "Newest wins", "No conflicts between phone and PC edits.", &s.notices, v.now, None);
     }
     list(ui, "Problems", "None.", &s.errors, v.now, Some(theme::CHARCOAL.reject));
+    action
+}
+
+/// The row for photos the home PC refused, with the reasons and the two ways to deal with them.
+fn refused_row(ui: &mut Ui, n: usize, refused: &[(String, String)]) -> Option<StatusAction> {
+    let t = theme::CHARCOAL;
+    row(ui, "Refused by the home PC", if n == 1 { "1 photo, still on this PC".to_string() } else { format!("{n} photos, still on this PC") });
+    for (name, why) in refused.iter().take(5) {
+        ui.add(Label::new(RichText::new(format!("{name}: {why}")).size(11.5).color(t.reject)).wrap());
+    }
+    if refused.len() > 5 {
+        theme::hint(ui, &format!("and {} more", refused.len() - 5));
+    }
+    theme::hint(ui, "They are still on this PC. Try again sends them anew; Keep on this PC only accepts that they stay here.");
+    let mut action = None;
+    ui.horizontal(|ui| {
+        if theme::button(ui, "Try again", theme::Kind::Primary).clicked() {
+            action = Some(StatusAction::TryAgain);
+        }
+        if theme::button(ui, "Keep on this PC only", theme::Kind::Secondary).clicked() {
+            action = Some(StatusAction::KeepHere);
+        }
+    });
+    action
 }
 
 #[cfg(test)]

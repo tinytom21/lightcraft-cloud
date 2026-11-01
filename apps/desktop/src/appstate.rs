@@ -103,6 +103,9 @@ pub struct OtherView {
     pub uploads_bytes: u64,
     /// Photos sent whose answer from the home PC has not been seen yet.
     pub awaiting_home: usize,
+    /// Photos the home PC refused that the user has not dealt with (Try again / Keep on this PC only). Counted until then, so the
+    /// state line never reads "Up to date" while one is left.
+    pub rejected: usize,
 }
 
 /// Everything the windows and the tray show.
@@ -217,9 +220,14 @@ impl AppStatus {
         v
     }
 
+    /// Photos the home PC refused and nobody has dealt with.
+    pub fn refused(&self) -> usize {
+        self.other.as_ref().map_or(0, |o| o.rejected)
+    }
+
     /// Everything that is wrong right now.
     pub fn problem_count(&self) -> usize {
-        self.active_problems.len() + usize::from(self.lightcraft_given_up > 0 && self.lightcraft_port != 0)
+        self.active_problems.len() + usize::from(self.lightcraft_given_up > 0 && self.lightcraft_port != 0) + usize::from(self.refused() > 0)
     }
 
     /// What the state line says and how worried to be. **Only a truly settled state is [`Tone::Ok`] ("Up to date")**: not while a sync
@@ -246,7 +254,10 @@ impl AppStatus {
         }
         let problems = self.problem_count();
         if problems > 0 {
-            let text = if problems == 1 { "1 problem needs attention".to_string() } else { format!("{problems} problems need attention") };
+            let only_refused = self.refused() > 0 && problems == 1;
+            let text = if only_refused {
+                if self.refused() == 1 { "1 photo the home PC refused".to_string() } else { format!("{} photos the home PC refused", self.refused()) }
+            } else if problems == 1 { "1 problem needs attention".to_string() } else { format!("{problems} problems need attention") };
             return h(HealthKind::Problem, Tone::Bad, text);
         }
         let waiting = self.waiting_items();

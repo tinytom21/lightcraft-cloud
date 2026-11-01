@@ -102,6 +102,8 @@ pub struct QueueView {
     pub bytes: u64,
     /// Photos sent whose answer is not seen yet.
     pub awaiting_home: usize,
+    /// Photos the home PC refused that the user has not dealt with.
+    pub rejected: usize,
 }
 
 /// What one bounded upload job did.
@@ -316,6 +318,7 @@ impl<W: Worker> Service<W> {
             o.uploads_waiting = v.to_upload;
             o.uploads_bytes = v.bytes;
             o.awaiting_home = v.awaiting_home;
+            o.rejected = v.rejected;
         }
         if v.to_upload > 0 {
             self.sched.want_upload(if starting { now + t.startup_delay } else { now });
@@ -483,6 +486,7 @@ impl<W: Worker> Service<W> {
                     v.uploads_waiting = o.queue.to_upload;
                     v.uploads_bytes = o.queue.bytes;
                     v.awaiting_home = o.queue.awaiting_home;
+                    v.rejected = o.queue.rejected;
                 }
                 for p in &o.problems {
                     if !self.status.errors.iter().any(|e| e.text == *p) {

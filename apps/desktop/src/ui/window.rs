@@ -14,7 +14,8 @@ use crate::instance::InstanceLock;
 use crate::settings::{Form, SaveEnv};
 use crate::ui::import_panel::{ImportPanel, ThreadBackend};
 use crate::ui::settings_panel::SettingsPanel;
-use crate::ui::status::{self, StatusView};
+use crate::ui::status::{self, StatusAction, StatusView};
+use lightcraft_cloud_client::other::ImportQueue;
 use crate::ui::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +97,18 @@ impl eframe::App for Window {
         }
         theme::page(ui, |ui| match self.tab {
             Tab::Status if !self.setup_only => {
-                status::show(ui, &StatusView { status: self.status.as_ref(), running: self.running, now: SystemTime::now() })
+                let queue = ImportQueue::new(&self.state_dir);
+                let refused = if self.import.is_some() { status::refused_lines(&queue.refused()) } else { Vec::new() };
+                match status::show_with_actions(ui, &StatusView { status: self.status.as_ref(), running: self.running, now: SystemTime::now() }, &refused) {
+                    // (the app picks the change up from the queue folder; the photos stay where they are)
+                    Some(StatusAction::TryAgain) => {
+                        queue.retry_refused();
+                    }
+                    Some(StatusAction::KeepHere) => {
+                        queue.keep_refused();
+                    }
+                    None => {}
+                }
             }
             Tab::Import if !self.setup_only && self.import.is_some() => {
                 if let Some(panel) = self.import.as_mut() {

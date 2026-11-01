@@ -113,13 +113,14 @@ pub(crate) fn outcome_of(r: &OtherReport) -> SyncOutcome {
             uploads_waiting: r.queue.to_upload,
             uploads_bytes: r.queue.bytes,
             awaiting_home: r.queue.awaiting_home,
+            rejected: r.queue.rejected,
         }),
         ..SyncOutcome::default()
     }
 }
 
 fn view_of(q: &QueueStatus) -> QueueView {
-    QueueView { to_upload: q.to_upload, bytes: q.bytes, awaiting_home: q.awaiting_home }
+    QueueView { to_upload: q.to_upload, bytes: q.bytes, awaiting_home: q.awaiting_home, rejected: q.rejected }
 }
 
 impl Worker for OtherWorker {

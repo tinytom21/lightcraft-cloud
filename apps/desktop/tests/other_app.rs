@@ -437,6 +437,11 @@ fn the_real_backend_scans_and_copies_in_the_background_chooses_the_folder_queues
     let mut b = ThreadBackend::new(&e.config).expect("another PC's config");
     assert_eq!(b.folders(), ["Lisbon"]);
     assert!(b.check("../x").is_err() && b.check("Holiday").is_ok());
+    assert!(b.lightcraft_on(), "the test config has the link on");
+    let off = env("backend-off", "other");
+    let text = std::fs::read_to_string(&off.config).unwrap().replace("lightcraft_control_port = 7999", "lightcraft_control_port = 0");
+    std::fs::write(&off.config, text).unwrap();
+    assert!(!ThreadBackend::new(&off.config).unwrap().lightcraft_on());
     let wait = |b: &mut ThreadBackend| {
         for _ in 0..400 {
             let ev = b.poll();
@@ -473,4 +478,66 @@ fn the_real_backend_scans_and_copies_in_the_background_chooses_the_folder_queues
     // a home PC's config is not an import window's
     let home = env("backend-home", "home");
     assert!(ThreadBackend::new(&home.config).is_none());
+}
+
+#[test]
+fn a_refused_photo_keeps_the_state_off_green_across_a_restart_until_try_again_or_keep_here() {
+    use lightcraft_cloud_desktop::appstate::HealthKind;
+    let e = env("refused", "other");
+    let spy = Spy::default();
+    let mut svc = service(&e, &spy, false);
+    run_due(&mut svc, &e, 20);
+    import_card(&e, 2, "r");
+    svc.handle(Command::UploadsChanged);
+    run_due(&mut svc, &e, 2);
+    let ids: Vec<String> = ImportQueue::new(&e.state).list().into_iter().map(|x| x.id).collect();
+    // the home PC refuses one and adds the other
+    for (i, id) in ids.iter().enumerate() {
+        let (st, why) = if i == 0 { ("rejected", json!("the downloaded P000.jpg does not match its note")) } else { ("added", json!(null)) };
+        put(&e.cloud, &format!("imports-done/2026-11-01/laptop/{id}.result.json"), json!({"id": id, "status": st, "path": null, "reason": why}).to_string().as_bytes());
+    }
+    run_due(&mut svc, &e, 5 * 60);
+    let h = svc.status().health();
+    assert_eq!((h.kind, h.text.as_str()), (HealthKind::Problem, "1 photo the home PC refused"), "{:?}", svc.status());
+    // a restart: still counted, not green
+    drop(svc);
+    let mut svc = service(&e, &spy, false);
+    assert_eq!(svc.status().other.as_ref().map(|o| o.rejected), Some(1));
+    assert_eq!(svc.status().health().kind, HealthKind::Problem);
+    run_due(&mut svc, &e, 15 * 60);
+    assert_eq!(svc.status().health().kind, HealthKind::Problem, "nothing clears it by itself");
+    // "Keep on this PC only": accepted, cleared, restart-proof, the file stays
+    assert_eq!(ImportQueue::new(&e.state).keep_refused(), 1);
+    svc.handle(Command::UploadsChanged);
+    assert_eq!(svc.status().other.as_ref().map(|o| o.rejected), Some(0));
+    assert_ne!(svc.status().health().kind, HealthKind::Problem);
+    drop(svc);
+    let svc = service(&e, &spy, false);
+    assert_eq!(svc.status().other.as_ref().map(|o| o.rejected), Some(0));
+    assert!(e.photos.join("Holiday/P000.jpg").exists());
+}
+
+#[test]
+fn try_again_puts_the_refused_photos_back_in_the_queue_and_the_app_sends_them() {
+    let e = env("refused2", "other");
+    let spy = Spy::default();
+    let mut svc = service(&e, &spy, false);
+    run_due(&mut svc, &e, 20);
+    import_card(&e, 1, "t");
+    svc.handle(Command::UploadsChanged);
+    run_due(&mut svc, &e, 2);
+    let id = ImportQueue::new(&e.state).list().remove(0).id;
+    put(&e.cloud, &format!("imports-done/2026-11-01/laptop/{id}.result.json"), json!({"id": id, "status": "rejected", "path": null, "reason": "damaged"}).to_string().as_bytes());
+    run_due(&mut svc, &e, 5 * 60);
+    assert_eq!(svc.status().other.as_ref().map(|o| o.rejected), Some(1));
+    // the home PC moved the files away when it answered
+    std::fs::remove_file(e.cloud.join(format!("imports/laptop/{id}.json"))).unwrap();
+    std::fs::remove_dir_all(e.cloud.join(format!("imports/laptop/{id}"))).unwrap();
+    assert_eq!(ImportQueue::new(&e.state).retry_refused(), 1);
+    svc.handle(Command::UploadsChanged);
+    let o = svc.status().other.clone().unwrap();
+    assert_eq!((o.rejected, o.uploads_waiting), (0, 1));
+    run_due(&mut svc, &e, 2);
+    assert!(e.cloud.join(format!("imports/laptop/{id}.json")).exists(), "sent again");
+    assert!(e.photos.join("Holiday/P000.jpg").exists());
 }
