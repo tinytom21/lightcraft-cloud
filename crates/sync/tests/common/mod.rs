@@ -469,6 +469,9 @@ impl Remote for Spy {
         self.moves.lock().unwrap().push((from.to_string(), to.to_string()));
         self.inner.move_file(from, to)
     }
+    fn remove_empty_dir(&self, dir: &str) -> Result<()> {
+        self.inner.remove_empty_dir(dir)
+    }
 }
 
 impl Fx {

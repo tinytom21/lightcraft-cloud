@@ -34,6 +34,11 @@ pub trait Remote: Send + Sync {
     fn purge_dir(&self, dir: &str) -> Result<()> {
         Err(Error::Invalid(format!("this remote cannot delete the folder {dir}")))
     }
+    /// Remove the folder `dir` if it is empty, and say nothing if it is not or is not there (tidying only, so an error is never
+    /// worth failing for). A remote that cannot leaves the folder.
+    fn remove_empty_dir(&self, _dir: &str) -> Result<()> {
+        Ok(())
+    }
     /// The entry at `path`, if there is one.
     fn stat(&self, path: &str) -> Result<Option<RemoteEntry>> {
         let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
@@ -122,6 +127,14 @@ impl Remote for DirRemote {
             std::fs::create_dir_all(dir).map_err(|e| Error::io(to, e))?;
         }
         std::fs::rename(&src, &dst).map_err(|e| Error::io(from, e))
+    }
+
+    fn remove_empty_dir(&self, dir: &str) -> Result<()> {
+        let at = self.at(dir)?;
+        if at != self.root {
+            let _ = std::fs::remove_dir(&at); // (fails when it is not empty: then it stays)
+        }
+        Ok(())
     }
 
     fn purge_dir(&self, dir: &str) -> Result<()> {

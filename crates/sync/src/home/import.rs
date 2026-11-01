@@ -776,7 +776,12 @@ impl Home {
             }
         }
         self.crash("after_data_moved");
-        self.retry(|| self.remote.move_file(&format!("imports/{device}/{id}.json"), &format!("{done}/{id}.json")))
+        self.retry(|| self.remote.move_file(&format!("imports/{device}/{id}.json"), &format!("{done}/{id}.json")))?;
+        // The import is filed away. Moving files leaves their folder behind, and a remote like Google Drive lists every folder with a
+        // call of its own, so an empty `imports/<device>/<id>/` per photo ever imported would make each look at `imports/` (every
+        // 2 minutes) slower for good. The note is gone, so the uploader is done with the folder; tidying is best effort.
+        let _ = self.remote.remove_empty_dir(&format!("imports/{device}/{id}"));
+        Ok(())
     }
 }
 

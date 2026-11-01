@@ -199,6 +199,17 @@ impl Remote for RcloneRemote {
         self.lib.call("operations/movefile", &json!({"srcFs": self.fs, "srcRemote": from, "dstFs": self.fs, "dstRemote": to})).map(|_| ())
     }
 
+    fn remove_empty_dir(&self, dir: &str) -> Result<()> {
+        if dir.trim_matches('/').is_empty() {
+            return Ok(());
+        }
+        // (`operations/rmdir` removes an empty folder only; a folder with something in it, or none, is not an error here)
+        match self.lib.call("operations/rmdir", &json!({"fs": self.fs, "remote": dir})) {
+            Ok(_) | Err(Error::NotFound(_)) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     fn purge_dir(&self, dir: &str) -> Result<()> {
         if dir.trim_matches('/').is_empty() {
             return Err(Error::Invalid("refusing to delete the remote's root".into()));

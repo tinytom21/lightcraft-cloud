@@ -376,6 +376,45 @@ fn unsafe_folders_names_and_sidecars_are_rejected() {
     assert!(check_import_note(&vec![b' '; 100_000], ID, &[]).is_err(), "a note is small");
 }
 
+/// Every folder below the remote's `imports/` (the files are `imports_files`).
+fn imports_folders(fx: &Fx) -> Vec<String> {
+    fn walk(base: &std::path::Path, at: &std::path::Path, out: &mut Vec<String>) {
+        for e in std::fs::read_dir(at).into_iter().flatten().flatten() {
+            if e.path().is_dir() {
+                out.push(e.path().strip_prefix(base).unwrap().to_string_lossy().into_owned());
+                walk(base, &e.path(), out);
+            }
+        }
+    }
+    let base = fx.remote.join("imports");
+    let mut out = Vec::new();
+    walk(&base, &base, &mut out);
+    out
+}
+
+/// Found by the end-to-end test against Google Drive: moving an import's files left `imports/<device>/<id>/` behind, empty, for
+/// every photo ever imported, and Drive lists each folder with a call of its own, so the 2-minute look at `imports/` got slower for good.
+#[test]
+fn a_filed_away_import_leaves_no_empty_folder_behind_but_an_upload_in_progress_keeps_its_own() {
+    let fx = Fx::new("no-empty-folders");
+    seed(&fx);
+    let good = up("Trip", "good.jpg", &bytes_of("tidy-good")).sidecar("good.xmp", xmp());
+    let evil = up("../../outside", "evil.jpg", &bytes_of("tidy-evil"));
+    upload(&fx, &good);
+    upload(&fx, &evil);
+    // (a third photo still being uploaded: its files are there and its note is not)
+    let slow = up("Trip", "slow.jpg", &bytes_of("tidy-slow"));
+    upload_files(&fx, &slow);
+    assert!(!imports_folders(&fx).is_empty());
+    let r = sync(&fx);
+    assert_eq!((r.imports.added.len(), r.imports.rejected), (1, 1));
+    let slow_dir = format!("{DEV}/{}", slow.id());
+    let left = imports_folders(&fx);
+    assert!(!left.iter().any(|d| d.ends_with(&good.id()) || d.ends_with(&evil.id())), "empty folders left: {left:?}");
+    assert!(left.contains(&slow_dir), "the unfinished upload's folder must stay: {left:?}");
+    assert_eq!(imports_files(&fx), vec![format!("imports/{slow_dir}/slow.jpg")]);
+}
+
 #[test]
 fn a_rejected_note_is_moved_to_imports_done_with_its_reason_and_the_sync_goes_on() {
     let fx = Fx::new("rejects");
