@@ -11,13 +11,14 @@ use notify::{EventKind, RecursiveMode, Watcher};
 /// Whether a change at `path` should lead to a sync.
 pub fn relevant(source: &Path, exclude: &[String], path: &Path) -> bool {
     let Ok(rel) = path.strip_prefix(source) else { return false };
-    let rel = rel.to_string_lossy();
-    if rel.is_empty() {
+    if rel.as_os_str().is_empty() {
         return false;
     }
-    if rel.split('/').any(|c| c.starts_with('.')) {
+    if rel.components().any(|c| c.as_os_str().to_string_lossy().starts_with('.')) {
         return false; // temp and hidden files and folders
     }
+    // (the patterns are matched against `/`-separated paths, as the sync crate's are)
+    let rel = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/");
     !is_excluded(&rel, exclude)
 }
 

@@ -13,16 +13,18 @@
 //! the sidecars, like the Python tool `lc-cloud`, with the same remote layout (FORMAT.md). It keeps its own config and
 //! state (`~/.config/lightcraft-cloud-desktop/`, `~/.local/state/lightcraft-cloud-desktop/`).
 
+#[cfg(feature = "home")]
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::SystemTime;
 
 use lightcraft_cloud_client::Error;
-use lightcraft_cloud_client::home::{Home, notify_message, utc_iso};
+#[cfg(feature = "home")]
+use lightcraft_cloud_client::home::Home;
+use lightcraft_cloud_client::home::utc_iso;
 use lightcraft_cloud_desktop::config::Config;
-use lightcraft_cloud_desktop::engine;
-use lightcraft_cloud_desktop::{app, backup, notifier, pending, ui};
+use lightcraft_cloud_desktop::{app, ui};
 
 const USAGE: &str = "\
 lightcraft-cloud-desktop: keep the cloud library in step with a photo folder
@@ -133,10 +135,11 @@ impl From<Error> for Failure {
     }
 }
 
+#[cfg(feature = "home")]
 fn build_home(cfg: &Config, log_to_file: bool) -> std::result::Result<Home, Failure> {
     let mut home = Home::new(cfg.home_config()?, cfg.open_remote()?)?;
     // (photos adopted by the command line are queued too: the running app tells LightCraft about them)
-    pending::install_hook(&mut home, &cfg.state_dir, cfg.file.lightcraft_control_port);
+    lightcraft_cloud_desktop::pending::install_hook(&mut home, &cfg.state_dir, cfg.file.lightcraft_control_port);
     let logfile = cfg.state_dir.join("logs").join("lightcraft-cloud-desktop.log");
     home.set_logger(move |m| {
         let line = format!("{} {m}", utc_iso(SystemTime::now()));
@@ -167,6 +170,22 @@ fn run(a: Args) -> std::result::Result<(), Failure> {
         _ => {}
     }
     let cfg = Config::load(a.config.as_deref())?;
+    run_command(a, cfg)
+}
+
+/// The light build has no engine and publishes nothing; the commands below are the home PC's.
+#[cfg(not(feature = "home"))]
+fn run_command(a: Args, _cfg: Config) -> std::result::Result<(), Failure> {
+    match a.cmd.as_str() {
+        "sync" | "status" | "inbox-check" | "purge-history" => Err(Failure::Refused(lightcraft_cloud_desktop::worker::LIGHT_BUILD_REFUSES_HOME.into())),
+        other => Err(Failure::Error(format!("unknown command {other}\n\n{USAGE}"))),
+    }
+}
+
+#[cfg(feature = "home")]
+fn run_command(a: Args, cfg: Config) -> std::result::Result<(), Failure> {
+    use lightcraft_cloud_client::home::notify_message;
+    use lightcraft_cloud_desktop::{backup, engine, notifier};
     match a.cmd.as_str() {
         "sync" => {
             if !a.once {
@@ -231,6 +250,7 @@ fn run(a: Args) -> std::result::Result<(), Failure> {
     }
 }
 
+#[cfg(feature = "home")]
 fn human(n: u64) -> String {
     if n < 1024 {
         return format!("{n} B");

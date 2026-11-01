@@ -119,8 +119,15 @@ impl File {
     }
 }
 
+/// The user's home folder: `$HOME`, and on Windows (which has none) `%USERPROFILE%`.
 pub fn home_dir() -> Result<PathBuf, String> {
-    std::env::var_os("HOME").map(PathBuf::from).filter(|h| !h.as_os_str().is_empty()).ok_or_else(|| "HOME is not set".to_string())
+    let var = |k: &str| std::env::var_os(k).map(PathBuf::from).filter(|h| !h.as_os_str().is_empty());
+    var("HOME").or_else(|| if cfg!(windows) { var("USERPROFILE") } else { None }).ok_or_else(|| "HOME is not set".to_string())
+}
+
+/// A folder of the user's profile that Windows names by a variable (`%APPDATA%`, `%LOCALAPPDATA%`); None elsewhere.
+fn windows_dir(var: &str) -> Option<PathBuf> {
+    if cfg!(windows) { std::env::var_os(var).map(PathBuf::from).filter(|h| !h.as_os_str().is_empty()) } else { None }
 }
 
 /// `~/` and `~` at the start of a path.
@@ -137,14 +144,20 @@ pub fn expand(p: &str) -> Result<PathBuf, String> {
 pub fn default_config_path() -> Result<PathBuf, String> {
     Ok(match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
         Some(x) => PathBuf::from(x).join(APP_DIR).join("config.toml"),
-        None => home_dir()?.join(".config").join(APP_DIR).join("config.toml"),
+        None => match windows_dir("APPDATA") {
+            Some(a) => a.join(APP_DIR).join("config.toml"),
+            None => home_dir()?.join(".config").join(APP_DIR).join("config.toml"),
+        },
     })
 }
 
 pub fn default_state_dir() -> Result<PathBuf, String> {
     Ok(match std::env::var_os("XDG_STATE_HOME").filter(|v| !v.is_empty()) {
         Some(x) => PathBuf::from(x).join(APP_DIR),
-        None => home_dir()?.join(".local/state").join(APP_DIR),
+        None => match windows_dir("LOCALAPPDATA") {
+            Some(a) => a.join(APP_DIR),
+            None => home_dir()?.join(".local/state").join(APP_DIR),
+        },
     })
 }
 
@@ -256,10 +269,13 @@ pub fn find_librclone(configured: Option<&str>) -> Result<Option<PathBuf>, Strin
     Ok(librclone_in(configured, env, exe.as_deref(), home_dir().ok().as_deref()))
 }
 
+/// The file name of rclone's library on this system.
+const LIBRCLONE: &str = if cfg!(windows) { "librclone.dll" } else { "librclone.so" };
+
 fn librclone_in(configured: Option<PathBuf>, env: Option<PathBuf>, exe: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
     configured.or(env).or_else(|| {
-        let beside_exe = exe.and_then(Path::parent).map(|d| d.join("librclone.so"));
-        let in_home = home.map(|h| h.join(".local/lib/lightcraft-cloud/librclone.so"));
+        let beside_exe = exe.and_then(Path::parent).map(|d| d.join(LIBRCLONE));
+        let in_home = home.map(|h| h.join(".local/lib/lightcraft-cloud").join(LIBRCLONE));
         beside_exe.into_iter().chain(in_home).find(|p| p.is_file())
     })
 }

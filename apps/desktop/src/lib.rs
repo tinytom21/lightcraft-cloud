@@ -2,6 +2,9 @@
 //! command line, and LightCraft's engine as the sync crate's renderer. The command line is `main.rs`; the sync itself is
 //! `lightcraft_cloud_client::home`.
 //!
+//! The `home` feature (on by default) is the home PC's half, and the only part that needs LightCraft's engine ([`engine`], publishing).
+//! `--no-default-features` builds the light app: the same tray, windows and scheduler, no engine.
+//!
 //! * [`scheduler`], [`service`], [`watcher`], [`worker`]: the background engine (UI-independent; tests move a fake [`clock`]);
 //! * [`lightcraft`], [`pending`]: telling a running LightCraft to add the photos that were adopted (its control channel, and the
 //!   durable list);
@@ -14,6 +17,7 @@ pub mod autostart;
 pub mod backup;
 pub mod clock;
 pub mod config;
+#[cfg(feature = "home")]
 pub mod engine;
 pub mod instance;
 pub mod lightcraft;

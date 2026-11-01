@@ -20,13 +20,12 @@ use lightcraft_cloud_client::home::utc_iso;
 use crate::appstate::AppStatus;
 use crate::clock::SystemClock;
 use crate::config::{self, Config, File};
-use crate::engine::LazyRenderer;
 use crate::instance::InstanceLock;
 use crate::notifier::{DesktopNotifier, NoNotifier, Notifier};
 use crate::scheduler::Timing;
 use crate::service::{Command, Service, run_loop};
 use crate::watcher::FolderWatcher;
-use crate::worker::{HomeWorker, log_path};
+use crate::worker::log_path;
 
 pub struct RunOptions {
     pub config: Option<PathBuf>,
@@ -152,6 +151,24 @@ impl Drop for Windows {
     }
 }
 
+/// The full build's worker: the home PC's, publishing with LightCraft's engine as the renderer.
+#[cfg(feature = "home")]
+fn make_worker(config_path: PathBuf, clock: Arc<dyn crate::clock::Clock>) -> crate::worker::HomeWorker {
+    use crate::engine::LazyRenderer;
+    crate::worker::HomeWorker::new(
+        config_path,
+        Box::new(|cfg: &Config| Box::new(LazyRenderer::new(cfg.state_dir.join("lib")))),
+        Box::new(|cfg: &Config| cfg.open_remote()),
+        clock,
+    )
+}
+
+/// The light build's worker (no engine, so no publishing).
+#[cfg(not(feature = "home"))]
+fn make_worker(config_path: PathBuf, _clock: Arc<dyn crate::clock::Clock>) -> crate::worker::LightWorker {
+    crate::worker::LightWorker::new(config_path)
+}
+
 pub fn run(opts: RunOptions) -> Result<Ended, String> {
     let config_path = Config::resolve_path(opts.config.as_deref())?;
     let state_dir = state_dir_for(&config_path)?;
@@ -168,12 +185,7 @@ pub fn run(opts: RunOptions) -> Result<Ended, String> {
         let (config_path, state_dir, msg_tx, headless) = (config_path.clone(), state_dir.clone(), msg_tx.clone(), opts.headless);
         std::thread::spawn(move || {
             let clock: Arc<dyn crate::clock::Clock> = Arc::new(SystemClock);
-            let worker = HomeWorker::new(
-                config_path,
-                Box::new(|cfg: &Config| Box::new(LazyRenderer::new(cfg.state_dir.join("lib")))),
-                Box::new(|cfg: &Config| cfg.open_remote()),
-                clock.clone(),
-            );
+            let worker = make_worker(config_path, clock.clone());
             let notifier: Box<dyn Notifier> = if headless { Box::new(NoNotifier) } else { Box::new(DesktopNotifier) };
             let sink_tx = msg_tx.clone();
             let log_dir = state_dir.clone();

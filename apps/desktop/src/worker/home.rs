@@ -2,11 +2,11 @@
 //! engine as the renderer. The config is read again when a window saved it.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use lightcraft_cloud_client::home::{Home, InboxSummary, Renderer, State, utc_iso};
-use lightcraft_cloud_client::{Error, Remote};
+use lightcraft_cloud_client::Remote;
 
 use crate::backup;
 use crate::clock::Clock;
@@ -14,6 +14,7 @@ use crate::config::Config;
 use crate::lightcraft::{LightCraftLink, TcpLink};
 use crate::pending::{self, PendingList};
 use crate::service::{BridgeReport, JobError, PurgeOutcome, SyncOutcome, Worker, WorkerInfo};
+use super::to_job_error;
 
 /// Makes the renderer for one sync (the real one opens the engine's scratch library; tests give a fake one).
 pub type RendererFactory = Box<dyn Fn(&Config) -> Box<dyn Renderer>>;
@@ -86,14 +87,6 @@ impl HomeWorker {
             (None, Some(e)) => Err(JobError::Refused(e.clone())),
             (None, None) => Err(JobError::Refused("the app is not set up yet".into())),
         }
-    }
-}
-
-fn to_job_error(e: Error) -> JobError {
-    match e {
-        Error::Busy(_) => JobError::Busy,
-        Error::Invalid(m) => JobError::Refused(m),
-        e => JobError::Failed(e.to_string()),
     }
 }
 
@@ -218,11 +211,6 @@ impl Worker for HomeWorker {
         let published = st.files().values().filter(|r| r.status == "ok").count();
         Some((when, result, published))
     }
-}
-
-/// The path the app writes its own log to.
-pub fn log_path(state_dir: &Path) -> PathBuf {
-    state_dir.join("logs").join("lightcraft-cloud-desktop.log")
 }
 
 #[cfg(test)]

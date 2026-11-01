@@ -242,6 +242,7 @@ pub fn flush(list: &PendingList, link: &mut dyn LightCraftLink, retry_given_up: 
 }
 
 /// The hook the sync crate calls for each photo it leaves in the photo folder.
+#[cfg(feature = "home")]
 pub fn install_hook(home: &mut lightcraft_cloud_client::home::Home, state_dir: &Path, port: u16) {
     if port == 0 {
         return;
