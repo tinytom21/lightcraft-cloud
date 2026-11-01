@@ -1449,7 +1449,7 @@ mod tests {
     #[test]
     fn no_environment_variable_or_config_key_can_change_where_updates_come_from() {
         // 1. the program text above the tests reads no environment variable and no file but its own state (the build-time version is not a run-time input)
-        let text = include_str!("update.rs");
+        let text = include_str!("update.rs").replace("\r\n", "\n"); // (a Windows checkout has CRLF line ends)
         let production = text.split("#[cfg(test)]\nmod tests").next().unwrap();
         for forbidden in ["std::env::var", "env::var(", "env::args", "var_os", "option_env!", "dotenv"] {
             assert!(!production.contains(forbidden), "update.rs must not read {forbidden}");
@@ -1460,7 +1460,7 @@ mod tests {
         assert!(production.contains("#[cfg(test)]\n    fn local("), "the local source exists only in test builds");
         assert!(production.contains("fn build(") && !production.contains("pub fn build("), "building an Updater with another source is private");
         // 3. the config has no key for it, and whatever a config file says about updates, the updater's source is the same
-        let cfg = include_str!("config.rs");
+        let cfg = include_str!("config.rs").replace("\r\n", "\n");
         let keys = cfg.split("const KNOWN_KEYS").nth(1).unwrap().split("];").next().unwrap();
         for k in ["update_url", "update_source", "update_api", "updates_url", "release_url", "update_server", "update_base"] {
             assert!(!keys.contains(k), "{k}");

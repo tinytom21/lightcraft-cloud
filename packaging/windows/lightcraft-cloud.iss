@@ -36,8 +36,6 @@ AppPublisher=tinytom21
 AppPublisherURL=https://github.com/tinytom21/lightcraft-cloud
 AppSupportURL=https://github.com/tinytom21/lightcraft-cloud/issues
 AppUpdatesURL=https://github.com/tinytom21/lightcraft-cloud/releases
-VersionInfoVersion={#AppVersion}
-VersionInfoDescription={#AppName} setup
 DefaultDirName={autopf}\{#AppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
@@ -77,7 +75,7 @@ Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; Parameters: "run
 Root: HKCU; Subkey: "{#RunKey}"; ValueType: string; ValueName: "{#AppName}"; ValueData: """{app}\{#AppExe}"" run"; Check: WantAutostart
 
 [Run]
-Filename: "{app}\{#AppExe}"; Parameters: "run"; WorkingDir: "{app}"; Description: "Start {#AppName}"; Flags: nowait postinstall skipifsilent; Check: not WasRunning
+Filename: "{app}\{#AppExe}"; Parameters: "run"; WorkingDir: "{app}"; Description: "Start {#AppName}"; Flags: nowait postinstall skipifsilent; Check: NotWasRunning
 
 [UninstallDelete]
 Type: dirifempty; Name: "{app}"
@@ -85,6 +83,11 @@ Type: dirifempty; Name: "{app}"
 [Code]
 var
   WasRunning: Boolean;
+
+function NotWasRunning: Boolean;
+begin
+  Result := not WasRunning;
+end;
 
 function PreviouslyInstalled: Boolean;
 begin

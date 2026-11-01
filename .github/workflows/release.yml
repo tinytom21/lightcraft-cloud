@@ -60,13 +60,21 @@ jobs:
           $v = & .\target\release\lightcraft-cloud-desktop.exe --version | Out-String
           Write-Output $v
           if ($v -notmatch "lightcraft-cloud-desktop ${{ steps.ver.outputs.version }}") { throw "wrong version output" }
-      - name: Inno Setup (pinned version)
+      - name: Inno Setup (the image's, else a pinned version)
         shell: pwsh
         run: |
-          choco install innosetup --version 6.6.1 -y --no-progress
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            # (the windows-latest image ships Inno Setup; if it ever stops, this version is installed instead)
+            choco install innosetup --version 6.6.1 -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw "choco failed: $LASTEXITCODE" }
+          }
           if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
-          & $iscc /? | Select-Object -First 2
+          $ver = (Get-Item $iscc).VersionInfo.ProductVersion
+          Write-Output "Inno Setup $ver at $iscc"
+          # (the script needs 6.3 or newer: ArchitecturesAllowed=x64compatible)
+          $parts = $ver.Split('.')
+          if ([int]$parts[0] -ne 6 -or [int]$parts[1] -lt 3) { throw "Inno Setup $ver is not 6.3 or newer" }
           "ISCC=$iscc" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - name: Build the installer
         shell: pwsh

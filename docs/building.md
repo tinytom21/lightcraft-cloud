@@ -38,8 +38,8 @@ upstream LightCraft engine does not have the command `library.addRemote` yet. Th
 ## Windows (light build: another PC)
 
 `.github/workflows/release.yml` builds the light build (`--no-default-features`: no engine, role "another PC") on `windows-latest` and
-packs it into `lightcraft-cloud-<version>-windows-setup.exe` with Inno Setup (`packaging/windows/lightcraft-cloud.iss`; CI installs
-Inno Setup 6.6.1 with Chocolatey). The installer is per user (no administrator): `%LOCALAPPDATA%\Programs\LightCraft Cloud\` with the
+packs it into `lightcraft-cloud-<version>-windows-setup.exe` with Inno Setup (`packaging/windows/lightcraft-cloud.iss`; the `windows-latest` image ships Inno Setup 6.7.1, which CI uses and prints;
+if the image ever lacks it, CI installs 6.6.1 with Chocolatey; the script needs 6.3 or newer). The installer is per user (no administrator): `%LOCALAPPDATA%\Programs\LightCraft Cloud\` with the
 exe, `librclone.dll` (rclone's librclone built from [`tools/librclone`](../tools/librclone), rclone v1.75.2, with Go and cgo), the licences and
 `README.txt` (`packaging/windows/README.txt`). `desktop.yml` still builds, lints and tests the light build on every push, but no longer
 makes a zip.
