@@ -43,6 +43,26 @@ The sync crate's tests drive the lightcraft-android engine (tag `v0.1.0`, pinned
 upstream LightCraft engine does not have the command `library.addRemote` yet. The desktop app keeps the upstream engine
 (`v0.15.0`), so `Cargo.lock` holds both. Bump the `rev` when the phone fork's engine changes.
 
+## Windows (light build: another PC)
+
+CI (`.github/workflows/desktop.yml`) builds the light build (`--no-default-features`: no engine, role "another PC") on
+`windows-latest` and uploads `lightcraft-cloud-windows-light.zip`: the exe, `librclone.dll` (rclone's librclone built from
+[`tools/librclone`](tools/librclone), rclone v1.75.2, with Go and cgo), the licences and a short `README.txt`. Keep the DLL next to the exe.
+
+* Config `%APPDATA%\lightcraft-cloud-desktop\config.toml`, state and log `%LOCALAPPDATA%\lightcraft-cloud-desktop\`, rclone's config
+  `%APPDATA%\rclone\rclone.conf` (or `RCLONE_CONFIG` / `rclone_config`). "Start when I log in" sets a value in
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (no administrator needed).
+* The exe is a windows-subsystem program: no console opens for the tray app. In a terminal the commands (`status`, `sync --once`,
+  `run --headless`) print as usual, though the prompt may come back before they finish.
+* **Telling LightCraft about downloaded photos** (only needed for photos that arrive from the home PC) uses LightCraft's control
+  port, which is off by default and which Windows users cannot enable the way the Flatpak does. Either start LightCraft with
+  `lightcraft.exe --control 7980` (edit the shortcut's Target; installed in `%LOCALAPPDATA%\Programs\ArtCraft\LightCraft`, or
+  `C:\Program Files\ArtCraft\LightCraft` for all users), or set `setx LIGHTCRAFT_CONTROL_PORT 7980` once and restart LightCraft
+  ([control protocol](https://github.com/storytold/lightcraft/blob/main/docs/control-protocol.md): loopback only, no authentication).
+  The app's `lightcraft_control_port` (default 7980, 0 = off) must match. LightCraft's Windows installer also installs
+  `lightcraft-cli.exe`, but this app does not need it: it speaks the control protocol over a TCP socket itself. Without the port the photos
+  still land in the photo folder; run Synchronize Folder in LightCraft.
+
 ## Desktop app (`lightcraft-cloud-desktop`)
 
 The Rust port of what `lc-cloud` does on the PC, writing the same remote layout ([FORMAT.md](FORMAT.md)), so the phone app
