@@ -70,11 +70,14 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "choco failed: $LASTEXITCODE" }
           }
           if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
-          $ver = (Get-Item $iscc).VersionInfo.ProductVersion
-          Write-Output "Inno Setup $ver at $iscc"
-          # (the script needs 6.3 or newer: ArchitecturesAllowed=x64compatible)
-          $parts = $ver.Split('.')
-          if ([int]$parts[0] -ne 6 -or [int]$parts[1] -lt 3) { throw "Inno Setup $ver is not 6.3 or newer" }
+          $k = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1'
+          $ver = (Get-ItemProperty $k -ErrorAction SilentlyContinue).DisplayVersion
+          Write-Output "Inno Setup $(if ($ver) { $ver } else { '(version not in the registry)' }) at $iscc"
+          # (the script needs 6.3 or newer: ArchitecturesAllowed=x64compatible; an older compiler would also refuse it, loudly)
+          if ($ver) {
+            $parts = $ver.Split('.')
+            if ([int]$parts[0] -ne 6 -or [int]$parts[1] -lt 3) { throw "Inno Setup $ver is not 6.3 or newer" }
+          }
           "ISCC=$iscc" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - name: Build the installer
         shell: pwsh
