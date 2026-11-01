@@ -381,7 +381,7 @@ fn imports_folders(fx: &Fx) -> Vec<String> {
     fn walk(base: &std::path::Path, at: &std::path::Path, out: &mut Vec<String>) {
         for e in std::fs::read_dir(at).into_iter().flatten().flatten() {
             if e.path().is_dir() {
-                out.push(e.path().strip_prefix(base).unwrap().to_string_lossy().into_owned());
+                out.push(e.path().strip_prefix(base).unwrap().to_string_lossy().replace('\\', "/"));
                 walk(base, &e.path(), out);
             }
         }

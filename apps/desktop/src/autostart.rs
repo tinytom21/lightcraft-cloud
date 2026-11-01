@@ -189,9 +189,7 @@ mod windows_tests {
 
     #[test]
     fn the_default_place_is_the_per_user_run_key_which_needs_no_administrator() {
-        let k = default_dir().unwrap();
-        assert_eq!(k, PathBuf::from(r"Software\Microsoft\Windows\CurrentVersion\Run"));
-        // (read only: the real key is never written by a test, but it is there and can be opened for writing by this user)
-        assert!(registry_key_exists(&k.to_string_lossy()));
+        // (the real key is never written by a test, and a fresh Windows account may not have it yet: `enable` creates it, as it does the test's own)
+        assert_eq!(default_dir().unwrap(), PathBuf::from(r"Software\Microsoft\Windows\CurrentVersion\Run"));
     }
 }
