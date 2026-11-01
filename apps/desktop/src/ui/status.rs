@@ -4,7 +4,8 @@ use std::time::SystemTime;
 
 use egui::{Color32, CornerRadius, Label, Margin, RichText, Sense, Stroke, Ui, vec2};
 
-use crate::appstate::{Activity, AppStatus, Notice, OtherView, relative, upcoming};
+use crate::appstate::{Activity, AppStatus, Notice, OtherView, Tone, relative, upcoming};
+use crate::ui::settings_panel::human_size;
 use crate::ui::theme;
 
 /// What the panel shows.
@@ -83,6 +84,32 @@ fn state_line(ui: &mut Ui, text: &str, color: Color32) {
     });
 }
 
+/// The state line's dot: green only for a settled state.
+pub fn tone_color(tone: Tone) -> Color32 {
+    let t = theme::CHARCOAL;
+    match tone {
+        Tone::Ok => t.ok,
+        Tone::Busy => t.accent,
+        Tone::Wait => t.caution,
+        Tone::Offline => t.text_label,
+        Tone::Paused => t.text_dim,
+        Tone::Bad => t.reject,
+    }
+}
+
+/// The imported-photos row of another PC: what is on its way to the home PC. None when nothing is.
+pub fn queue_row(o: &OtherView) -> String {
+    let photos = |n: usize| if n == 1 { "1 photo".to_string() } else { format!("{n} photos") };
+    let mut parts = Vec::new();
+    if o.uploads_waiting > 0 {
+        parts.push(format!("{} ({}) waiting to upload", photos(o.uploads_waiting), human_size(o.uploads_bytes)));
+    }
+    if o.awaiting_home > 0 {
+        parts.push(format!("{} sent, waiting for the home PC to add {}", photos(o.awaiting_home), if o.awaiting_home == 1 { "it" } else { "them" }));
+    }
+    if parts.is_empty() { "nothing waiting".to_string() } else { parts.join("; ") }
+}
+
 /// The LightCraft row: "Waiting for LightCraft: N photos" while photos wait to be added there (nothing when the feature is off
 /// or nothing waits), and a hint when the port has not answered.
 pub fn lightcraft_row(s: &AppStatus) -> Option<(String, Option<String>)> {
@@ -121,6 +148,7 @@ fn other_rows(ui: &mut Ui, s: &AppStatus, o: &OtherView, now: SystemTime) {
     if o.held_back > 0 {
         row(ui, "At the home PC", format!("{} sent, not merged there yet", if o.held_back == 1 { "1 edit".to_string() } else { format!("{} edits", o.held_back) }));
     }
+    row(ui, "Imported photos", queue_row(o));
     row(ui, "Photos received", format!("{} from the home PC since the app was set up", photos(o.received)));
     if let Some((text, hint)) = lightcraft_row(s) {
         row(ui, "LightCraft", text);
@@ -157,13 +185,8 @@ pub fn show(ui: &mut Ui, v: &StatusView) {
     if !s.configured {
         caution(ui, "Not set up yet: choose the photo folder and where to store the library in Settings.");
     }
-    let (state_text, color) = match (&s.activity, s.paused, &s.last_error) {
-        (Activity::Syncing { reason, .. }, _, _) => (format!("Syncing now ({reason})"), t.caution),
-        (_, _, Some(_)) => ("The last sync failed".to_string(), t.reject),
-        (_, true, _) => ("Paused".to_string(), t.caution),
-        _ if s.offline => ("Offline: will try again".to_string(), t.caution),
-        _ => ("Up to date".to_string(), t.ok),
-    };
+    let health = s.health();
+    let (state_text, color) = (health.text, tone_color(health.tone));
     state_line(ui, &state_text, color);
     theme::gap(ui);
     theme::panel(ui, None, |ui| {

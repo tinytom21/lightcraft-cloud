@@ -25,11 +25,13 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 pub use hash::{ContentHasher, content_hash_bytes, content_hash_file, content_hash_reader};
-pub use import::{DEFAULT_IMPORT_FREE_MARGIN, IMPORT_INCOMPLETE_LIMIT_HOURS, ImportNote, ImportSummary, ImportedPhoto, check_import_note};
+pub(crate) use import::{bad_component, create_new_file, entry_named, has_bytes, is_variant_of, rel_join, variant};
+pub use import::{DEFAULT_IMPORT_FREE_MARGIN, IMPORT_INCOMPLETE_LIMIT_HOURS, ImportNote, ImportSummary, ImportedPhoto, check_import_note, check_import_target};
 pub use inbox::{InboxName, InboxSummary, decide, notify_message, parse_inbox_name, phone_is_newer};
 pub use manifest::{Alternate, ManifestPhoto, build_manifest_photos, manifest_ids};
 pub use publish::{MirrorStats, StatusReport, SyncReport};
 pub use purge::{MAX_BACKUP_AGE_HOURS, PurgeReport};
+pub(crate) use scan::{is_photo, is_skipped_name, stem};
 pub use scan::{Entry, FileInfo, Plan, STABLE_SECS, Scan, diff_scan, find_sidecars, fnmatch, is_excluded, published_removals, scan_source};
 pub use state::{Meta, Row, RunLock, State, Uploaded, VersionStore};
 

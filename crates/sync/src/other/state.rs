@@ -37,6 +37,10 @@ pub(super) struct Rec {
     /// Deleted on this PC: not downloaded again (see the module docs).
     #[serde(skip_serializing_if = "is_false")]
     pub gone: bool,
+    /// A photo this PC imported itself: matched by its id with what the home PC published, wherever the home PC put it (the file here
+    /// stays where it is, whatever it is called there).
+    #[serde(skip_serializing_if = "is_false")]
+    pub imported: bool,
     /// Being placed in the photo folder (or LightCraft not told yet): a crash or a "no" from the hook leaves it so; the next pass finishes.
     #[serde(skip_serializing_if = "is_false")]
     pub placing: bool,

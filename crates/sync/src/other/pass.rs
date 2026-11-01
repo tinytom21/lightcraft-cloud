@@ -4,9 +4,10 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use super::import::{ImportQueue, OutEntry, OutResult};
 use super::state::{Rec, State};
 use super::{Other, OtherReport, OtherStatus, fetch_manifest, folder_of};
-use crate::home::{RunLock, content_hash_file, find_sidecars};
+use crate::home::{RunLock, content_hash_file, find_sidecars, stem};
 use crate::manifest::Item;
 use crate::util::{free_space, iso, link_no_replace, parse_iso, parse_stamp, sha256_hex, sidecar_version, sync_dir, temp_beside, utc_stamp, write_atomic};
 use crate::{Error, Result};
@@ -32,7 +33,7 @@ fn check_source(root: &Path) -> Result<()> {
 
 /// Whether a manifest path may be written below the photo folder: relative, `/`-separated, no `.` or `..`, nothing the file system treats
 /// specially. On Windows also the characters and names it refuses.
-fn safe_rel(rel: &str) -> bool {
+pub(super) fn safe_rel(rel: &str) -> bool {
     const RESERVED: [&str; 22] = [
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6",
         "LPT7", "LPT8", "LPT9",
@@ -48,7 +49,7 @@ fn safe_rel(rel: &str) -> bool {
         })
 }
 
-fn push_unique(v: &mut Vec<String>, line: String) {
+pub(super) fn push_unique(v: &mut Vec<String>, line: String) {
     if !v.contains(&line) {
         v.push(line);
     }
@@ -117,10 +118,50 @@ impl Other {
         Ok(rep)
     }
 
+    /// The sidecar beside the photo here, for a photo that is called something else at the home PC.
+    fn local_sidecar_rel(&self, rec: &Rec, item: &Item) -> Option<String> {
+        if let Some(s) = &rec.sidecar {
+            return Some(s.clone());
+        }
+        let folder = folder_of(&rec.path);
+        let name = basename(&rec.path);
+        let candidates = [format!("{}.xmp", stem(name)), format!("{name}.xmp")];
+        if let Some(c) = candidates.iter().find(|c| self.target(&join_rel(folder, c)).is_some_and(|p| p.is_file())) {
+            return Some(join_rel(folder, c));
+        }
+        let home_sidecar = basename(item.sidecar.as_deref()?);
+        let by_stem = home_sidecar.to_lowercase() == format!("{}.xmp", stem(basename(&item.path)).to_lowercase());
+        Some(join_rel(folder, &if by_stem { candidates[0].clone() } else { candidates[1].clone() }))
+    }
+
+    /// Whether the sidecar next to an imported photo that the home PC does not have yet differs from the one that was sent.
+    fn ledger_edit_waiting(&self, e: &OutEntry) -> bool {
+        let folder = e.folder.as_str();
+        let candidates = [e.sidecar.clone(), Some(format!("{}.xmp", stem(&e.name))), Some(format!("{}.xmp", e.name))];
+        let local = candidates
+            .into_iter()
+            .flatten()
+            .find_map(|c| self.target(&join_rel(folder, &c)).and_then(|p| std::fs::read(p).ok()));
+        match (local, &e.sidecar_sha) {
+            (Some(b), Some(sha)) => &sha256_hex(&b) != sha,
+            (Some(_), None) => true,
+            _ => false,
+        }
+    }
+
     /// The numbers for the status window, from the state and the local sidecars alone (no network).
     pub fn status(&self) -> Result<OtherStatus> {
         let st = State::open(&self.cfg.state_dir)?;
-        let mut s = OtherStatus { waiting_to_download: st.waiting, last_pass: st.last_pass.clone(), ..OtherStatus::default() };
+        let queue = ImportQueue::new(&self.cfg.state_dir);
+        let mut s = OtherStatus { waiting_to_download: st.waiting, last_pass: st.last_pass.clone(), queue: queue.status(), ..OtherStatus::default() };
+        for e in queue.list().iter().filter(|e| !st.photos.contains_key(&e.id) && !e.result.as_ref().is_some_and(OutResult::is_rejected)) {
+            if self.target(&e.path()).is_some_and(|p| p.is_file()) {
+                s.photos += 1;
+                if self.ledger_edit_waiting(e) {
+                    s.edits_waiting += 1;
+                }
+            }
+        }
         for r in st.photos.values().filter(|r| !r.gone) {
             s.photos += 1;
             let Some(bytes) = r.sidecar.as_deref().and_then(|rel| self.target(rel)).and_then(|p| std::fs::read(p).ok()) else { continue };
@@ -133,7 +174,7 @@ impl Other {
     }
 
     /// The absolute path of a manifest path below the photo folder, if it is one that may be written.
-    fn target(&self, rel: &str) -> Option<PathBuf> {
+    pub(super) fn target(&self, rel: &str) -> Option<PathBuf> {
         if !safe_rel(rel) {
             return None;
         }
@@ -142,7 +183,7 @@ impl Other {
         Some(p)
     }
 
-    fn retry<T>(&self, mut f: impl FnMut() -> Result<T>) -> Result<T> {
+    pub(super) fn retry<T>(&self, mut f: impl FnMut() -> Result<T>) -> Result<T> {
         let mut last = None;
         for attempt in 0..3 {
             match f() {
@@ -158,7 +199,7 @@ impl Other {
         Err(last.unwrap_or_else(|| Error::Remote("no answer".into())))
     }
 
-    fn get(&self, remote_path: &str, local: &Path) -> Result<()> {
+    pub(super) fn get(&self, remote_path: &str, local: &Path) -> Result<()> {
         self.retry(|| self.remote.get(remote_path, local))
     }
 
@@ -188,10 +229,22 @@ impl Other {
         let parsed = self.retry(|| fetch_manifest(&*self.remote, &tmp))?;
         self.claim_device(st)?;
         let chosen: BTreeSet<&str> = self.cfg.folders.iter().map(String::as_str).collect();
-        let items: Vec<&Item> = parsed.items.iter().filter(|i| chosen.contains(folder_of(&i.path))).collect();
-        let by_id: HashMap<&str, &Item> = items.iter().map(|i| (i.id.as_str(), *i)).collect();
         // a folder that is no longer chosen is no longer looked after: its photos stay, and so is forgotten what was remembered of them
         st.photos.retain(|_, r| chosen.contains(folder_of(&r.path)));
+        // the photos this PC imported itself and sent: matched by id, wherever the home PC put them (the file here stays where it is)
+        let ledger: HashMap<String, OutEntry> = ImportQueue::new(&self.cfg.state_dir)
+            .list()
+            .into_iter()
+            .filter(|e| !e.result.as_ref().is_some_and(OutResult::is_rejected))
+            .filter(|e| self.target(&e.path()).is_some_and(|p| p.is_file()))
+            .map(|e| (e.id.clone(), e))
+            .collect();
+        let items: Vec<&Item> = parsed
+            .items
+            .iter()
+            .filter(|i| chosen.contains(folder_of(&i.path)) || ledger.contains_key(&i.id) || st.photos.get(&i.id).is_some_and(|r| r.imported))
+            .collect();
+        let by_id: HashMap<&str, &Item> = items.iter().map(|i| (i.id.as_str(), *i)).collect();
         self.remove_vanished(st, &by_id, rep);
 
         let mut siblings: Siblings = HashMap::new();
@@ -202,6 +255,17 @@ impl Other {
         let mut todo: Vec<&Item> = Vec::new();
         for item in &items {
             let id = item.id.as_str();
+            if !st.photos.contains_key(id)
+                && let Some(e) = ledger.get(id)
+            {
+                // The home PC has the photo this PC imported. The file here stays where it is. What the cloud library has of the sidecar is
+                // what was sent (`synced`): a sidecar edited since is an edit, sent now with the home PC's version as its base.
+                st.photos.insert(
+                    id.to_string(),
+                    Rec { path: e.path(), sidecar: e.sidecar_path(), synced: e.sidecar_sha.clone(), base: item.version.clone(), imported: true, ..Rec::default() },
+                );
+                self.logln(format!("{} is in the cloud library now (at {}); it stays where it is on this PC", e.path(), item.path));
+            }
             let adopted = match st.photos.get(id) {
                 None => match self.classify_new(item, rep) {
                     New::Download => {
@@ -242,9 +306,14 @@ impl Other {
                 continue;
             }
             let folder = folder_of(&rec.path).to_string();
-            let sc_rel = match &item.sidecar {
-                Some(s) => Some(join_rel(&folder, basename(s))),
-                None => self.existing_sidecar(&folder, &rec.path, &siblings, &mut sidecars),
+            let sc_rel = if rec.path != item.path {
+                // (named differently here and at the home PC: the sidecar here is the one beside the file here)
+                self.local_sidecar_rel(rec, item)
+            } else {
+                match &item.sidecar {
+                    Some(s) => Some(join_rel(&folder, basename(s))),
+                    None => self.existing_sidecar(&folder, &rec.path, &siblings, &mut sidecars),
+                }
             };
             if adopted {
                 self.adopt_sidecar(rec, item, sc_rel.as_deref());
@@ -260,6 +329,13 @@ impl Other {
                 Err(e) => push_unique(&mut rep.problems, format!("{}: {e}", item.path)),
             }
         }
+        // edits to imported photos the home PC does not have yet wait here (they are not sent early)
+        for e in ledger.values().filter(|e| !st.photos.contains_key(&e.id)) {
+            if self.ledger_edit_waiting(e) {
+                rep.edits_waiting += 1;
+            }
+        }
+        rep.queue = ImportQueue::new(&self.cfg.state_dir).status();
         let download = self.download(st, todo, rep);
         rep.photos = items.iter().filter(|i| st.photos.get(&i.id).is_some_and(|r| !r.gone)).count();
         rep.waiting_to_download = items.iter().filter(|i| !st.photos.contains_key(&i.id)).count();
@@ -268,7 +344,7 @@ impl Other {
     }
 
     /// LightCraft is told (through the app's hook) that a photo is in the folder.
-    fn announce(&self, abs: &Path) -> std::result::Result<(), String> {
+    pub(super) fn announce(&self, abs: &Path) -> std::result::Result<(), String> {
         match &self.adopted_hook {
             Some(h) => h(abs),
             None => Ok(()),
@@ -797,7 +873,7 @@ fn remove_stale_parts(dir: &Path) {
     }
 }
 
-fn human(n: u64) -> String {
+pub(super) fn human(n: u64) -> String {
     if n < 1024 {
         return format!("{n} B");
     }

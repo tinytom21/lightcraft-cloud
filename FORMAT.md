@@ -169,6 +169,15 @@ reads another device's inbox.
   home PC changes it. It comes back when the user un-chooses the photo's folder and chooses it again (un-choosing forgets what the PC
   remembers about the folder's photos and leaves the files where they are; choosing again downloads what is missing). When the home
   PC deletes the photo too, the memory goes with it.
+* **Photos imported on this PC.** The user can add photos to the library from this PC (a card, any folder). They are copied into
+  `<its photo folder>/<destination>/` (never overwriting: a name that is taken gets `-2`, `-3`, ..., the sidecar named to match; the
+  bytes are hashed again after they are written), and sent to the home PC as an import (see "Imports": the files first, the commit
+  note last, a file already on the remote at the right size is not sent again). The sidecar sent is the one as it was when the photo
+  was imported; a change to it afterwards is an edit like any other and goes through the inbox once the manifest lists the photo,
+  with the manifest's `sidecarVersion` as its `base`. Once the home PC has answered (`imports-done/<day>/<device>/<id>.result.json`:
+  `added` or `duplicate`) the file stays where it is on this PC, **whatever path the home PC gave it**: from then on this PC matches
+  the manifest's photo to its own file by `id`, downloads no second copy and does not treat the file as deleted. A `rejected` photo
+  stays on this PC and is told to the user once.
 * **Disk space.** Before a download the PC checks that the file's size plus a safety margin (256 MiB by default) is free, and stops
   with a clear message when it is not.
 

@@ -56,6 +56,10 @@ pub enum Activity {
         since: String,
         reason: String,
     },
+    /// Photos imported on this PC are being sent to the home PC (a short, bounded job).
+    Uploading {
+        since: String,
+    },
 }
 
 /// A line of the Status window's lists.
@@ -93,6 +97,12 @@ pub struct OtherView {
     pub held_back: usize,
     /// Photos this PC received from the home PC since the app was first started.
     pub received: usize,
+    /// Photos imported on this PC that are not at the home PC yet (not sent).
+    pub uploads_waiting: usize,
+    /// Their size in bytes.
+    pub uploads_bytes: u64,
+    /// Photos sent whose answer from the home PC has not been seen yet.
+    pub awaiting_home: usize,
 }
 
 /// Everything the windows and the tray show.
@@ -122,6 +132,11 @@ pub struct AppStatus {
     pub lightcraft_waiting: usize,
     /// Whether LightCraft answered at the last try; None: it was not asked (nothing was waiting) or not yet.
     pub lightcraft_reachable: Option<bool>,
+    /// Photos LightCraft would not add after several tries (they are in the photo folder; the user adds them).
+    pub lightcraft_given_up: usize,
+    /// What is wrong right now, one line each: the problems the last sync found. Unlike the Problems list (a history), it clears when
+    /// a sync finds nothing wrong, and it is what keeps the state line from saying "Up to date".
+    pub active_problems: Vec<String>,
     /// The other-PC role's numbers (None on the home PC).
     pub other: Option<OtherView>,
     /// The cloud library could not be reached at the last try (calm: tried again later).
@@ -166,34 +181,168 @@ impl AppStatus {
     pub fn tray_state(&self) -> TrayState {
         TrayState::of(self)
     }
+
+    /// Everything that is waiting, in the words the state line uses (empty: nothing is).
+    pub fn waiting_items(&self) -> Vec<String> {
+        let photos = |n: usize| if n == 1 { "1 photo".to_string() } else { format!("{n} photos") };
+        let edits = |n: usize| if n == 1 { "1 edit".to_string() } else { format!("{n} edits") };
+        let mut v = Vec::new();
+        if let Some(o) = &self.other {
+            if o.waiting_to_download > 0 {
+                v.push(format!("{} waiting to download", photos(o.waiting_to_download)));
+            }
+            if o.uploads_waiting > 0 {
+                v.push(format!("{} waiting to upload", photos(o.uploads_waiting)));
+            }
+            if o.awaiting_home > 0 {
+                v.push(format!("{} sent, waiting for the home PC", photos(o.awaiting_home)));
+            }
+            if o.edits_waiting > 0 {
+                v.push(format!("{} waiting to send", edits(o.edits_waiting)));
+            }
+            if o.held_back > 0 {
+                v.push(format!("{} waiting to be merged at the home PC", edits(o.held_back)));
+            }
+        } else {
+            if let Some(n) = self.inbox_pending.filter(|n| *n > 0) {
+                v.push(format!("{} waiting", if n == 1 { "1 phone edit".to_string() } else { format!("{n} phone edits") }));
+            }
+            if let Some(n) = self.imports_pending.filter(|n| *n > 0) {
+                v.push(format!("{} from other PCs waiting to be added", photos(n)));
+            }
+        }
+        if self.lightcraft_port != 0 && self.lightcraft_waiting > 0 {
+            v.push(format!("{} waiting for LightCraft", photos(self.lightcraft_waiting)));
+        }
+        v
+    }
+
+    /// Everything that is wrong right now.
+    pub fn problem_count(&self) -> usize {
+        self.active_problems.len() + usize::from(self.lightcraft_given_up > 0 && self.lightcraft_port != 0)
+    }
+
+    /// What the state line says and how worried to be. **Only a truly settled state is [`Tone::Ok`] ("Up to date")**: not while a sync
+    /// or an upload runs, anything waits (photos to download, to upload, sent and not answered, edits, phone edits, imports, photos for
+    /// LightCraft), a problem is active, the cloud library cannot be reached, it is paused or not set up, or nothing has synced yet.
+    pub fn health(&self) -> Health {
+        let h = |kind, tone, text: String| Health { kind, tone, text };
+        match &self.activity {
+            Activity::Syncing { reason, .. } => return h(HealthKind::Syncing, Tone::Busy, format!("Syncing now ({reason})")),
+            Activity::Uploading { .. } => return h(HealthKind::Uploading, Tone::Busy, "Sending photos to the home PC".to_string()),
+            Activity::Idle => {}
+        }
+        if self.last_error.is_some() {
+            return h(HealthKind::Failed, Tone::Bad, "The last sync failed".to_string());
+        }
+        if !self.configured {
+            return h(HealthKind::NotSetUp, Tone::Wait, "Waiting for setup".to_string());
+        }
+        if self.paused {
+            return h(HealthKind::Paused, Tone::Paused, "Paused".to_string());
+        }
+        if self.offline {
+            return h(HealthKind::Offline, Tone::Offline, "Offline: will try again".to_string());
+        }
+        let problems = self.problem_count();
+        if problems > 0 {
+            let text = if problems == 1 { "1 problem needs attention".to_string() } else { format!("{problems} problems need attention") };
+            return h(HealthKind::Problem, Tone::Bad, text);
+        }
+        let waiting = self.waiting_items();
+        if !waiting.is_empty() {
+            return h(HealthKind::Waiting, Tone::Wait, waiting.join("; "));
+        }
+        if self.last_sync.is_none() {
+            return h(HealthKind::NotSynced, Tone::Wait, "Waiting for the first sync".to_string());
+        }
+        h(HealthKind::UpToDate, Tone::Ok, "Up to date".to_string())
+    }
 }
 
-/// The tray icon's look.
+/// How the state line is coloured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    /// Settled: green.
+    Ok,
+    /// Working: blue.
+    Busy,
+    /// Waiting for something: amber.
+    Wait,
+    /// The cloud library cannot be reached: calm light grey (the Problems list has the one amber line).
+    Offline,
+    /// Paused by the user: grey.
+    Paused,
+    /// Needs the user, or failed: red.
+    Bad,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HealthKind {
+    Syncing,
+    Uploading,
+    Failed,
+    NotSetUp,
+    Paused,
+    Offline,
+    Problem,
+    Waiting,
+    NotSynced,
+    UpToDate,
+}
+
+/// The state line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Health {
+    pub kind: HealthKind,
+    pub tone: Tone,
+    pub text: String,
+}
+
+/// The tray icon's look. Some states share an icon (the picture is one of five) and differ in the tooltip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayState {
     Idle,
     Syncing,
-    /// Phone edits wait in the inbox.
+    /// Photos are being sent to the home PC (the syncing icon).
+    Uploading,
+    /// Phone edits wait in the inbox (home PC).
     PhoneEdits,
+    /// Something waits, or the cloud library cannot be reached (the amber icon).
+    Waiting,
     Paused,
+    /// A problem needs the user (the red icon).
+    Problem,
     Error,
 }
 
 impl TrayState {
-    pub const ALL: [TrayState; 5] = [TrayState::Idle, TrayState::Syncing, TrayState::PhoneEdits, TrayState::Paused, TrayState::Error];
+    pub const ALL: [TrayState; 8] =
+        [TrayState::Idle, TrayState::Syncing, TrayState::Uploading, TrayState::PhoneEdits, TrayState::Waiting, TrayState::Paused, TrayState::Problem, TrayState::Error];
 
-    /// Syncing beats everything; then an error, then Pause, then waiting edits.
+    /// The icon this state is drawn with: one of the five pictures.
+    pub fn icon(self) -> TrayState {
+        match self {
+            TrayState::Uploading => TrayState::Syncing,
+            TrayState::Waiting => TrayState::PhoneEdits,
+            TrayState::Problem => TrayState::Error,
+            s => s,
+        }
+    }
+
+    /// Syncing beats everything; then an upload, an error, Pause, a problem, and whatever waits. Idle only when truly settled.
     pub fn of(s: &AppStatus) -> TrayState {
-        if matches!(s.activity, Activity::Syncing { .. }) {
-            TrayState::Syncing
-        } else if s.last_error.is_some() {
-            TrayState::Error
-        } else if s.paused {
-            TrayState::Paused
-        } else if s.inbox_pending.is_some_and(|n| n > 0) {
-            TrayState::PhoneEdits
-        } else {
-            TrayState::Idle
+        let hl = s.health();
+        match hl.kind {
+            HealthKind::Syncing => TrayState::Syncing,
+            HealthKind::Uploading => TrayState::Uploading,
+            HealthKind::Failed => TrayState::Error,
+            HealthKind::Paused => TrayState::Paused,
+            HealthKind::Problem => TrayState::Problem,
+            HealthKind::Offline | HealthKind::NotSetUp | HealthKind::NotSynced => TrayState::Waiting,
+            HealthKind::Waiting if s.other.is_none() && s.waiting_items().len() == 1 && s.inbox_pending.is_some_and(|n| n > 0) => TrayState::PhoneEdits,
+            HealthKind::Waiting => TrayState::Waiting,
+            HealthKind::UpToDate => TrayState::Idle,
         }
     }
 
@@ -201,8 +350,11 @@ impl TrayState {
         match self {
             TrayState::Idle => "LightCraft Cloud: up to date",
             TrayState::Syncing => "LightCraft Cloud: syncing",
+            TrayState::Uploading => "LightCraft Cloud: sending photos to the home PC",
             TrayState::PhoneEdits => "LightCraft Cloud: phone edits are waiting",
+            TrayState::Waiting => "LightCraft Cloud: something is waiting (see Status)",
             TrayState::Paused => "LightCraft Cloud: paused",
+            TrayState::Problem => "LightCraft Cloud: a problem needs attention (see Status)",
             TrayState::Error => "LightCraft Cloud: the last sync failed",
         }
     }
@@ -277,9 +429,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    fn settled() -> AppStatus {
+        AppStatus {
+            configured: true,
+            last_sync: Some(LastSync { when: "2026-11-01T11:55:00Z".into(), ok: true, result: "ok".into(), photos: 10, applied: 0, merged: 0, kept: 0 }),
+            ..AppStatus::default()
+        }
+    }
+
+    fn other_settled() -> AppStatus {
+        AppStatus { other: Some(OtherView { photos: 10, ..OtherView::default() }), ..settled() }
+    }
+
     #[test]
     fn the_tray_state_follows_a_priority() {
-        let mut s = AppStatus { configured: true, ..AppStatus::default() };
+        let mut s = settled();
         assert_eq!(s.tray_state(), TrayState::Idle);
         s.inbox_pending = Some(2);
         assert_eq!(s.tray_state(), TrayState::PhoneEdits);
@@ -287,6 +451,8 @@ mod tests {
         assert_eq!(s.tray_state(), TrayState::Paused);
         s.last_error = Some("boom".into());
         assert_eq!(s.tray_state(), TrayState::Error);
+        s.activity = Activity::Uploading { since: "t".into() };
+        assert_eq!(s.tray_state(), TrayState::Uploading);
         s.activity = Activity::Syncing { since: "t".into(), reason: "x".into() };
         assert_eq!(s.tray_state(), TrayState::Syncing);
         s.inbox_pending = Some(0);
@@ -294,7 +460,93 @@ mod tests {
         s.last_error = None;
         s.paused = false;
         assert_eq!(s.tray_state(), TrayState::Idle);
-        assert_eq!(TrayState::ALL.iter().map(|t| t.tooltip()).collect::<std::collections::HashSet<_>>().len(), 5);
+        assert_eq!(TrayState::ALL.iter().map(|t| t.tooltip()).collect::<std::collections::HashSet<_>>().len(), TrayState::ALL.len());
+        // the new states use the pictures that exist
+        assert_eq!((TrayState::Uploading.icon(), TrayState::Waiting.icon(), TrayState::Problem.icon()), (TrayState::Syncing, TrayState::PhoneEdits, TrayState::Error));
+    }
+
+    #[test]
+    fn only_a_truly_settled_state_reads_up_to_date_in_green() {
+        let ok = settled().health();
+        assert_eq!((ok.kind, ok.tone, ok.text.as_str()), (HealthKind::UpToDate, Tone::Ok, "Up to date"));
+        assert_eq!(other_settled().health().tone, Tone::Ok);
+        // every way of not being settled, one by one, on both roles
+        let waiting: Vec<(&str, Box<dyn Fn(&mut AppStatus)>, &str)> = vec![
+            ("download", Box::new(|s| s.other.as_mut().unwrap().waiting_to_download = 12), "12 photos waiting to download"),
+            ("upload", Box::new(|s| s.other.as_mut().unwrap().uploads_waiting = 12), "12 photos waiting to upload"),
+            ("one upload", Box::new(|s| s.other.as_mut().unwrap().uploads_waiting = 1), "1 photo waiting to upload"),
+            ("home answer", Box::new(|s| s.other.as_mut().unwrap().awaiting_home = 3), "3 photos sent, waiting for the home PC"),
+            ("edits", Box::new(|s| s.other.as_mut().unwrap().edits_waiting = 2), "2 edits waiting to send"),
+            ("merge", Box::new(|s| s.other.as_mut().unwrap().held_back = 1), "1 edit waiting to be merged at the home PC"),
+            ("lightcraft", Box::new(|s| { s.lightcraft_port = 7980; s.lightcraft_waiting = 4; }), "4 photos waiting for LightCraft"),
+        ];
+        for (what, change, text) in &waiting {
+            let mut s = other_settled();
+            change(&mut s);
+            let h = s.health();
+            assert_eq!((h.kind, h.tone, h.text.as_str()), (HealthKind::Waiting, Tone::Wait, *text), "{what}");
+            assert_eq!(s.tray_state(), TrayState::Waiting, "{what}");
+        }
+        // the home PC
+        let home: Vec<(&str, Box<dyn Fn(&mut AppStatus)>, &str)> = vec![
+            ("phone edits", Box::new(|s| s.inbox_pending = Some(2)), "2 phone edits waiting"),
+            ("an import stuck waiting", Box::new(|s| s.imports_pending = Some(1)), "1 photo from other PCs waiting to be added"),
+            ("photos for lightcraft", Box::new(|s| { s.lightcraft_port = 7980; s.lightcraft_waiting = 1; }), "1 photo waiting for LightCraft"),
+        ];
+        for (what, change, text) in &home {
+            let mut s = settled();
+            change(&mut s);
+            let h = s.health();
+            assert_eq!((h.kind, h.tone, h.text.as_str()), (HealthKind::Waiting, Tone::Wait, *text), "{what}");
+        }
+        // LightCraft switched off (port 0): nothing is waiting for it
+        let mut s = settled();
+        s.lightcraft_waiting = 5;
+        assert_eq!(s.health().kind, HealthKind::UpToDate);
+        // several things at once
+        let mut s = other_settled();
+        s.other.as_mut().unwrap().waiting_to_download = 2;
+        s.other.as_mut().unwrap().uploads_waiting = 1;
+        assert_eq!(s.health().text, "2 photos waiting to download; 1 photo waiting to upload");
+    }
+
+    #[test]
+    fn a_problem_offline_a_failure_a_pause_and_work_in_progress_each_have_their_own_state() {
+        let mut s = other_settled();
+        s.active_problems = vec!["x.jpg: no".into()];
+        let h = s.health();
+        assert_eq!((h.kind, h.tone, h.text.as_str()), (HealthKind::Problem, Tone::Bad, "1 problem needs attention"));
+        assert_eq!(s.tray_state(), TrayState::Problem);
+        s.active_problems.push("y".into());
+        assert_eq!(s.health().text, "2 problems need attention");
+        let mut s = settled();
+        s.lightcraft_port = 7980;
+        s.lightcraft_given_up = 2;
+        assert_eq!(s.health().kind, HealthKind::Problem, "photos LightCraft would not add");
+        s.lightcraft_port = 0;
+        assert_eq!(s.health().kind, HealthKind::UpToDate);
+        // the problem outranks a waiting item, offline outranks a problem, a failure outranks both, work in progress outranks all
+        let mut s = other_settled();
+        s.other.as_mut().unwrap().uploads_waiting = 3;
+        s.active_problems = vec!["p".into()];
+        assert_eq!(s.health().kind, HealthKind::Problem);
+        s.offline = true;
+        let h = s.health();
+        assert_eq!((h.kind, h.tone, h.text.as_str()), (HealthKind::Offline, Tone::Offline, "Offline: will try again"));
+        assert_eq!(s.tray_state(), TrayState::Waiting);
+        s.last_error = Some("boom".into());
+        assert_eq!((s.health().kind, s.health().tone), (HealthKind::Failed, Tone::Bad));
+        s.activity = Activity::Uploading { since: "t".into() };
+        assert_eq!((s.health().kind, s.health().tone), (HealthKind::Uploading, Tone::Busy));
+        s.activity = Activity::Syncing { since: "t".into(), reason: "timer".into() };
+        assert_eq!((s.health().kind, s.health().text.as_str()), (HealthKind::Syncing, "Syncing now (timer)"));
+        let mut s = other_settled();
+        s.paused = true;
+        assert_eq!((s.health().kind, s.health().tone), (HealthKind::Paused, Tone::Paused));
+        // not set up, and nothing synced yet, are not "up to date" either
+        assert_eq!(AppStatus::default().health().kind, HealthKind::NotSetUp);
+        let s = AppStatus { configured: true, ..AppStatus::default() };
+        assert_eq!((s.health().kind, s.health().tone), (HealthKind::NotSynced, Tone::Wait));
     }
 
     #[test]

@@ -35,9 +35,15 @@ const RESTART_AFTER: Duration = Duration::from_secs(5);
 pub struct RfdPicker {
     rx: Option<Receiver<Option<PathBuf>>>,
     since: Option<Instant>,
+    /// The dialog's title; empty: "Choose the photo folder".
+    title: &'static str,
 }
 
 impl RfdPicker {
+    pub fn with_title(title: &'static str) -> RfdPicker {
+        RfdPicker { title, ..RfdPicker::default() }
+    }
+
     /// A sender for a new dialog, unless one was started less than `wait` ago and is still open; an older one is dropped.
     fn begin(&mut self, now: Instant, wait: Duration) -> Option<Sender<Option<PathBuf>>> {
         if self.rx.is_some() && self.since.is_some_and(|t| now.saturating_duration_since(t) < wait) {
@@ -55,7 +61,7 @@ impl FolderPicker for RfdPicker {
         let Some(tx) = self.begin(Instant::now(), RESTART_AFTER) else { return };
         let from = crate::config::expand(from).ok().filter(|p| p.is_dir());
         // Built here, where the window handle is at hand; rfd's `FileDialog` is `Send` and only carries the raw window id.
-        let mut d = rfd::FileDialog::new().set_title("Choose the photo folder");
+        let mut d = rfd::FileDialog::new().set_title(if self.title.is_empty() { "Choose the photo folder" } else { self.title });
         if let Some(p) = parent {
             d = d.set_parent(p);
         }

@@ -63,7 +63,9 @@ fn the_status_panel_shows_the_last_sync_the_inbox_and_the_next_run() {
     h.get_by_label("in 12 min");
     h.get_by_label_contains("Newest wins: the PC's newer sidecar was kept");
     h.get_by_label_contains("remote: quota exceeded");
-    h.get_by_label("Up to date");
+    // (phone edits and imports are waiting: not "Up to date")
+    h.get_by_label("2 phone edits waiting; 3 photos from other PCs waiting to be added");
+    assert!(h.query_by_label("Up to date").is_none());
     assert!(h.query_by_label_contains("not running").is_none());
 }
 
@@ -409,7 +411,7 @@ fn saved_settings_of_another_pc_show_their_folders_without_a_click() {
 fn other_status() -> AppStatus {
     AppStatus {
         configured: true,
-        other: Some(OtherView { photos: 321, waiting_to_download: 12, edits_waiting: 2, held_back: 1, received: 400 }),
+        other: Some(OtherView { photos: 321, waiting_to_download: 12, edits_waiting: 2, held_back: 1, received: 400, ..OtherView::default() }),
         next_sync: Some("2026-11-01T12:12:00Z".into()),
         last_sync: Some(LastSync { when: "2026-11-01T11:55:00Z".into(), ok: true, result: "ok".into(), photos: 321, applied: 0, merged: 0, kept: 0 }),
         ..AppStatus::default()
@@ -428,7 +430,8 @@ fn another_pcs_status_shows_what_it_holds_and_what_waits_and_none_of_the_home_ro
     h.get_by_label("2 edits");
     h.get_by_label_contains("1 edit sent, not merged there yet");
     h.get_by_label("in 12 min");
-    h.get_by_label("Up to date");
+    h.get_by_label("12 photos waiting to download; 2 edits waiting to send; 1 edit waiting to be merged at the home PC");
+    assert!(h.query_by_label("Up to date").is_none(), "something is waiting");
     for gone in ["Photos published", "Phone edits applied", "Inbox", "Imports", "Newest wins"] {
         assert!(h.query_by_label(gone).is_none(), "{gone}");
     }

@@ -232,6 +232,7 @@ fn run_other(a: Args, cfg: Config) -> std::result::Result<(), Failure> {
             println!("on this PC: {} photos", s.photos);
             println!("waiting to download: {}", s.waiting_to_download);
             println!("edits waiting to send: {}", s.edits_waiting);
+            println!("imported photos: {} waiting to upload, {} sent and waiting for the home PC", s.queue.to_upload, s.queue.awaiting_home);
             Ok(())
         }
         "inbox-check" | "purge-history" => Err(Failure::Refused(format!("{} is for the home PC; this is another PC", a.cmd))),

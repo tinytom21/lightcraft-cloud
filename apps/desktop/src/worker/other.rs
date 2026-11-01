@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use lightcraft_cloud_client::Error;
 use lightcraft_cloud_client::home::utc_iso;
-use lightcraft_cloud_client::other::{Other, OtherReport};
+use lightcraft_cloud_client::other::{Other, OtherReport, QueueStatus, UploadBudget};
 
 use super::{LinkFactory, RemoteFactory, flush_pending, to_job_error};
 use crate::appstate::OtherView;
@@ -15,7 +15,7 @@ use crate::clock::Clock;
 use crate::config::Config;
 use crate::lightcraft::TcpLink;
 use crate::pending::PendingList;
-use crate::service::{BridgeReport, JobError, PurgeOutcome, SyncOutcome, Worker, WorkerInfo};
+use crate::service::{BridgeReport, JobError, PurgeOutcome, QueueView, SyncOutcome, UploadOutcome, Worker, WorkerInfo};
 
 pub struct OtherWorker {
     config_path: PathBuf,
@@ -110,9 +110,16 @@ pub(crate) fn outcome_of(r: &OtherReport) -> SyncOutcome {
             edits_waiting: r.edits_waiting,
             held_back: r.held_back,
             received: 0,
+            uploads_waiting: r.queue.to_upload,
+            uploads_bytes: r.queue.bytes,
+            awaiting_home: r.queue.awaiting_home,
         }),
         ..SyncOutcome::default()
     }
+}
+
+fn view_of(q: &QueueStatus) -> QueueView {
+    QueueView { to_upload: q.to_upload, bytes: q.bytes, awaiting_home: q.awaiting_home }
 }
 
 impl Worker for OtherWorker {
@@ -160,6 +167,28 @@ impl Worker for OtherWorker {
 
     fn lightcraft_flush(&mut self, retry_given_up: bool) -> BridgeReport {
         flush_pending(self.cfg.as_ref(), &self.link, retry_given_up)
+    }
+
+    fn queue_view(&mut self) -> Option<QueueView> {
+        let cfg = self.cfg.as_ref()?;
+        Some(view_of(&lightcraft_cloud_client::other::ImportQueue::new(&cfg.state_dir).status()))
+    }
+
+    fn upload_step(&mut self) -> Result<UploadOutcome, JobError> {
+        let cfg = self.the_config()?;
+        if cfg.remote_spec().is_err() || cfg.file.source.trim().is_empty() {
+            return Ok(UploadOutcome::default());
+        }
+        let other = self.other(cfg)?;
+        let r = other.upload_step(&UploadBudget::default()).map_err(pass_error)?;
+        Ok(UploadOutcome {
+            committed: r.committed,
+            results: r.results.len(),
+            problems: r.problems,
+            more: r.more,
+            queue: view_of(&r.queue),
+            network: r.files_sent > 0 || r.committed > 0 || !r.results.is_empty(),
+        })
     }
 
     fn is_other(&self) -> bool {

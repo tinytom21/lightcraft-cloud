@@ -145,6 +145,20 @@ impl File {
     }
 }
 
+/// Add `folder` to the folders this PC keeps (role `other`) in the config file at `path`; the app notices the change. `Ok(false)`: it was
+/// there already. Everything else in the file stays as it is.
+pub fn add_chosen_folder(path: &Path, folder: &str) -> Result<bool, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("config {}: {e}", path.display()))?;
+    let mut file: File = toml::from_str(&text).map_err(|e| format!("config {}: {e}", path.display()))?;
+    let wanted = folder.trim().trim_matches('/');
+    if wanted.is_empty() || file.folders.iter().any(|c| c.trim().trim_matches('/') == wanted) {
+        return Ok(false);
+    }
+    file.folders.push(wanted.to_string());
+    file.save(path)?;
+    Ok(true)
+}
+
 /// The user's home folder: `$HOME`, and on Windows (which has none) `%USERPROFILE%`.
 pub fn home_dir() -> Result<PathBuf, String> {
     let var = |k: &str| std::env::var_os(k).map(PathBuf::from).filter(|h| !h.as_os_str().is_empty());
@@ -285,6 +299,7 @@ impl Config {
         let mut c = OtherConfig::new(&self.source, &self.state_dir, device, self.file.folders.clone());
         c.remote_label = label;
         c.max_delete = self.file.max_delete;
+        c.exclude = self.file.exclude.clone();
         Ok(c)
     }
 
@@ -377,6 +392,23 @@ mod tests {
         }
         assert_eq!(device_from_host(&"x".repeat(100)).len(), 64);
         assert!(valid_device(&default_device()));
+    }
+
+    #[test]
+    fn the_import_destination_becomes_a_chosen_folder_without_touching_the_rest_of_the_config() {
+        let d = std::env::temp_dir().join(format!("lc-desktop-chosen-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("c.toml");
+        std::fs::write(&f, "role = \"other\"\nsource = \"/tmp/s\"\nremote = \"/tmp/r\"\nfolders = [\"A\"]\nsomething_else = 7\n").unwrap();
+        assert_eq!(add_chosen_folder(&f, "261101 - Lisbon/"), Ok(true));
+        assert_eq!(add_chosen_folder(&f, "261101 - Lisbon"), Ok(false), "already chosen");
+        assert_eq!(add_chosen_folder(&f, "A"), Ok(false));
+        let t = std::fs::read_to_string(&f).unwrap();
+        let c = Config::load(Some(&f)).unwrap();
+        assert_eq!(c.file.folders, ["A", "261101 - Lisbon"]);
+        assert!(t.contains("something_else = 7") && t.contains("role = \"other\""), "{t}");
+        assert!(add_chosen_folder(&d.join("nope.toml"), "X").is_err());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

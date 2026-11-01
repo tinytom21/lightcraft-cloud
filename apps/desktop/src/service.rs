@@ -84,12 +84,41 @@ pub struct BridgeReport {
     pub delivered: usize,
     /// Photos still waiting for LightCraft.
     pub waiting: usize,
+    /// Photos LightCraft would not add after several tries.
+    pub given_up: usize,
     /// Whether the port answered as LightCraft; None when it was not asked.
     pub reachable: Option<bool>,
     /// Lines for Problems.
     pub problems: Vec<String>,
     /// Lines for the log.
     pub log: Vec<String>,
+}
+
+/// The photos imported on this PC and their way to the home PC, from the state folder alone.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct QueueView {
+    /// Photos not sent yet, and their size.
+    pub to_upload: usize,
+    pub bytes: u64,
+    /// Photos sent whose answer is not seen yet.
+    pub awaiting_home: usize,
+}
+
+/// What one bounded upload job did.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UploadOutcome {
+    /// Photos whose commit note was written.
+    pub committed: usize,
+    /// Answers from the home PC seen.
+    pub results: usize,
+    /// Lines for Problems (a photo the home PC rejected, one that vanished before it was sent).
+    pub problems: Vec<String>,
+    /// The job's share of work ran out with photos left: another job follows at once.
+    pub more: bool,
+    /// The queue after the job.
+    pub queue: QueueView,
+    /// The cloud library answered (so it is not offline).
+    pub network: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -125,6 +154,15 @@ pub trait Worker {
     fn lightcraft_flush(&mut self, _retry_given_up: bool) -> BridgeReport {
         BridgeReport::default()
     }
+    /// The upload queue, from the state folder alone (no network); None: this worker has none.
+    fn queue_view(&mut self) -> Option<QueueView> {
+        None
+    }
+    /// A bounded share of the upload queue: look for the home PC's answers, send some photos. Never holds a pass up: the work per
+    /// call is limited, and the next call is a job of its own.
+    fn upload_step(&mut self) -> Result<UploadOutcome, JobError> {
+        Ok(UploadOutcome::default())
+    }
     /// Whether this worker is another PC's (the status then shows that role's rows).
     fn is_other(&self) -> bool {
         false
@@ -144,6 +182,8 @@ pub enum Command {
     FolderChanged,
     /// The config file changed.
     ConfigChanged,
+    /// The upload queue changed (the import window queued photos).
+    UploadsChanged,
     Quit,
 }
 
@@ -190,6 +230,7 @@ impl<W: Worker> Service<W> {
         }
         let mut s = Service { worker, sched, clock, notifier, state_dir, persisted, status, info, sink, log, quit: false, announced: None, imports_stuck: 0, bridge_first: true };
         s.publish();
+        s.refresh_queue(true);
         s
     }
 
@@ -259,9 +300,30 @@ impl<W: Worker> Service<W> {
                     self.status.push_error(&self.iso(now), format!("settings: {e}"));
                 }
             },
+            Command::UploadsChanged => self.refresh_queue(false),
             Command::Quit => self.quit = true,
         }
         self.publish();
+    }
+
+    /// Read the upload queue and schedule (or drop) the upload job to match: photos to send are due at once (a short wait after a
+    /// start, so the first sync goes first), only answers to wait for are looked for later.
+    fn refresh_queue(&mut self, starting: bool) {
+        let Some(v) = self.worker.queue_view() else { return };
+        let now = self.clock.now();
+        let t = self.sched.timing();
+        if let Some(o) = self.status.other.as_mut() {
+            o.uploads_waiting = v.to_upload;
+            o.uploads_bytes = v.bytes;
+            o.awaiting_home = v.awaiting_home;
+        }
+        if v.to_upload > 0 {
+            self.sched.want_upload(if starting { now + t.startup_delay } else { now });
+        } else if v.awaiting_home > 0 {
+            self.sched.want_upload(now + t.upload_retry);
+        } else {
+            self.sched.no_upload();
+        }
     }
 
     /// When to look again (see [`Scheduler::next_wake`]).
@@ -283,6 +345,7 @@ impl<W: Worker> Service<W> {
             Job::Sync(reason) => self.run_sync(reason),
             Job::InboxCheck => self.run_inbox_check(),
             Job::Purge => self.run_purge(),
+            Job::Upload => self.run_upload(),
         };
         self.sched.ended(self.clock.now(), job, ended);
         self.publish();
@@ -316,6 +379,7 @@ impl<W: Worker> Service<W> {
                         self.status.push_error(&now, p.clone());
                     }
                 }
+                self.status.active_problems = o.problems.iter().chain(&o.import_problems).cloned().collect();
                 if let Some(mut view) = o.other.clone() {
                     view.received = self.status.other.as_ref().map_or(0, |v| v.received) + o.downloaded;
                     self.status.other = Some(view);
@@ -344,6 +408,7 @@ impl<W: Worker> Service<W> {
                 if o.imported > 0 || o.downloaded > 0 {
                     self.run_bridge();
                 }
+                self.refresh_queue(false);
                 Ended::Done
             }
             Err(JobError::Offline(detail)) => {
@@ -392,6 +457,7 @@ impl<W: Worker> Service<W> {
         }
         self.status.lightcraft_port = r.port;
         self.status.lightcraft_waiting = r.waiting;
+        self.status.lightcraft_given_up = r.given_up;
         if r.reachable.is_some() {
             self.status.lightcraft_reachable = r.reachable;
         }
@@ -402,8 +468,64 @@ impl<W: Worker> Service<W> {
         }
     }
 
+    /// One bounded share of the upload queue. Offline is calm (one amber line, tried again later); the queue is on disk, so nothing is
+    /// lost by waiting.
+    fn run_upload(&mut self) -> Ended {
+        let since = self.iso(self.clock.now());
+        self.status.activity = Activity::Uploading { since };
+        self.publish();
+        let result = self.worker.upload_step();
+        let now = self.iso(self.clock.now());
+        self.status.activity = Activity::Idle;
+        match result {
+            Ok(o) => {
+                if let Some(v) = self.status.other.as_mut() {
+                    v.uploads_waiting = o.queue.to_upload;
+                    v.uploads_bytes = o.queue.bytes;
+                    v.awaiting_home = o.queue.awaiting_home;
+                }
+                for p in &o.problems {
+                    if !self.status.errors.iter().any(|e| e.text == *p) {
+                        self.status.push_error(&now, p.clone());
+                    }
+                }
+                if o.network {
+                    self.status.offline = false;
+                }
+                if o.committed > 0 || o.results > 0 {
+                    self.say(format!("upload: {} photos sent, {} answers from the home PC", o.committed, o.results));
+                }
+                if o.more || o.queue.to_upload > 0 {
+                    Ended::UploadMore
+                } else if o.queue.awaiting_home > 0 {
+                    Ended::UploadLater
+                } else {
+                    Ended::UploadDone
+                }
+            }
+            Err(JobError::Offline(detail)) => {
+                self.say(format!("upload: cannot reach the cloud library: {detail}"));
+                if self.status.errors.first().is_none_or(|e| e.text != OFFLINE_LINE) {
+                    self.status.push_error(&now, OFFLINE_LINE);
+                }
+                self.status.offline = true;
+                Ended::UploadLater
+            }
+            Err(JobError::Busy) => Ended::Busy,
+            Err(e) => {
+                let text = e.text();
+                self.say(format!("upload failed: {text}"));
+                if !self.status.errors.iter().any(|l| l.text == text) {
+                    self.status.push_error(&now, text);
+                }
+                Ended::UploadLater
+            }
+        }
+    }
+
     fn run_inbox_check(&mut self) -> Ended {
         self.run_bridge();
+        self.refresh_queue(false);
         let mut waiting = 0;
         match self.worker.inbox_waiting() {
             Ok(n) => {

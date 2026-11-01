@@ -3,53 +3,14 @@
 
 mod common;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{Fx, sc, settings_of, text_of};
-use lightcraft_cloud_client::home::{Added, PhotoInfo, Renderer, content_hash_bytes};
+use common::{Fx, HashRenderer, sc, settings_of, text_of};
 use lightcraft_cloud_client::other::{Other, OtherConfig, OtherReport};
-use lightcraft_cloud_client::{DirRemote, Error, Result};
+use lightcraft_cloud_client::DirRemote;
 use serde_json::json;
-
-/// A renderer that describes photos by their real content hash (the id the other PC checks its downloads against).
-#[derive(Default)]
-struct HashRenderer {
-    seen: std::collections::HashMap<PathBuf, String>,
-}
-
-impl HashRenderer {
-    fn info(photo: &Path) -> Result<PhotoInfo> {
-        let bytes = std::fs::read(photo).map_err(|e| Error::Engine(format!("{}: {e}", photo.display())))?;
-        Ok(PhotoInfo { content_hash: content_hash_bytes(&bytes), width: Some(6000), height: Some(4000), rating: Some(0), ..PhotoInfo::default() })
-    }
-}
-
-impl Renderer for HashRenderer {
-    fn add(&mut self, photo: &Path) -> Result<Added> {
-        let i = Self::info(photo)?;
-        self.seen.insert(photo.to_path_buf(), i.content_hash.clone());
-        Ok(Added::Photo(i))
-    }
-    fn reread(&mut self, photo: &Path) -> Result<PhotoInfo> {
-        Self::info(photo)
-    }
-    fn thumbnail(&mut self, _photo: &Path, _long_edge: u32, _quality: u8, out: &Path) -> Result<()> {
-        std::fs::write(out, b"thumb").map_err(|e| Error::Engine(e.to_string()))
-    }
-    fn smart_preview(&mut self, photo: &Path, out: &Path) -> Result<String> {
-        let h = Self::info(photo)?.content_hash;
-        std::fs::write(out, format!("lcsp {h}")).map_err(|e| Error::Engine(e.to_string()))?;
-        Ok(content_hash_bytes(h.as_bytes()))
-    }
-    fn forget(&mut self, photos: &[PathBuf]) -> Result<()> {
-        for p in photos {
-            self.seen.remove(p);
-        }
-        Ok(())
-    }
-}
 
 struct World {
     fx: Fx,

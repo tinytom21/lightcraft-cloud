@@ -1,5 +1,6 @@
-//! The tray icon. States: idle (green), syncing (blue), phone edits waiting (amber), paused (grey), error (red); menu: Sync now,
-//! Pause/Resume, Status…, Settings…, Quit. The icons are generated here (a disc with a lens ring), so there are no image files.
+//! The tray icon. Five pictures: idle (green), syncing (blue), amber (phone edits or anything else waiting, offline), paused (grey), red
+//! (a failure or a problem); uploading shares the syncing picture. Idle only when truly settled. Menu: Sync now, Pause/Resume, Import
+//! photos… (another PC only), Status…, Settings…, Quit. The icons are generated here (a disc with a lens ring), so there are no image files.
 //!
 //! On Linux the icon is a StatusNotifierItem over D-Bus (`tray-icon`'s `ksni` backend: no GTK and no libappindicator to
 //! install). The desktop needs a tray host: KDE has one, GNOME needs its AppIndicator extension (Ubuntu ships it).
@@ -11,6 +12,8 @@ use crate::appstate::TrayState;
 pub enum MenuAction {
     SyncNow,
     PauseResume,
+    /// Another PC only: open the window that imports photos from a card or a folder.
+    ImportPhotos,
     Status,
     Settings,
     Quit,
@@ -19,18 +22,19 @@ pub enum MenuAction {
 pub const ICON_SIZE: u32 = 32;
 
 fn color(state: TrayState) -> [u8; 3] {
-    match state {
+    match state.icon() {
         TrayState::Idle => [0x2e, 0x9d, 0x5b],
         TrayState::Syncing => [0x2f, 0x7f, 0xd8],
         TrayState::PhoneEdits => [0xe0, 0x9a, 0x1f],
         TrayState::Paused => [0x8a, 0x8f, 0x98],
-        TrayState::Error => [0xd0, 0x3b, 0x3b],
+        _ => [0xd0, 0x3b, 0x3b],
     }
 }
 
 /// The icon as RGBA, `size` x `size`: a coloured disc with a dark rim and a white lens ring; the disc has a notch cut for a
 /// spinner feel while syncing, and a bar for Paused, so the states differ by more than colour.
 pub fn icon_rgba(state: TrayState, size: u32) -> Vec<u8> {
+    let state = state.icon();
     let mut px = vec![0u8; (size * size * 4) as usize];
     let c = size as f32 / 2.0;
     let [r, g, b] = color(state);
@@ -76,10 +80,17 @@ mod linux {
 
     pub struct Tray {
         icon: TrayIcon,
+        menu: Menu,
         pause: MenuItem,
+        /// "Import photos…": in the menu only on another PC.
+        import: MenuItem,
+        import_shown: bool,
         ids: Vec<(MenuId, MenuAction)>,
-        shown: Option<(TrayState, bool)>,
+        shown: Option<(TrayState, bool, bool)>,
     }
+
+    /// Where "Import photos…" sits in the menu: after Sync now and Pause.
+    const IMPORT_AT: usize = 2;
 
     fn icon_of(state: TrayState) -> Result<Icon, String> {
         Icon::from_rgba(icon_rgba(state, ICON_SIZE), ICON_SIZE, ICON_SIZE).map_err(|e| e.to_string())
@@ -91,19 +102,24 @@ mod linux {
             let menu = Menu::new();
             let sync = MenuItem::new("Sync now", true, None);
             let pause = MenuItem::new(pause_label(status.paused), true, None);
+            let import = MenuItem::new("Import photos\u{2026}", true, None);
+            let is_other = status.other.is_some();
             let st = MenuItem::new("Status…", true, None);
             let se = MenuItem::new("Settings…", true, None);
             let quit = MenuItem::new("Quit", true, None);
             let e = |e: tray_icon::menu::Error| e.to_string();
             menu.append(&sync).map_err(e)?;
             menu.append(&pause).map_err(e)?;
+            if is_other {
+                menu.append(&import).map_err(e)?;
+            }
             menu.append(&PredefinedMenuItem::separator()).map_err(e)?;
             menu.append(&st).map_err(e)?;
             menu.append(&se).map_err(e)?;
             menu.append(&PredefinedMenuItem::separator()).map_err(e)?;
             menu.append(&quit).map_err(e)?;
             let icon = TrayIconBuilder::new()
-                .with_menu(Box::new(menu))
+                .with_menu(Box::new(menu.clone()))
                 .with_icon(icon_of(state)?)
                 .with_tooltip(state.tooltip())
                 .with_title("LightCraft Cloud")
@@ -112,11 +128,12 @@ mod linux {
             let ids = vec![
                 (sync.id().clone(), MenuAction::SyncNow),
                 (pause.id().clone(), MenuAction::PauseResume),
+                (import.id().clone(), MenuAction::ImportPhotos),
                 (st.id().clone(), MenuAction::Status),
                 (se.id().clone(), MenuAction::Settings),
                 (quit.id().clone(), MenuAction::Quit),
             ];
-            Ok(Tray { icon, pause, ids, shown: Some((state, status.paused)) })
+            Ok(Tray { icon, menu, pause, import, import_shown: is_other, ids, shown: Some((state, status.paused, is_other)) })
         }
 
         pub fn action(&self, id: &MenuId) -> Option<MenuAction> {
@@ -125,9 +142,14 @@ mod linux {
 
         /// Follow the status: icon, tooltip, and the Pause/Resume label (only when something changed).
         pub fn update(&mut self, status: &AppStatus) {
-            let now = (status.tray_state(), status.paused);
+            let now = (status.tray_state(), status.paused, status.other.is_some());
             if self.shown == Some(now) {
                 return;
+            }
+            if now.2 != self.import_shown {
+                // (the role was changed in Settings)
+                let _ = if now.2 { self.menu.insert(&self.import, IMPORT_AT) } else { self.menu.remove(&self.import) };
+                self.import_shown = now.2;
             }
             if let Ok(i) = icon_of(now.0) {
                 let _ = self.icon.set_icon(Some(i));
@@ -152,9 +174,9 @@ mod tests {
     }
 
     #[test]
-    fn every_state_has_its_own_icon_with_a_clear_corner_and_a_coloured_disc() {
+    fn every_picture_is_its_own_icon_with_a_clear_corner_and_a_coloured_disc_and_the_other_states_share_one() {
         let mut seen = std::collections::HashSet::new();
-        for s in TrayState::ALL {
+        for s in TrayState::ALL.into_iter().filter(|s| s.icon() == *s) {
             let v = icon_rgba(s, ICON_SIZE);
             assert_eq!(v.len(), (ICON_SIZE * ICON_SIZE * 4) as usize);
             assert_eq!(px(&v, ICON_SIZE, 0, 0)[3], 0, "{s:?}: corner transparent");
@@ -162,6 +184,10 @@ mod tests {
             assert_eq!(a, 255);
             assert_eq!([r, g, b], color(s));
             assert!(seen.insert(v), "{s:?} looks like another state");
+        }
+        assert_eq!(seen.len(), 5, "five pictures");
+        for s in TrayState::ALL {
+            assert_eq!(icon_rgba(s, ICON_SIZE), icon_rgba(s.icon(), ICON_SIZE), "{s:?} is drawn with its shared picture");
         }
     }
 

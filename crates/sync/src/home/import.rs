@@ -100,7 +100,7 @@ fn is_reserved(component: &str) -> bool {
 }
 
 /// Why `c` cannot be one component of an imported path, or None.
-fn bad_component(c: &str) -> Option<String> {
+pub(crate) fn bad_component(c: &str) -> Option<String> {
     if c.is_empty() {
         return Some("it has an empty component".into());
     }
@@ -128,7 +128,7 @@ fn bad_component(c: &str) -> Option<String> {
     None
 }
 
-fn bad_folder(folder: &str) -> Option<String> {
+pub(crate) fn bad_folder(folder: &str) -> Option<String> {
     if folder.is_empty() {
         return None; // (the photo folder itself)
     }
@@ -136,6 +136,24 @@ fn bad_folder(folder: &str) -> Option<String> {
         return Some("it is longer than 1024 bytes".into());
     }
     folder.split('/').find_map(bad_component)
+}
+
+/// Whether a photo called `name` may be imported into `folder` (relative to the photo folder, `/`-separated, `""` for the folder
+/// itself): the one rule home applies to a note, and the one another PC applies before it copies or uploads anything. Err: why not.
+pub fn check_import_target(folder: &str, name: &str, exclude: &[String]) -> std::result::Result<(), String> {
+    if let Some(why) = bad_folder(folder) {
+        return Err(format!("bad folder {folder:?}: {why}"));
+    }
+    if let Some(why) = bad_component(name) {
+        return Err(format!("bad name {name:?}: {why}"));
+    }
+    if !is_photo(name) {
+        return Err(format!("{name:?} is not a photo file type"));
+    }
+    if !folder.is_empty() && is_excluded(&format!("{folder}/{name}"), exclude) {
+        return Err(format!("the folder {folder:?} matches an exclude pattern, so it is not published here"));
+    }
+    Ok(())
 }
 
 /// Check a commit note. `file_id`: the id in the note's file name (`<id>.json`), which the note must repeat. Err: why the import
@@ -169,18 +187,7 @@ pub fn check_import_note(data: &[u8], file_id: &str, exclude: &[String]) -> std:
         o.get(k).and_then(Value::as_str).map(str::to_string).ok_or_else(|| format!("the note's {k} is missing or not text"))
     };
     let (folder, name) = (text("folder")?, text("name")?);
-    if let Some(why) = bad_folder(&folder) {
-        return Err(format!("bad folder {folder:?}: {why}"));
-    }
-    if let Some(why) = bad_component(&name) {
-        return Err(format!("bad name {name:?}: {why}"));
-    }
-    if !is_photo(&name) {
-        return Err(format!("{name:?} is not a photo file type"));
-    }
-    if !folder.is_empty() && is_excluded(&format!("{folder}/{name}"), exclude) {
-        return Err(format!("the folder {folder:?} matches an exclude pattern, so it is not published here"));
-    }
+    check_import_target(&folder, &name, exclude)?;
     let size = o.get("size").and_then(Value::as_u64).ok_or("the note's size is missing or not a whole number")?;
     let mtime = o
         .get("mtime")
@@ -247,7 +254,7 @@ struct Run<'a> {
 
 /// Create `dir/name` whole or not at all: a temporary file in `dir`, `fsync`, then a link that never replaces.
 /// `AlreadyExists` when the name is taken.
-fn create_new_file(dir: &Path, name: &str, fill: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>) -> std::io::Result<()> {
+pub(crate) fn create_new_file(dir: &Path, name: &str, fill: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>) -> std::io::Result<()> {
     let dest = dir.join(name);
     let tmp = temp_beside(&dest);
     let written = (|| {
@@ -263,12 +270,12 @@ fn create_new_file(dir: &Path, name: &str, fill: impl FnOnce(&mut std::fs::File)
     linked
 }
 
-fn ext_of(name: &str) -> &str {
+pub(crate) fn ext_of(name: &str) -> &str {
     &name[stem(name).len()..]
 }
 
 /// The file name of the `n`th try (1: the name in the note), and its sidecar's, named the way the note's was.
-fn variant(note: &ImportNote, n: u32) -> (String, Option<String>) {
+pub(crate) fn variant(note: &ImportNote, n: u32) -> (String, Option<String>) {
     if n == 1 {
         return (note.name.clone(), note.sidecar.clone());
     }
@@ -280,7 +287,7 @@ fn variant(note: &ImportNote, n: u32) -> (String, Option<String>) {
 
 /// Whether `entry` is the name in the note or one of its numbered variants (case-insensitively: a case-insensitive filesystem
 /// would treat them as the same file).
-fn is_variant_of(note: &ImportNote, entry: &str) -> bool {
+pub(crate) fn is_variant_of(note: &ImportNote, entry: &str) -> bool {
     let (e, name) = (entry.to_lowercase(), note.name.to_lowercase());
     if e == name {
         return true;
@@ -290,7 +297,7 @@ fn is_variant_of(note: &ImportNote, entry: &str) -> bool {
 }
 
 /// The entry of `dir` with this name, ignoring case, as it is spelled on disk.
-fn entry_named(dir: &Path, name: &str) -> std::io::Result<Option<String>> {
+pub(crate) fn entry_named(dir: &Path, name: &str) -> std::io::Result<Option<String>> {
     let want = name.to_lowercase();
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
@@ -307,7 +314,7 @@ fn entry_named(dir: &Path, name: &str) -> std::io::Result<Option<String>> {
 }
 
 /// A regular file (not a link) of this size and content hash.
-fn has_bytes(path: &Path, size: u64, id: &str) -> bool {
+pub(crate) fn has_bytes(path: &Path, size: u64, id: &str) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.len() == size) && content_hash_file(path).is_ok_and(|(h, _)| h == id)
 }
 
@@ -326,7 +333,7 @@ fn clean_stale_temps(dir: &Path, note: &ImportNote) {
     }
 }
 
-fn rel_join(folder: &str, name: &str) -> String {
+pub(crate) fn rel_join(folder: &str, name: &str) -> String {
     if folder.is_empty() { name.to_string() } else { format!("{folder}/{name}") }
 }
 

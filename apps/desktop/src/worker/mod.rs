@@ -13,7 +13,7 @@ use lightcraft_cloud_client::{Error, Remote};
 use crate::config::{Config, Role};
 use crate::lightcraft::LightCraftLink;
 use crate::pending::{self, PendingList};
-use crate::service::{BridgeReport, JobError, PurgeOutcome, SyncOutcome, Worker, WorkerInfo};
+use crate::service::{BridgeReport, JobError, PurgeOutcome, QueueView, SyncOutcome, UploadOutcome, Worker, WorkerInfo};
 
 #[cfg(feature = "home")]
 mod home;
@@ -55,7 +55,7 @@ pub(crate) fn flush_pending(cfg: Option<&Config>, link: &LinkFactory, retry_give
     let list = PendingList::new(&cfg.state_dir);
     let mut link = link(port);
     let r = pending::flush(&list, &mut *link, retry_given_up);
-    BridgeReport { port, delivered: r.delivered, waiting: r.waiting, reachable: r.reachable, problems: r.problems, log: r.log }
+    BridgeReport { port, delivered: r.delivered, waiting: r.waiting, given_up: r.given_up, reachable: r.reachable, problems: r.problems, log: r.log }
 }
 
 /// Picks the worker for the config's role.
@@ -159,6 +159,20 @@ impl Worker for RoleWorker {
         match self.active() {
             Some(w) => w.lightcraft_flush(retry_given_up),
             None => BridgeReport::default(),
+        }
+    }
+
+    fn queue_view(&mut self) -> Option<QueueView> {
+        match self.role {
+            Role::Other => self.other.queue_view(),
+            Role::Home => None,
+        }
+    }
+
+    fn upload_step(&mut self) -> Result<UploadOutcome, JobError> {
+        match self.role {
+            Role::Other => self.other.upload_step(),
+            Role::Home => Ok(UploadOutcome::default()),
         }
     }
 

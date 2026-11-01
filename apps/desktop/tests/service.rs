@@ -595,7 +595,7 @@ fn another_pcs_numbers_reach_the_status_and_new_photos_are_announced_once() {
         Ok(SyncOutcome {
             photos: 12,
             downloaded,
-            other: Some(OtherView { photos: 12, waiting_to_download: waiting, edits_waiting: 1, held_back: 0, received: 0 }),
+            other: Some(OtherView { photos: 12, waiting_to_download: waiting, edits_waiting: 1, held_back: 0, received: 0, ..OtherView::default() }),
             problems: vec!["Not enough free disk space for 3 more photos".into()],
             ..SyncOutcome::default()
         })

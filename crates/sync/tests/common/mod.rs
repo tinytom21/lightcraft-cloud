@@ -491,3 +491,46 @@ impl Fx {
         self.home = home;
     }
 }
+
+// ------------------------------------------------------------------ a renderer with the real content hash
+
+use lightcraft_cloud_client::home::content_hash_bytes;
+
+/// A renderer that describes photos by their real content hash (the id the other PC checks its downloads against).
+#[derive(Default)]
+pub struct HashRenderer {
+    pub seen: std::collections::HashMap<PathBuf, String>,
+}
+
+impl HashRenderer {
+    fn info(photo: &Path) -> Result<PhotoInfo> {
+        let bytes = std::fs::read(photo).map_err(|e| Error::Engine(format!("{}: {e}", photo.display())))?;
+        Ok(PhotoInfo { content_hash: content_hash_bytes(&bytes), width: Some(6000), height: Some(4000), rating: Some(0), ..PhotoInfo::default() })
+    }
+}
+
+impl Renderer for HashRenderer {
+    fn add(&mut self, photo: &Path) -> Result<Added> {
+        let i = Self::info(photo)?;
+        self.seen.insert(photo.to_path_buf(), i.content_hash.clone());
+        Ok(Added::Photo(i))
+    }
+    fn reread(&mut self, photo: &Path) -> Result<PhotoInfo> {
+        Self::info(photo)
+    }
+    fn thumbnail(&mut self, _photo: &Path, _long_edge: u32, _quality: u8, out: &Path) -> Result<()> {
+        std::fs::write(out, b"thumb").map_err(|e| Error::Engine(e.to_string()))
+    }
+    fn smart_preview(&mut self, photo: &Path, out: &Path) -> Result<String> {
+        let h = Self::info(photo)?.content_hash;
+        std::fs::write(out, format!("lcsp {h}")).map_err(|e| Error::Engine(e.to_string()))?;
+        Ok(content_hash_bytes(h.as_bytes()))
+    }
+    fn forget(&mut self, photos: &[PathBuf]) -> Result<()> {
+        for p in photos {
+            self.seen.remove(p);
+        }
+        Ok(())
+    }
+}
+

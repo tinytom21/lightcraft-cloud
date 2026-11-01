@@ -19,8 +19,13 @@
 //! remembers about its photos (the files stay where they are), so choosing it again downloads what is missing. When the home PC deletes
 //! the photo too, the memory goes with it.
 
+mod import;
 mod pass;
 mod state;
+
+pub use import::{
+    ImportQueue, ImportRun, ImportScan, OUT_DIR, OutEntry, OutResult, Phase, Progress, QueueStatus, ScanFile, SourceSidecar, UploadBudget, UploadReport, check_destination, existing_folders,
+};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -48,6 +53,9 @@ pub struct OtherConfig {
     pub max_delete: usize,
     /// Free disk space that must be left over after a download (bytes).
     pub free_margin: u64,
+    /// Folder-name patterns the home PC leaves out of the library (its `exclude`). Photos imported here are refused up front for a
+    /// destination that matches one, the way the home PC would reject them.
+    pub exclude: Vec<String>,
 }
 
 impl OtherConfig {
@@ -60,6 +68,7 @@ impl OtherConfig {
             remote_label: String::new(),
             max_delete: 50,
             free_margin: DEFAULT_IMPORT_FREE_MARGIN,
+            exclude: Vec::new(),
         }
     }
 }
@@ -87,6 +96,8 @@ pub struct OtherReport {
     pub edits_waiting: usize,
     /// Things the user can act on, one line each.
     pub problems: Vec<String>,
+    /// The photos this PC imported itself, as the pass left them.
+    pub queue: QueueStatus,
 }
 
 /// The numbers the Status window shows, from the state alone (no network).
@@ -98,6 +109,8 @@ pub struct OtherStatus {
     pub edits_waiting: usize,
     /// When the last pass ended well (ISO).
     pub last_pass: Option<String>,
+    /// The photos this PC imported itself that are on their way to the home PC.
+    pub queue: QueueStatus,
 }
 
 /// One folder of the cloud library with photos directly in it, for choosing.

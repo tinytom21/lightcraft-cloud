@@ -8,6 +8,9 @@
 //! * a folder change starts a sync once the folder has been quiet for 30 seconds, or 5 minutes after the first change at
 //!   the latest (so a copy that never ends cannot hold it off for ever);
 //! * a purge about once a week;
+//! * photos imported on this PC go to the home PC in bounded jobs of their own (lowest priority, so a sync for a sidecar edit never
+//!   waits behind them): the next one a moment after the last if work is left, later when offline or when only the home PC's
+//!   answer is awaited, and none while paused;
 //! * "Sync now" runs at once, even while paused; Pause stops everything else (and forgets the folder changes seen) until
 //!   Resume, which syncs soon after;
 //! * one job at a time: the caller runs [`Scheduler::poll`]'s job to the end before asking again.
@@ -27,6 +30,10 @@ pub struct Timing {
     pub startup_delay: Duration,
     /// Before trying again when another run (the command line's) held the lock.
     pub busy_retry: Duration,
+    /// Between two bounded upload jobs while photos are left to send.
+    pub upload_yield: Duration,
+    /// Before the next upload job when offline, or while only the home PC's answers are awaited.
+    pub upload_retry: Duration,
 }
 
 impl Default for Timing {
@@ -39,6 +46,8 @@ impl Default for Timing {
             purge_every: Duration::from_secs(7 * 86_400),
             startup_delay: Duration::from_secs(20),
             busy_retry: Duration::from_secs(60),
+            upload_yield: Duration::from_secs(1),
+            upload_retry: Duration::from_secs(5 * 60),
         }
     }
 }
@@ -77,6 +86,8 @@ pub enum Job {
     Sync(Reason),
     InboxCheck,
     Purge,
+    /// A bounded share of the photos imported on this PC, sent to the home PC.
+    Upload,
 }
 
 /// How a job ended, as far as the schedule cares.
@@ -87,6 +98,12 @@ pub enum Ended {
     Busy,
     /// An inbox check that found this many phone edits waiting.
     Waiting(usize),
+    /// An upload job that left photos to send: the next one follows at once.
+    UploadMore,
+    /// An upload job that has nothing more to send now: look again later (offline, or awaiting the home PC's answers).
+    UploadLater,
+    /// An upload job that found the queue empty (or could not start because another run held the lock and nothing else is known).
+    UploadDone,
 }
 
 pub struct Scheduler {
@@ -96,6 +113,8 @@ pub struct Scheduler {
     next_sync: SystemTime,
     next_inbox: SystemTime,
     next_purge: Option<SystemTime>,
+    /// When the next upload job is due; None: nothing to send.
+    next_upload: Option<SystemTime>,
     /// A sync asked for (Sync now, phone edits found, settings saved).
     requested: Option<Reason>,
     /// The first and the last folder change since the last sync started.
@@ -118,6 +137,7 @@ impl Scheduler {
             next_sync: now + t.startup_delay,
             next_inbox: now + t.inbox_every,
             next_purge,
+            next_upload: None,
             requested: None,
             folder: None,
             first: true,
@@ -164,6 +184,20 @@ impl Scheduler {
         self.requested = Some(reason);
     }
 
+    /// Photos wait to be sent: an upload job is due at `at` (an earlier time already set stays).
+    pub fn want_upload(&mut self, at: SystemTime) {
+        self.next_upload = Some(self.next_upload.map_or(at, |t| t.min(at)));
+    }
+
+    /// The queue is empty: no upload job is due.
+    pub fn no_upload(&mut self) {
+        self.next_upload = None;
+    }
+
+    pub fn upload_due(&self) -> Option<SystemTime> {
+        self.next_upload
+    }
+
     /// A relevant change in the photo folder.
     pub fn folder_event(&mut self, now: SystemTime) {
         if self.paused || !self.enabled {
@@ -200,6 +234,9 @@ impl Scheduler {
         if self.next_purge.is_some_and(|t| t <= now) {
             return Some(Job::Purge);
         }
+        if self.next_upload.is_some_and(|t| t <= now) {
+            return Some(Job::Upload);
+        }
         None
     }
 
@@ -232,6 +269,10 @@ impl Scheduler {
                 }
             }
             (Job::Purge, _) => self.next_purge = Some(now + self.t.purge_every),
+            (Job::Upload, Ended::UploadMore) => self.next_upload = Some(now + self.t.upload_yield),
+            (Job::Upload, Ended::Busy) => self.next_upload = Some(now + self.t.busy_retry),
+            (Job::Upload, Ended::UploadLater) => self.next_upload = Some(now + self.t.upload_retry),
+            (Job::Upload, _) => self.next_upload = None,
         }
     }
 
@@ -254,7 +295,7 @@ impl Scheduler {
         if self.paused {
             return None;
         }
-        [self.folder_due(), Some(self.next_sync), Some(self.next_inbox), self.next_purge].into_iter().flatten().min()
+        [self.folder_due(), Some(self.next_sync), Some(self.next_inbox), self.next_purge, self.next_upload].into_iter().flatten().min()
     }
 }
 
@@ -311,7 +352,7 @@ mod tests {
                 match j {
                     Job::Sync(r) => syncs.push((c.now().duration_since(start).unwrap().as_secs(), r)),
                     Job::InboxCheck => checks += 1,
-                    Job::Purge => {}
+                    Job::Purge | Job::Upload => {}
                 }
             }
         }
@@ -479,5 +520,61 @@ mod tests {
         assert_eq!(s.next_wake(), Some(c.now() + S(20))); // (the startup sync comes before the 30 s quiet window ends)
         s.request_sync(Reason::Manual);
         assert_eq!(s.next_wake(), Some(SystemTime::UNIX_EPOCH));
+    }
+
+    #[test]
+    fn upload_jobs_follow_each_other_a_second_apart_while_photos_are_left_and_wait_when_there_is_nothing_to_send() {
+        let c = FakeClock::new();
+        let t = Timing { startup_delay: S(7200), inbox_every: S(7200), ..Timing::default() };
+        let mut s = Scheduler::new(c.now(), t, true, false, Some(c.now()));
+        s.want_upload(c.now());
+        assert_eq!(s.poll(c.now()), Some(Job::Upload));
+        s.started(Job::Upload);
+        s.ended(c.now(), Job::Upload, Ended::UploadMore);
+        assert_eq!(s.poll(c.now()), None, "a second's pause: the other jobs get their turn");
+        c.advance(S(1));
+        assert_eq!(s.poll(c.now()), Some(Job::Upload));
+        s.ended(c.now(), Job::Upload, Ended::UploadLater);
+        c.advance(S(299));
+        assert_eq!(s.poll(c.now()), None);
+        c.advance(S(1));
+        assert_eq!(s.poll(c.now()), Some(Job::Upload), "offline, or awaiting the home PC: five minutes later");
+        s.ended(c.now(), Job::Upload, Ended::UploadDone);
+        assert_eq!(s.upload_due(), None);
+        c.advance(S(1_000));
+        assert!(!matches!(s.poll(c.now()), Some(Job::Upload)));
+        // another run holding the lock: a minute
+        s.want_upload(c.now());
+        s.ended(c.now(), Job::Upload, Ended::Busy);
+        assert_eq!(s.upload_due(), Some(c.now() + S(60)));
+    }
+
+    #[test]
+    fn a_sync_for_an_edit_goes_before_the_next_upload_job_and_pause_stops_uploads() {
+        let (c, mut s) = setup_late();
+        s.want_upload(c.now());
+        s.folder_event(c.now());
+        c.advance(S(30));
+        // both are due: the sync first
+        assert_eq!(s.poll(c.now()), Some(Job::Sync(Reason::FolderChanged)));
+        s.started(Job::Sync(Reason::FolderChanged));
+        s.ended(c.now(), Job::Sync(Reason::FolderChanged), Ended::Done);
+        assert_eq!(s.poll(c.now()), Some(Job::Upload));
+        // Pause: nothing runs, not even a job that is due; Resume runs it
+        s.set_paused(c.now(), true);
+        assert_eq!(s.poll(c.now()), None);
+        s.set_paused(c.now(), false);
+        let mut got = Vec::new();
+        while let Some(j) = run(&c, &mut s) {
+            got.push(j);
+        }
+        assert!(got.contains(&Job::Upload), "{got:?}");
+        // "Sync now" still works while paused and does not run the upload
+        s.want_upload(c.now());
+        s.set_paused(c.now(), true);
+        s.request_sync(Reason::Manual);
+        assert_eq!(s.poll(c.now()), Some(Job::Sync(Reason::Manual)));
+        s.started(Job::Sync(Reason::Manual));
+        assert_eq!(s.poll(c.now()), None);
     }
 }
