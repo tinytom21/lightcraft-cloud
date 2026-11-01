@@ -63,3 +63,11 @@ too_many_arguments = "allow"
 needless_range_loop = "allow"
 type_complexity = "allow"
 excessive_precision = "allow"
+
+# Keep the build folder small: the same debug level as the phone repo, none for dependencies, no incremental files.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
