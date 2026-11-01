@@ -80,7 +80,15 @@ mod tests {
             std::fs::write(&f, body).unwrap();
             #[cfg(unix)]
             std::fs::set_permissions(&f, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-            let r = latest_age_hours(&f.to_string_lossy(), now());
+            // (another test starting a program just as this script was written can hold it open for an instant: Linux then says it is busy)
+            let mut r = latest_age_hours(&f.to_string_lossy(), now());
+            for _ in 0..100 {
+                if !r.as_ref().is_err_and(|e| e.contains("busy")) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                r = latest_age_hours(&f.to_string_lossy(), now());
+            }
             if want.is_empty() {
                 assert!((r.unwrap() - 1.0).abs() < 1e-6);
             } else {

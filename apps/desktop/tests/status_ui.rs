@@ -30,6 +30,23 @@ fn settled_other() -> AppStatus {
 }
 
 #[test]
+fn while_photos_download_the_rows_agree_with_the_progress_line() {
+    use lightcraft_cloud_client::{Progress, Stage};
+    let mut s = settled_other();
+    let before = s.other.as_ref().unwrap().photos;
+    s.other.as_mut().unwrap().waiting_to_download = 0; // (saved before this pass: the pass found 33 more)
+    s.activity = Activity::Syncing {
+        since: "2026-11-01T12:00:00Z".into(),
+        reason: "timer".into(),
+        progress: Some(Progress { stage: Stage::Downloading, done_items: 27, total_items: 60, ..Default::default() }),
+    };
+    let mut h = status_harness(s);
+    h.run();
+    h.get_by_label("33 photos");
+    h.get_by_label(&(before + 27).to_string());
+}
+
+#[test]
 fn the_state_line_is_green_up_to_date_only_when_nothing_waits_and_nothing_is_wrong() {
     use lightcraft_cloud_desktop::appstate::{HealthKind, Tone};
     let mut h = status_harness(settled_other());

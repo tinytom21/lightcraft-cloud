@@ -3,7 +3,7 @@
 use std::time::SystemTime;
 
 use egui::{Color32, CornerRadius, Label, Margin, Rect, RichText, Role, Sense, Stroke, Ui, WidgetInfo, pos2, vec2};
-use lightcraft_cloud_client::{Progress, Summary, describe, to_ms};
+use lightcraft_cloud_client::{Progress, Stage, Summary, describe, to_ms};
 
 use crate::appstate::{Activity, AppStatus, Notice, OtherView, Tone, relative, upcoming};
 use crate::ui::settings_panel::human_size;
@@ -197,8 +197,13 @@ fn other_rows(ui: &mut Ui, s: &AppStatus, o: &OtherView, now: SystemTime) {
         Some(l) => row(ui, "Last sync", format!("{} ({})", relative(&l.when, now), l.result)),
         None => row(ui, "Last sync", "never"),
     }
-    row(ui, "Photos on this PC", o.photos.to_string());
-    row(ui, "Waiting to download", if o.waiting_to_download == 0 { "nothing".to_string() } else { photos(o.waiting_to_download) });
+    // (the counts are saved when a pass ends; while it downloads, the running count is the true one)
+    let (here, waiting) = match s.activity.progress().filter(|p| p.stage == Stage::Downloading && p.total_items > 0) {
+        Some(p) => (o.photos + p.done_items as usize, p.total_items.saturating_sub(p.done_items) as usize),
+        None => (o.photos, o.waiting_to_download),
+    };
+    row(ui, "Photos on this PC", here.to_string());
+    row(ui, "Waiting to download", if waiting == 0 { "nothing".to_string() } else { photos(waiting) });
     row(
         ui,
         "Edits waiting to send",
