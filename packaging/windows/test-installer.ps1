@@ -39,11 +39,17 @@ function WaitFor([scriptblock]$cond, [int]$secs) {
     while ((Get-Date) -lt $end) { if (& $cond) { return $true }; Start-Sleep -Milliseconds 300 }
     return $false
 }
+# (Start-Process -Wait also waits for every process the program started, and the installer starts the app and leaves it running: so wait for this process only)
+function RunAndWait($file, $arguments) {
+    $p = Start-Process -FilePath $file -ArgumentList $arguments -PassThru
+    if (-not $p.WaitForExit(300000)) { $p.Kill(); throw "FAILED: $file did not finish in five minutes" }
+    return $p.ExitCode
+}
 function RunSetup($tag) {
     $log = Join-Path $logs "setup-$tag.log"
-    $p = Start-Process -FilePath $Setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$log`"" -Wait -PassThru
-    Write-Host "setup ($tag) exit code $($p.ExitCode)"
-    return $p.ExitCode
+    $code = RunAndWait $Setup @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$log`"")
+    Write-Host "setup ($tag) exit code $code"
+    return $code
 }
 function StartApp {
     $p = Start-Process -FilePath $exe -ArgumentList 'run', '--headless' -PassThru
@@ -92,11 +98,11 @@ Check (-not $new.HasExited) 'and it stays up (no tray session here, so it runs w
 Check ((RunValue) -eq "`"$exe`" run") 'the Run value is still right'
 
 Step 'quit'
-$q = Start-Process -FilePath $exe -ArgumentList 'quit', '--wait', '30' -Wait -PassThru
-Check ($q.ExitCode -eq 0) "quit stopped the app (exit code $($q.ExitCode))"
+$code = RunAndWait $exe @('quit', '--wait', '30')
+Check ($code -eq 0) "quit stopped the app (exit code $code)"
 Check ((AppProcs).Count -eq 0) 'no process is left'
-$q = Start-Process -FilePath $exe -ArgumentList 'quit' -Wait -PassThru
-Check ($q.ExitCode -eq 10) "quit with no app running says so (exit code $($q.ExitCode))"
+$code = RunAndWait $exe @('quit')
+Check ($code -eq 10) "quit with no app running says so (exit code $code)"
 
 # ---------------------------------------------------------------- the Run value
 Step 'a Run value the user turned off stays off'
@@ -114,7 +120,8 @@ Step 'silent uninstall with the app running'
 $running = StartApp
 $un = Join-Path $app 'unins000.exe'
 $ulog = Join-Path $logs 'uninstall.log'
-Start-Process -FilePath $un -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$ulog`"" -Wait | Out-Null
+$code = RunAndWait $un @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$ulog`"")
+Write-Host "uninstaller exit code $code"
 # (the uninstaller copies itself and returns at once; the work is done by the copy)
 Check (WaitFor { -not (Test-Path $exe) } 90) 'the program files are gone'
 Check (WaitFor { (AppProcs).Count -eq 0 } 30) 'the app was stopped'
