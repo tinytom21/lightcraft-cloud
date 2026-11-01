@@ -68,7 +68,18 @@ The PC apps are one program, `lightcraft-cloud-desktop`, built two ways. The pho
 
 Setup is manual today. You need an rclone remote for your cloud storage (`rclone config`). The phone connects with a config file exported from the PC. There is no QR pairing.
 
-Downloads for Windows and Linux will be on the [Releases](https://github.com/tinytom21/lightcraft-cloud/releases) page from v0.2.0.
+Downloads are on the [Releases](https://github.com/tinytom21/lightcraft-cloud/releases) page (from v0.2.0):
+
+| File | For |
+| --- | --- |
+| `lightcraft-cloud-<version>-windows-setup.exe` | Windows, another PC. A normal installer; no administrator needed. |
+| `lightcraft-cloud-<version>-linux-light.tar.gz` | Linux, another PC (no LightCraft engine). |
+| `lightcraft-cloud-<version>-linux-home.tar.gz` | Linux, the home PC (with the engine). |
+| `SHA256SUMS` | checksums of the three files above. |
+
+Each Linux archive holds the program, `librclone.so`, the licences and an `install.sh`. Unpack it and run `./install.sh`: it puts the
+program in `~/.local/bin` and the library in `~/.local/lib/lightcraft-cloud/`, where the app looks for it. It needs no `sudo`.
+The Linux programs need glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 or newer).
 
 **1. LightCraft settings, on every PC.** In LightCraft open Settings, then the Import tab. Under XMP sidecars tick **Automatically write changes into XMP sidecars** and set **Sidecar names** to `IMG_1.CR3.xmp`. Without this, edits stay inside LightCraft and are never sent.
 
@@ -79,14 +90,14 @@ Downloads for Windows and Linux will be on the [Releases](https://github.com/tin
 
 **3. Home PC (Linux).**
 
-1. Download the app from Releases and start it. Setup opens on the first run.
+1. Download `lightcraft-cloud-<version>-linux-home.tar.gz` from Releases, unpack it and run `./install.sh`. Start `lightcraft-cloud-desktop`. Setup opens on the first run.
 2. Choose **This is my home PC**, your photo folder and your rclone remote with a folder on it.
 3. Choose "Originals and previews", or "Previews only" if you do not want the originals in the cloud.
 4. Save. The first sync starts and uploads the library.
 
 **4. Another PC.**
 
-1. Windows: run the installer from Releases. Linux: download the app from Releases.
+1. Windows: run `lightcraft-cloud-<version>-windows-setup.exe` from Releases. Linux: unpack `lightcraft-cloud-<version>-linux-light.tar.gz` and run `./install.sh`.
 2. Start it. Setup opens on the first run. Choose **This is another PC**.
 3. Pick the cloud library, a photo folder on this PC, and tick the folders to keep.
 4. Add that photo folder to LightCraft, and set LightCraft's import destination to it.
@@ -97,15 +108,20 @@ Downloads for Windows and Linux will be on the [Releases](https://github.com/tin
 2. On the home PC, export a phone-only rclone remote to a config file, and copy it to the phone.
 3. In the app's Preferences pick the file, the remote and a name for the phone. The [phone guide](https://github.com/tinytom21/lightcraft-android/blob/lightcraft-cloud/apps/lightcraft-android/docs/cloud-library.md) has the steps.
 
+**Updates.** The app looks on GitHub once a day for a newer published release (the request carries only the app's name and version in its User-Agent, nothing about you or your library;
+switch it off with "Check for new versions" in Settings). When there is one, the tray menu and the Status window say so. On Windows, **Update now**
+downloads the installer, checks it against the release's `SHA256SUMS`, waits until no sync is running, installs it and restarts the app. On Linux it only links to the
+release; unpack the new archive and run `./install.sh` again. Nothing is ever installed without a click.
+
 ## Status and limits
 
 This is early software.
 
 * Albums and uploading photos from the phone are not built.
-* The Windows app is not code-signed, so Windows SmartScreen warns when you first run it.
+* The Windows installer and program are not code-signed, so Windows SmartScreen warns when you first run the installer. The update check compares the installer with a checksum file from the same GitHub release: that catches a damaged download, not a release published by someone who has taken over the GitHub account.
 * The home PC app is Linux only. A Mac build does not exist.
 * LightCraft must be running for the automatic refresh to work. Without it the photos and sidecars still arrive; run Synchronize Folder in LightCraft.
-* On Linux the app needs rclone's `librclone.so` library in a place it looks; see the [config reference](docs/desktop-app.md#config).
+* On Linux the app needs rclone's `librclone.so` library in a place it looks; `install.sh` puts it there (see the [config reference](docs/desktop-app.md#config) for the places).
 
 ## Docs
 

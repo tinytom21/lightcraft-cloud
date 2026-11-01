@@ -14,6 +14,7 @@ lightcraft-cloud-desktop sync --once [--dry-run] [--config FILE]   apply phone e
 lightcraft-cloud-desktop status [--config FILE]                    last run, tracked photos, remote size, pending inbox files
 lightcraft-cloud-desktop inbox-check [--config FILE]               how many phone edits wait in the cloud inbox
 lightcraft-cloud-desktop purge-history [--days N] [--config FILE]  delete old cloud history, only after a recent backup
+lightcraft-cloud-desktop quit [--wait SECONDS] [--config FILE]     ask the running app to stop and wait for it (the installer uses this)
 ```
 
 `sync --once` does what `lc-cloud sync` does, in the same six steps: the inbox (three-way merge of phone edits into the
@@ -44,7 +45,7 @@ against a missing drive), the mobile files, and the manifest last. `--dry-run` c
   lost to a newer PC sidecar is announced too, and listed under "Newest wins" in the Status window.
 
 The tray icon (idle green, syncing blue, changes waiting amber, paused grey, error red) has the menu Sync now, Pause/Resume,
-Status..., Settings..., Quit. On Linux it is a StatusNotifierItem over D-Bus (`tray-icon`'s `ksni` backend: no GTK or
+Status..., Settings..., Quit, and, while a newer version exists, "Update to vX.Y.Z" at the top (see "Installing and updating"). On Linux it is a StatusNotifierItem over D-Bus (`tray-icon`'s `ksni` backend: no GTK or
 libappindicator to install). The desktop needs a tray host: KDE has one; GNOME needs the AppIndicator extension (Ubuntu ships
 it). The windows (egui 0.37, the version LightCraft v0.15.0 uses) run as `lightcraft-cloud-desktop ui status|settings`, in a
 process of their own, so a problem in a window cannot stop the sync; they read `<state>/status.json` and write the config file,
@@ -52,12 +53,54 @@ which the app notices within two seconds.
 
 * **Setup / Settings**: the photo folder (text field + Browse), folders to leave out, the storage (one of your rclone remotes,
   listed by name only, plus a folder on it; or a folder on this PC), "Originals and previews" or "Previews only", notifications,
-  "Start when I log in". With no config the app opens Setup instead of syncing; saving writes the config file (keys the app does
+  "Start when I log in", "Check for new versions". With no config the app opens Setup instead of syncing; saving writes the config file (keys the app does
   not know are kept) and the app starts syncing.
 * **Status**: last sync (time, result), photos published, phone edits applied, the inbox, the next scheduled sync, "Newest wins"
   decisions, problems.
 * "Start when I log in" writes `~/.config/autostart/lightcraft-cloud-desktop.desktop` (`Exec=<this binary> run`) only when the
-  box is ticked in Settings, and removes it when unticked. Nothing else writes there.
+  box is ticked in Settings, and removes it when unticked. Nothing else writes there. On Windows it is the value `LightCraft Cloud` in
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (`"<exe>" run`), which the installer's task of the same name writes too.
+
+### Installing and updating
+
+**Windows** installs with `lightcraft-cloud-<version>-windows-setup.exe` (per user, no administrator, to
+`%LOCALAPPDATA%\Programs\LightCraft Cloud\`; see "Windows" in [building.md](building.md) for what it does). Running a newer setup over an
+installed or running copy is an update: the installer asks the app to quit (`quit`), replaces the files and starts it again. Config and state
+live elsewhere, so they carry over, also from a copy that was run from the old zip. **Linux** installs with the `install.sh` in the archive
+(`lightcraft-cloud-<version>-linux-light.tar.gz` or `-linux-home.tar.gz`; no `sudo`): the program in `~/.local/bin`, `librclone.so` in
+`~/.local/lib/lightcraft-cloud/`, which is one of the places the app looks for it.
+
+**`quit`.** `lightcraft-cloud-desktop quit` writes `<state>/quit-request` and waits (60 seconds by default, `--wait`). The running app
+takes the file within two seconds and ends after the job it is running, so a sync is not cut off if it ends in time. Exit code 0: stopped;
+10: no app was running; 11: still running after the wait; 12: the app did not take the request (an older version). It prints one line and
+opens no window or console.
+
+**The update check** (`check_for_updates`, default on; the Settings checkbox "Check for new versions"). About 90 seconds after the start
+and then once a day (an hour later if a check failed), the app asks `https://api.github.com/repos/tinytom21/lightcraft-cloud/releases/latest`
+for the latest published release, with the User-Agent `lightcraft-cloud-desktop/<version> (update check; +<repository url>)` and no
+other data. Drafts and prereleases are ignored; versions are compared as semantic versions (`0.10.0` is newer than `0.9.0`,
+`0.3.0-rc.1` is older than `0.3.0`). A check that fails writes one line to the log and nothing else: the result is kept in
+`<state>/update.json`, separate from `status.json`, so it can never change the tray icon or the Status window's state line. With the
+setting off nothing is requested and nothing is shown.
+
+When a newer version exists the tray menu gets "Update to vX.Y.Z" (Windows) or "Version X.Y.Z is available: open the page" (Linux), the Status
+window gets a row with the version, a link to the release notes and, on Windows, an **Update now** button, and one desktop notification is
+shown per version (not again after a restart; not at all with notifications off). Nothing is downloaded or installed until the click.
+
+**Update now** (Windows). The window asks the app (the file `<state>/update-request`); the app then downloads
+`lightcraft-cloud-<version>-windows-setup.exe` and `SHA256SUMS` from that release into `<state>/update/` (Status shows the progress bar and sizes),
+compares the installer's SHA-256 with the one in `SHA256SUMS`, and, if no sync or upload is running ("Updating when this sync finishes" otherwise), runs the
+installer with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`. The installer stops the app, replaces the files and starts the new version. Anything
+that goes wrong first (no network, a checksum that does not match, a file name or address that is not the release's, an installer that
+fails) is shown in Status in plain words and leaves the running app as it was; the old version keeps working. The leftover installer is removed at the next start.
+Only addresses under `https://github.com/tinytom21/lightcraft-cloud/releases/download/<tag>/` are downloaded, and a redirect is followed only to GitHub's own file
+hosts (`objects.githubusercontent.com` and its release-assets and github-releases siblings), over HTTPS. The address cannot be changed by a setting,
+an environment variable or an option.
+
+**What this does and does not protect.** `SHA256SUMS` is a file of the same GitHub release as the installer, so the check catches a
+damaged or cut-off download, not a release published by someone who controls the GitHub account. The installer is not code-signed, so
+SmartScreen warns when it is run by hand from a browser download (a file the app downloads itself carries no browser mark, so SmartScreen is not expected to ask; this has not been checked on a real desktop yet). On Linux the app never replaces
+itself: it only shows that a newer version exists, with the link.
 
 **Secrets, for now**: the app uses your existing rclone config (`rclone_config`, default the standard one), like the Python tool.
 It lists remote names only and never shows, logs or copies the config's contents. Storing the cloud credentials in the system
@@ -147,10 +190,11 @@ are ignored, so a Python config can be reused. State in `~/.local/state/lightcra
 | `notify` | `true` | desktop notifications (the app) |
 | `device_history_days`, `photo_backup` | `30`, `"restic"` | the weekly purge: age limit; the backup command it asks (`photo_backup snapshots --latest 1 --json`); `""` switches the purge off |
 | `lightcraft_control_port` | `7980` | the port of your running LightCraft's control channel (see "Telling your LightCraft about new photos"); `0` switches it off, and then nothing at all is sent to LightCraft |
+| `check_for_updates` | `true` | look on GitHub for a newer version, shortly after the start and once a day (see "Installing and updating"); `false`: no request is made and no update is shown |
 | `lightcraft_refresh_edits` | `true` | ask LightCraft to read the sidecars the sync wrote, so new edits show without Synchronize Folder (see "Showing new edits in LightCraft"); `false` turns only that off |
 | `state_dir` | `~/.local/state/lightcraft-cloud-desktop` | must not be under `~/Pictures` |
 | `rclone_config` | `$RCLONE_CONFIG`, else `~/.config/rclone/rclone.conf` | rclone config used for an rclone remote |
-| `librclone` | `$LIBRCLONE`, else `librclone.so` next to the executable, else `~/.local/lib/lightcraft-cloud/librclone.so`, else the system search path | the host `librclone.so` (see "Building the Rust part" in [building.md](building.md)); the desktop app looks in that order, so an installed app needs the library in one of those places |
+| `librclone` | `$LIBRCLONE`, else `librclone.so` next to the executable, else `~/.local/lib/lightcraft-cloud/librclone.so`, else the system search path | the host `librclone.so` (see "Building the Rust part" in [building.md](building.md)); the desktop app looks in that order, so an installed app needs the library in one of those places (the Linux archives' `install.sh` and the Windows installer put it there) |
 
 ### Telling your LightCraft about new photos
 

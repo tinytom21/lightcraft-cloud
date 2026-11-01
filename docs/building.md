@@ -37,15 +37,32 @@ upstream LightCraft engine does not have the command `library.addRemote` yet. Th
 
 ## Windows (light build: another PC)
 
-CI (`.github/workflows/desktop.yml`) builds the light build (`--no-default-features`: no engine, role "another PC") on
-`windows-latest` and uploads `lightcraft-cloud-windows-light.zip`: the exe, `librclone.dll` (rclone's librclone built from
-[`tools/librclone`](../tools/librclone), rclone v1.75.2, with Go and cgo), the licences and a short `README.txt`. Keep the DLL next to the exe.
+`.github/workflows/release.yml` builds the light build (`--no-default-features`: no engine, role "another PC") on `windows-latest` and
+packs it into `lightcraft-cloud-<version>-windows-setup.exe` with Inno Setup (`packaging/windows/lightcraft-cloud.iss`; CI installs
+Inno Setup 6.6.1 with Chocolatey). The installer is per user (no administrator): `%LOCALAPPDATA%\Programs\LightCraft Cloud\` with the
+exe, `librclone.dll` (rclone's librclone built from [`tools/librclone`](../tools/librclone), rclone v1.75.2, with Go and cgo), the licences and
+`README.txt` (`packaging/windows/README.txt`). `desktop.yml` still builds, lints and tests the light build on every push, but no longer
+makes a zip.
 
+* The installer stops a running app with the new exe's `quit` command, replaces the files, and starts the app again; if the install
+  fails it starts the old one. `lightcraft-cloud-desktop quit [--wait SECONDS]` writes `<state>/quit-request`; the running app notices it
+  within two seconds, deletes it and ends after the job it is running. Exit codes: 0 stopped, 10 not running, 11 still running after
+  the wait (default 60 s), 12 not answered (an app from before `quit` existed). The installer ends what is left with `taskkill` after 11 and 12.
+  A sync survives that: files are written to a temporary name and renamed, the manifest is written last, the run lock is an OS file lock that
+  goes with the process, and the next sync carries on. Leftover `.part-*` files are removed after a day.
+* "Start when I log in" is a task, on by default. It writes the same value as the Settings box, `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+  `LightCraft Cloud` = `"<exe>" run`. A silent run (the updater's) keeps what the user has: a value that is there is rewritten to the new
+  location, one that is not stays off.
+* Uninstall removes the program files and that value. It keeps `%APPDATA%\lightcraft-cloud-desktop`, `%LOCALAPPDATA%\lightcraft-cloud-desktop` and
+  `%APPDATA%\rclone`, and never looks at a photo folder.
+* `packaging/windows/test-installer.ps1` is the test CI runs on the real Windows runner (silent install to the default place, `--version`,
+  the Run value, the Start menu and Apps & features entries, install again over a running copy, `quit`, a Run value that was turned off or
+  points at the zip, silent uninstall, planted files that must survive). A runner has no tray session, so it cannot show the tray icon, a click, the wizard's
+  pages or SmartScreen.
 * Config `%APPDATA%\lightcraft-cloud-desktop\config.toml`, state and log `%LOCALAPPDATA%\lightcraft-cloud-desktop\`, rclone's config
-  `%APPDATA%\rclone\rclone.conf` (or `RCLONE_CONFIG` / `rclone_config`). "Start when I log in" sets a value in
-  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (no administrator needed).
+  `%APPDATA%\rclone\rclone.conf` (or `RCLONE_CONFIG` / `rclone_config`).
 * The exe is a windows-subsystem program: no console opens for the tray app. In a terminal the commands (`status`, `sync --once`,
-  `run --headless`) print as usual, though the prompt may come back before they finish.
+  `run --headless`, `quit`) print as usual, though the prompt may come back before they finish.
 * **Telling LightCraft about downloaded photos** (only needed for photos that arrive from the home PC) uses LightCraft's control
   port, which is off by default and which Windows users cannot enable the way the Flatpak does. Either start LightCraft with
   `lightcraft.exe --control 7980` (edit the shortcut's Target; installed in `%LOCALAPPDATA%\Programs\ArtCraft\LightCraft`, or
@@ -56,6 +73,23 @@ CI (`.github/workflows/desktop.yml`) builds the light build (`--no-default-featu
   still land in the photo folder; run Synchronize Folder in LightCraft. The same port is how new phone edits show up in LightCraft by
   themselves (see "Showing new edits in LightCraft" in [desktop-app.md](desktop-app.md)); it also lets the app tell you when LightCraft is not saving edits to sidecars,
   which on Windows is the usual reason edits never reach the phone.
+
+## Releasing
+
+A release is made from a commit on `main` whose `desktop.yml` run is green. Nothing publishes by itself.
+
+1. Set the version in `Cargo.toml` (`[workspace.package] version`; the desktop crate and the sync crate follow it), run `cargo check` so `Cargo.lock` follows, update the docs, merge.
+2. Tag it and push the tag: `git tag v0.2.0 && git push origin v0.2.0`. The tag must be `v` plus the Cargo version; the workflow stops otherwise.
+3. `release.yml` builds, on real runners: the Windows installer (and runs `test-installer.ps1` against it), `linux-light` and `linux-home` on
+   Ubuntu 22.04 (the oldest runner, so glibc 2.35 is the minimum; the job prints the real minimum and fails if it is higher; each archive's `install.sh` is
+   run in a throwaway home folder), and `SHA256SUMS` of the three files. Then it creates a **draft** release with those four files and generated notes.
+   A tag with a `-` in it (`v0.3.0-rc.1`) makes a draft prerelease.
+4. Open the draft on GitHub, read the notes, try the installer on a real Windows desktop (tray icon, Status window, SmartScreen), and publish it by hand.
+   The in-app updater only sees published releases (never drafts or prereleases), and it needs `lightcraft-cloud-<version>-windows-setup.exe` and `SHA256SUMS` in the release.
+
+`workflow_dispatch` and a push to the branch `installer` run the same builds and checks and publish nothing. The updater reads
+`https://api.github.com/repos/tinytom21/lightcraft-cloud/releases/latest`; its address, and the address installers are downloaded from, are constants in `apps/desktop/src/update.rs`
+(there is deliberately no setting, environment variable or option for them; the tests use a local server through a function only tests can call).
 
 ### Parity with the Python tool
 
