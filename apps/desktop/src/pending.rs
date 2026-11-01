@@ -252,7 +252,8 @@ pub fn install_hook(home: &mut lightcraft_cloud_client::home::Home, state_dir: &
 }
 
 // (written with POSIX paths, which are not absolute on Windows; `windows_tests` below covers the rule there)
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -513,7 +514,8 @@ mod tests {
     }
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 mod windows_tests {
     use super::*;
 
