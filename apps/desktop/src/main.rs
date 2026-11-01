@@ -154,6 +154,7 @@ fn build_home(cfg: &Config, log_to_file: bool) -> std::result::Result<Home, Fail
     let mut home = Home::new(cfg.home_config()?, cfg.open_remote()?)?;
     // (photos adopted by the command line are queued too: the running app tells LightCraft about them)
     lightcraft_cloud_desktop::pending::install_hook(&mut home, &cfg.state_dir, cfg.file.lightcraft_control_port);
+    lightcraft_cloud_desktop::pending::install_sidecar_hook(&mut home, &cfg.state_dir, cfg.file.lightcraft_control_port, cfg.file.lightcraft_refresh_edits);
     let logfile = cfg.state_dir.join("logs").join("lightcraft-cloud-desktop.log");
     home.set_logger(move |m| {
         let line = format!("{} {m}", utc_iso(SystemTime::now()));
@@ -212,6 +213,9 @@ fn run_other(a: Args, cfg: Config) -> std::result::Result<(), Failure> {
     if cfg.file.lightcraft_control_port != 0 {
         let list = PendingList::new(&cfg.state_dir);
         other.set_adopted_hook(move |p| list.add(p, &utc_iso(SystemTime::now())));
+        if cfg.file.lightcraft_refresh_edits {
+            other.set_sidecar_hook(lightcraft_cloud_desktop::refresh::queue_hook(&cfg.state_dir));
+        }
     }
     match a.cmd.as_str() {
         "sync" => {

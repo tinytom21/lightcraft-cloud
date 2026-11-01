@@ -1,13 +1,17 @@
 //! A small client for LightCraft's control channel (`lightcraft --control PORT`, docs/control-protocol.md in LightCraft):
 //! JSON lines on `127.0.0.1:PORT`, one request per line and one reply per line.
 //!
-//! The app uses it for one thing: asking a running LightCraft to **add** photos that are already in the photo folder
-//! (`library.import`, mode `add`: the library keeps a reference to each file where it is; nothing is copied, moved or deleted).
+//! The app uses it for two things: asking a running LightCraft to **add** photos that are already in the photo folder
+//! (`library.import`, mode `add`: the library keeps a reference to each file where it is; nothing is copied, moved or deleted),
+//! and asking it to **read the sidecars** that sync has just written into a folder of the library (`folder.synchronize` with
+//! only `readMetadata` on, see [`crate::refresh`]).
 //! What this module will and will not do:
 //!
-//! * It sends two kinds of request and no others: `engine.commands` (to find out that what answers is LightCraft) and
-//!   `engine.execute` with `library.import` and `{paths, mode: "add"}`. [`allowed`] checks every line before it is written
-//!   and refuses anything else, so a change that adds a library-changing command fails there and in the tests.
+//! * It sends four kinds of request and no others: `engine.commands` (to find out that what answers is LightCraft),
+//!   `engine.execute` with `library.import` and `{paths, mode: "add"}`, `engine.execute` with `library.xmpPreferences` and
+//!   **no parameters** (so it only reads the setting), and `engine.execute` with `folder.synchronize` and exactly
+//!   `{path, importNew: false, relinkMoved: false, removeMissing: false, readMetadata: true}`. [`allowed`] checks every line before
+//!   it is written and refuses anything else, so a change that adds a library-changing command fails there and in the tests.
 //! * It never names a library, never starts LightCraft and never passes `--library`: it only talks to a LightCraft someone
 //!   else started, with the library that LightCraft has open.
 //! * Nothing here can block for long: the connect, each read and the whole wait for a reply have deadlines, a reply line is
@@ -71,18 +75,43 @@ pub struct ImportReply {
     pub scanned: Option<usize>,
 }
 
+/// LightCraft's reply to `folder.synchronize`: `{imported, relinked, removed, read, failed: [[path, error]]}`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SyncReply {
+    /// Photos whose sidecar was read (the sidecar won).
+    pub read: usize,
+    /// Photos added, relinked and removed: all three are asked not to happen, and are only counted so an odd answer can be logged.
+    pub imported: usize,
+    pub relinked: usize,
+    pub removed: usize,
+    /// Paths that could not be handled, with LightCraft's reason.
+    pub failed: Vec<(String, String)>,
+}
+
 /// What the bridge needs from LightCraft. The real one is [`TcpLink`]; tests use a fake or a fake server.
 pub trait LightCraftLink {
     /// Connect and check that what answers is LightCraft (and that it can import). Must be called before [`import_add`].
     fn identify(&mut self) -> Result<(), LinkError>;
     /// Ask LightCraft to add these photos (absolute paths of files) to the library it has open, where they are.
     fn import_add(&mut self, paths: &[String]) -> Result<ImportReply, LinkError>;
+    /// Whether LightCraft writes its edits into XMP sidecars (`autoWrite`), read with `library.xmpPreferences` and no parameters.
+    /// A link that cannot say refuses.
+    fn xmp_auto_write(&mut self) -> Result<bool, LinkError> {
+        Err(LinkError::Refused("this link cannot read the XMP preferences".into()))
+    }
+    /// Ask LightCraft to read the sidecars saved after the library last had its say in this folder of the library (and the folders
+    /// inside it), and nothing else: no photo is added, relinked or removed. `folder` is an absolute path as the system writes it.
+    fn sync_folder(&mut self, _folder: &str) -> Result<SyncReply, LinkError> {
+        Err(LinkError::Refused("this link cannot synchronize a folder".into()))
+    }
 }
 
-/// The two requests this client can make.
+/// The requests this client can make.
 enum Request<'a> {
     Commands,
     ImportAdd(&'a [String]),
+    XmpPreferences,
+    SyncFolder(&'a str),
 }
 
 fn request_value(req: &Request, id: u64) -> Value {
@@ -91,11 +120,16 @@ fn request_value(req: &Request, id: u64) -> Value {
         Request::ImportAdd(paths) => {
             json!({"id": id, "method": "engine.execute", "params": {"command": "library.import", "params": {"paths": paths, "mode": "add"}}})
         }
+        Request::XmpPreferences => json!({"id": id, "method": "engine.execute", "params": {"command": "library.xmpPreferences", "params": {}}}),
+        Request::SyncFolder(path) => json!({"id": id, "method": "engine.execute", "params": {"command": "folder.synchronize", "params": {
+            "path": path, "importNew": false, "relinkMoved": false, "removeMissing": false, "readMetadata": true}}}),
     }
 }
 
-/// Whether a request line is one of the two this client may send: `engine.commands` with nothing else, or `library.import` with
-/// only `paths` (a list of text) and `mode` `add`. Everything that writes goes through this.
+/// Whether a request line is one of the four this client may send: `engine.commands` with nothing else; `library.import` with
+/// only `paths` (a list of text) and `mode` `add`; `library.xmpPreferences` with **empty** parameters (any parameter could change
+/// the setting); `folder.synchronize` with exactly `path` (non-empty, absolute), `importNew`, `relinkMoved` and `removeMissing`
+/// false and `readMetadata` true. Everything that writes goes through this.
 pub fn allowed(line: &str) -> bool {
     let Ok(v) = serde_json::from_str::<Value>(line) else { return false };
     let Some(o) = v.as_object() else { return false };
@@ -106,13 +140,25 @@ pub fn allowed(line: &str) -> bool {
         Some("engine.commands") => !o.contains_key("params"),
         Some("engine.execute") => {
             let Some(p) = o.get("params").and_then(Value::as_object) else { return false };
-            if p.len() != 2 || p.get("command").and_then(Value::as_str) != Some("library.import") {
+            let Some(q) = p.get("params").and_then(Value::as_object) else { return false };
+            if p.len() != 2 {
                 return false;
             }
-            let Some(q) = p.get("params").and_then(Value::as_object) else { return false };
-            q.len() == 2
-                && q.get("mode").and_then(Value::as_str) == Some("add")
-                && q.get("paths").and_then(Value::as_array).is_some_and(|a| !a.is_empty() && a.iter().all(Value::is_string))
+            match p.get("command").and_then(Value::as_str) {
+                Some("library.import") => {
+                    q.len() == 2
+                        && q.get("mode").and_then(Value::as_str) == Some("add")
+                        && q.get("paths").and_then(Value::as_array).is_some_and(|a| !a.is_empty() && a.iter().all(Value::is_string))
+                }
+                Some("library.xmpPreferences") => q.is_empty(),
+                Some("folder.synchronize") => {
+                    q.len() == 5
+                        && q.get("path").and_then(Value::as_str).is_some_and(|d| !d.trim().is_empty() && std::path::Path::new(d).is_absolute())
+                        && ["importNew", "relinkMoved", "removeMissing"].iter().all(|k| q.get(*k) == Some(&Value::Bool(false)))
+                        && q.get("readMetadata") == Some(&Value::Bool(true))
+                }
+                _ => false,
+            }
         }
         _ => false,
     }
@@ -155,6 +201,31 @@ pub fn parse_import_result(result: &Value) -> Result<ImportReply, LinkError> {
     Ok(ImportReply { imported, duplicates, failed, scanned })
 }
 
+/// Read `library.xmpPreferences`' result: `{autoWrite, naming}` (camelCase). `autoWrite` must be there as a boolean.
+pub fn parse_auto_write(result: &Value) -> Result<bool, LinkError> {
+    result
+        .get("autoWrite")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| LinkError::Protocol("the XMP preferences reply has no usable `autoWrite`".into()))
+}
+
+/// Read `folder.synchronize`'s result. `read` and `failed` must be there.
+pub fn parse_sync_result(result: &Value) -> Result<SyncReply, LinkError> {
+    let bad = |what: &str| LinkError::Protocol(format!("the synchronize reply has no usable {what}"));
+    let o = result.as_object().ok_or_else(|| bad("result"))?;
+    let count = |k: &str| o.get(k).and_then(Value::as_u64).map(|n| n as usize);
+    let read = count("read").ok_or_else(|| bad("`read` count"))?;
+    let mut failed = Vec::new();
+    for f in o.get("failed").and_then(Value::as_array).ok_or_else(|| bad("`failed` list"))? {
+        let pair = f.as_array().filter(|a| a.len() == 2);
+        match pair.and_then(|a| Some((a[0].as_str()?, a[1].as_str()?))) {
+            Some((p, why)) => failed.push((p.to_string(), why.to_string())),
+            None => return Err(bad("failed entry")),
+        }
+    }
+    Ok(SyncReply { read, imported: count("imported").unwrap_or(0), relinked: count("relinked").unwrap_or(0), removed: count("removed").unwrap_or(0), failed })
+}
+
 /// How long each step may take.
 #[derive(Debug, Clone, Copy)]
 pub struct Timeouts {
@@ -164,11 +235,17 @@ pub struct Timeouts {
     /// The whole wait for the reply to an import. LightCraft answers on its UI thread (up to 60 s when it is busy); a batch is
     /// small, and giving up only means the photos are asked about again (they then come back as duplicates).
     pub import: Duration,
+    /// The whole wait for the reply to `library.xmpPreferences` (a read of a setting).
+    pub prefs: Duration,
+    /// The whole wait for the reply to `folder.synchronize`. It scans the folder (a share can be slow) and reads on the UI thread, so
+    /// it is given longer than an import; giving up only means the folder is asked about again (reading the same sidecars twice
+    /// changes nothing).
+    pub sync: Duration,
 }
 
 impl Default for Timeouts {
     fn default() -> Self {
-        Timeouts { connect: Duration::from_millis(800), identify: Duration::from_secs(5), import: Duration::from_secs(30) }
+        Timeouts { connect: Duration::from_millis(800), identify: Duration::from_secs(5), import: Duration::from_secs(30), prefs: Duration::from_secs(10), sync: Duration::from_secs(60) }
     }
 }
 
@@ -291,6 +368,22 @@ impl LightCraftLink for TcpLink {
         let v = self.call(&Request::ImportAdd(paths), self.timeouts.import)?;
         parse_import_result(&v)
     }
+
+    fn xmp_auto_write(&mut self) -> Result<bool, LinkError> {
+        if self.conn.is_none() {
+            return Err(LinkError::Unreachable("not identified".into()));
+        }
+        let v = self.call(&Request::XmpPreferences, self.timeouts.prefs)?;
+        parse_auto_write(&v)
+    }
+
+    fn sync_folder(&mut self, folder: &str) -> Result<SyncReply, LinkError> {
+        if self.conn.is_none() {
+            return Err(LinkError::Unreachable("not identified".into()));
+        }
+        let v = self.call(&Request::SyncFolder(folder), self.timeouts.sync)?;
+        parse_sync_result(&v)
+    }
 }
 
 #[cfg(test)]
@@ -359,7 +452,7 @@ mod tests {
     }
 
     fn quick() -> Timeouts {
-        Timeouts { connect: Duration::from_millis(300), identify: Duration::from_millis(400), import: Duration::from_millis(400) }
+        Timeouts { connect: Duration::from_millis(300), identify: Duration::from_millis(400), import: Duration::from_millis(400), prefs: Duration::from_millis(400), sync: Duration::from_millis(400) }
     }
 
     #[test]
@@ -422,6 +515,152 @@ mod tests {
         }
         assert_eq!(seen.iter().filter(|l| l.contains("engine.commands")).count(), 1);
         assert!(seen[1..].iter().all(|l| l.contains(r#""command":"library.import""#) && l.contains(r#""mode":"add""#)));
+    }
+
+    /// An absolute folder of this system, without writing a separator (the same test on Windows).
+    fn abs_folder() -> String {
+        std::env::temp_dir().join("lc-gate-photos").to_string_lossy().into_owned()
+    }
+
+    fn sync_line(params: Value) -> String {
+        json!({"id": 3, "method": "engine.execute", "params": {"command": "folder.synchronize", "params": params}}).to_string()
+    }
+
+    fn good_sync(path: &str) -> Value {
+        json!({"path": path, "importNew": false, "relinkMoved": false, "removeMissing": false, "readMetadata": true})
+    }
+
+    #[test]
+    fn the_gate_admits_the_synchronize_with_only_reading_on_and_the_preferences_read_and_refuses_every_near_miss() {
+        let dir = abs_folder();
+        assert!(allowed(&sync_line(good_sync(&dir))));
+        assert!(allowed(r#"{"id":4,"method":"engine.execute","params":{"command":"library.xmpPreferences","params":{}}}"#));
+        // synchronize: each flag the wrong way round, an extra key, a missing key, a relative or empty path, other types
+        let with = |k: &str, v: Value| {
+            let mut p = good_sync(&dir);
+            p[k] = v;
+            sync_line(p)
+        };
+        for (k, v) in [
+            ("removeMissing", json!(true)),
+            ("importNew", json!(true)),
+            ("relinkMoved", json!(true)),
+            ("readMetadata", json!(false)),
+            ("importNew", json!("false")),
+            ("readMetadata", json!(1)),
+            ("removeMissing", json!(null)),
+            ("path", json!("Photos/Trip")),
+            ("path", json!("relative")),
+            ("path", json!("")),
+            ("path", json!("   ")),
+            ("path", json!(5)),
+            ("disk", json!(true)),
+            ("scanned", json!(true)),
+            ("extra", json!(1)),
+        ] {
+            assert!(!allowed(&with(k, v.clone())), "{k} = {v}");
+        }
+        for k in ["path", "importNew", "relinkMoved", "removeMissing", "readMetadata"] {
+            let mut p = good_sync(&dir);
+            p.as_object_mut().unwrap().remove(k);
+            assert!(!allowed(&sync_line(p)), "without {k}");
+        }
+        assert!(!allowed(&sync_line(json!({}))));
+        assert!(!allowed(&sync_line(json!([]))));
+        // an extra key beside command/params, and the command under another method
+        assert!(!allowed(&json!({"id": 3, "method": "engine.execute", "params": {"command": "folder.synchronize", "params": good_sync(&dir), "x": 1}}).to_string()));
+        assert!(!allowed(&json!({"id": 3, "method": "ui.menu.invoke", "params": {"command": "folder.synchronize", "params": good_sync(&dir)}}).to_string()));
+        assert!(!allowed(&json!({"id": 3, "method": "folder.synchronize", "params": good_sync(&dir)}).to_string()));
+        // the preferences: any parameter at all could change the setting
+        let prefs = |p: &str| format!(r#"{{"id":4,"method":"engine.execute","params":{{"command":"library.xmpPreferences","params":{p}}}}}"#);
+        assert!(allowed(&prefs("{}")));
+        for p in [r#"{"autoWrite":true}"#, r#"{"autoWrite":false}"#, r#"{"naming":"full"}"#, r#"{"rereadChanged":true}"#, r#"{"x":null}"#, "null", "[]", "true"] {
+            assert!(!allowed(&prefs(p)), "{p}");
+        }
+        assert!(!allowed(r#"{"id":4,"method":"engine.execute","params":{"command":"library.xmpPreferences"}}"#), "no params object at all");
+        assert!(!allowed(r#"{"id":4,"method":"library.xmpPreferences","params":{}}"#));
+        // (and the existing commands are still refused where they were)
+        assert!(!allowed(r#"{"id":1,"method":"engine.execute","params":{"command":"photo.saveMetadataToFile","params":{}}}"#));
+    }
+
+    #[test]
+    fn the_wire_requests_for_the_preferences_and_the_synchronize_are_exactly_what_the_gate_admits() {
+        let dir = abs_folder();
+        let f = serve(|v| {
+            let id = &v["id"];
+            Some(match (v["method"].as_str(), v["params"]["command"].as_str()) {
+                (Some("engine.commands"), _) => commands_reply(id, &[], true),
+                (_, Some("library.xmpPreferences")) => json!({"id": id, "ok": true, "result": {"autoWrite": true, "naming": "stem"}}).to_string(),
+                (_, Some("folder.synchronize")) => {
+                    json!({"id": id, "ok": true, "result": {"imported": 0, "relinked": 0, "removed": 0, "read": 3, "failed": [["/x.xmp", "bad"]]}}).to_string()
+                }
+                _ => json!({"id": id, "ok": false, "error": "unknown"}).to_string(),
+            })
+        });
+        let mut l = TcpLink::with_timeouts(f.port, quick());
+        assert!(matches!(l.xmp_auto_write(), Err(LinkError::Unreachable(_))), "not identified: nothing is sent");
+        assert!(matches!(l.sync_folder(&dir), Err(LinkError::Unreachable(_))));
+        assert_eq!(f.seen.lock().unwrap().len(), 0);
+        l.identify().unwrap();
+        assert!(l.xmp_auto_write().unwrap());
+        let r = l.sync_folder(&dir).unwrap();
+        assert_eq!((r.read, r.failed.clone()), (3, vec![("/x.xmp".to_string(), "bad".to_string())]));
+        let seen = f.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 3);
+        for line in &seen {
+            assert!(allowed(line), "{line}");
+        }
+        let prefs: Value = serde_json::from_str(&seen[1]).unwrap();
+        assert_eq!(prefs, json!({"id": 2, "method": "engine.execute", "params": {"command": "library.xmpPreferences", "params": {}}}));
+        let sync: Value = serde_json::from_str(&seen[2]).unwrap();
+        assert_eq!(sync, json!({"id": 3, "method": "engine.execute", "params": {"command": "folder.synchronize", "params": good_sync(&dir)}}));
+        // a relative folder never leaves this process
+        assert!(matches!(l.sync_folder("Trip"), Err(LinkError::Refused(_))));
+        assert_eq!(f.seen.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn replies_to_the_preferences_and_the_synchronize_are_read_as_lightcraft_0_16_sends_them() {
+        assert_eq!(parse_auto_write(&json!({"autoWrite": false, "naming": "stem"})), Ok(false));
+        assert_eq!(parse_auto_write(&json!({"autoWrite": true, "naming": "full"})), Ok(true));
+        for bad in [json!(null), json!({}), json!({"auto_write": true}), json!({"autoWrite": "true"}), json!([true])] {
+            assert!(matches!(parse_auto_write(&bad), Err(LinkError::Protocol(_))), "{bad}");
+        }
+        let ok = parse_sync_result(&json!({"imported": 0, "relinked": 0, "removed": 0, "read": 2, "failed": [["/a.xmp", "no"]]})).unwrap();
+        assert_eq!((ok.read, ok.failed.len(), ok.imported + ok.relinked + ok.removed), (2, 1, 0));
+        for bad in [json!(null), json!({"read": 1}), json!({"failed": []}), json!({"read": [], "failed": []}), json!({"read": 1, "failed": [["a"]]})] {
+            assert!(matches!(parse_sync_result(&bad), Err(LinkError::Protocol(_))), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_refused_folder_does_not_stop_the_next_one_over_the_real_link() {
+        // LightCraft refuses the first folder; the link drops the connection on any error, and the refresh must connect again
+        let (a, b) = (std::env::temp_dir().join("lc-wire-A"), std::env::temp_dir().join("lc-wire-B"));
+        let a_text = a.to_string_lossy().into_owned();
+        let f = serve(move |v| {
+            let id = &v["id"];
+            Some(match (v["method"].as_str(), v["params"]["command"].as_str()) {
+                (Some("engine.commands"), _) => commands_reply(id, &[], true),
+                (_, Some("library.xmpPreferences")) => json!({"id": id, "ok": true, "result": {"autoWrite": true, "naming": "stem"}}).to_string(),
+                (_, Some("folder.synchronize")) if v["params"]["params"]["path"] == json!(a_text) => {
+                    json!({"id": id, "ok": false, "error": format!("{a_text}: no photo in the library was imported from it")}).to_string()
+                }
+                (_, Some("folder.synchronize")) => json!({"id": id, "ok": true, "result": {"imported": 0, "relinked": 0, "removed": 0, "read": 1, "failed": []}}).to_string(),
+                _ => json!({"id": id, "ok": false, "error": "unknown"}).to_string(),
+            })
+        });
+        let d = std::env::temp_dir().join(format!("lc-desktop-wire-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let l = crate::refresh::list(&d);
+        l.touch(&a, "2026-11-01T10:00:00Z").unwrap();
+        l.touch(&b, "2026-11-01T10:00:01Z").unwrap();
+        let mut link = TcpLink::with_timeouts(f.port, quick());
+        let r = crate::refresh::run(&l, &mut link, true);
+        assert_eq!((r.refreshed, r.waiting, r.reachable), (1, 1, Some(true)), "{:?}", r.log);
+        assert_eq!(l.list()[0].path, a.to_string_lossy());
+        assert!(f.seen.lock().unwrap().iter().all(|line| allowed(line) || line.contains("engine.commands")));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -529,7 +768,7 @@ mod tests {
 
     #[test]
     fn the_bridge_never_starts_lightcraft_names_a_library_or_uses_the_engine() {
-        for (name, src) in [("lightcraft.rs", include_str!("lightcraft.rs")), ("pending.rs", include_str!("pending.rs"))] {
+        for (name, src) in [("lightcraft.rs", include_str!("lightcraft.rs")), ("pending.rs", include_str!("pending.rs")), ("refresh.rs", include_str!("refresh.rs"))] {
             // (the needles are split so that this test does not find itself)
             let code: String = src.split("#[cfg(test)]").next().unwrap().lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
             for needle in [["--", "library"].concat(), ["Command", "::new"].concat(), ["std::", "process"].concat(), ["lightcraft_", "engine"].concat(), ["LIGHTCRAFT", "_LIBRARY"].concat(), ["Pictures/", "LightCraft"].concat()] {

@@ -6,8 +6,8 @@
 //! `--no-default-features` builds the light app: the same tray, windows and scheduler, no engine.
 //!
 //! * [`scheduler`], [`service`], [`watcher`], [`worker`]: the background engine (UI-independent; tests move a fake [`clock`]);
-//! * [`lightcraft`], [`pending`]: telling a running LightCraft to add the photos that were adopted (its control channel, and the
-//!   durable list);
+//! * [`lightcraft`], [`pending`], [`refresh`]: telling a running LightCraft to add the photos that were adopted, and to read the
+//!   sidecars that were written (its control channel, and the durable lists);
 //! * [`appstate`], [`config`], [`settings`], [`autostart`], [`instance`], [`backup`], [`notifier`]: what it keeps and uses;
 //! * [`ui`], [`tray`], [`app`]: the windows (egui, in a process of their own), the tray icon, and what ties them together.
 
@@ -24,6 +24,7 @@ pub mod lightcraft;
 pub mod live;
 pub mod notifier;
 pub mod pending;
+pub mod refresh;
 pub mod scheduler;
 pub mod service;
 pub mod settings;

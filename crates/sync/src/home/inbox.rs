@@ -345,6 +345,7 @@ impl Home {
                 }
                 let out = merged.as_deref().unwrap_or(&data);
                 write_atomic(&abs_t, out)?;
+                self.sidecar_written(&abs_t);
                 let new_hash = sidecar_version(out);
                 versions.store(out, &new_hash);
                 cur.insert(rel.clone(), (new_hash.clone(), p.epoch));

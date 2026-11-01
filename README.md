@@ -61,7 +61,9 @@ CI (`.github/workflows/desktop.yml`) builds the light build (`--no-default-featu
   ([control protocol](https://github.com/storytold/lightcraft/blob/main/docs/control-protocol.md): loopback only, no authentication).
   The app's `lightcraft_control_port` (default 7980, 0 = off) must match. LightCraft's Windows installer also installs
   `lightcraft-cli.exe`, but this app does not need it: it speaks the control protocol over a TCP socket itself. Without the port the photos
-  still land in the photo folder; run Synchronize Folder in LightCraft.
+  still land in the photo folder; run Synchronize Folder in LightCraft. The same port is how new phone edits show up in LightCraft by
+  themselves (see "Showing new edits in LightCraft"); it also lets the app tell you when LightCraft is not saving edits to sidecars,
+  which on Windows is the usual reason edits never reach the phone.
 
 ## Desktop app (`lightcraft-cloud-desktop`)
 
@@ -176,8 +178,8 @@ To get it back, untick its folder in Settings, save, then tick it again and save
 photos stay where they are.
 
 What LightCraft has to do: a **new photo** is added through its control port. A **sidecar the app replaced** is a file LightCraft
-did not write, so use LightCraft's own "re-read changed sidecars" (Synchronize Folder) to see it; the app has no command to ask
-LightCraft to do that for you. A photo moved to `removed/` leaves a missing file in LightCraft; remove it there.
+did not write; with the control port on, the app asks LightCraft to read it (see "Showing new edits in LightCraft"), and without the
+port you run Synchronize Folder in LightCraft yourself. A photo moved to `removed/` leaves a missing file in LightCraft; remove it there.
 
 The tray and the pause rules are the same. Being offline is a calm state: one line in Problems, no notification, a retry at the
 next pass. The app never looks at other devices' edits in the inbox. The device name must not be a phone's: the first pass refuses a
@@ -207,7 +209,8 @@ are ignored, so a Python config can be reused. State in `~/.local/state/lightcra
 | `previews_only` | `false` | upload sidecars, thumbnails, smart previews and the manifest, but not the photo files |
 | `notify` | `true` | desktop notifications (the app) |
 | `device_history_days`, `photo_backup` | `30`, `"restic"` | the weekly purge: age limit; the backup command it asks (`photo_backup snapshots --latest 1 --json`); `""` switches the purge off |
-| `lightcraft_control_port` | `7980` | the port of your running LightCraft's control channel (see "Telling your LightCraft about new photos"); `0` switches it off |
+| `lightcraft_control_port` | `7980` | the port of your running LightCraft's control channel (see "Telling your LightCraft about new photos"); `0` switches it off, and then nothing at all is sent to LightCraft |
+| `lightcraft_refresh_edits` | `true` | ask LightCraft to read the sidecars the sync wrote, so new edits show without Synchronize Folder (see "Showing new edits in LightCraft"); `false` turns only that off |
 | `state_dir` | `~/.local/state/lightcraft-cloud-desktop` | must not be under `~/Pictures` |
 | `rclone_config` | `$RCLONE_CONFIG`, else `~/.config/rclone/rclone.conf` | rclone config used for an rclone remote |
 | `librclone` | `$LIBRCLONE`, else `librclone.so` next to the executable, else `~/.local/lib/lightcraft-cloud/librclone.so`, else the system search path | the host `librclone.so` (see "Building the Rust part"); the desktop app looks in that order, so an installed app needs the library in one of those places |
@@ -232,7 +235,8 @@ What the app does with it, and nothing else:
   or restart loses none;
 * every 2 minutes, and right after a sync that added photos, if the list is not empty it checks that what answers on the port is
   LightCraft (`engine.commands`) and then sends `library.import` with mode `add` and the photos' paths, ten at a time. `add` means
-  LightCraft keeps a reference to each file where it is: nothing is copied, moved, or deleted. No other command is ever sent;
+  LightCraft keeps a reference to each file where it is: nothing is copied, moved, or deleted. Besides that, only the two requests
+  in "Showing new edits in LightCraft" are ever sent (every line is checked against that exact list before it is written);
 * a photo leaves the list only when LightCraft's reply says it has it (added, or already in the library). One it refuses is
   retried and logged; after ten tries it is left alone, **Problems** in the Status window says so once, and it is tried once
   more the next time the app starts;
@@ -241,6 +245,31 @@ What the app does with it, and nothing else:
 * the app never starts LightCraft, never passes `--library`, never opens or names your library: LightCraft adds the photos to
   whichever library it has open. The Flatpak can only see some folders (`xdg-pictures` by default): a photo folder it cannot see
   comes back as a failure ("No such file"), so give it access (`flatpak override --user --filesystem=<folder> ai.storyteller.lightcraft`).
+
+### Showing new edits in LightCraft
+
+When the app writes a sidecar into your photo folder (a phone edit applied or merged on the home PC; the home PC's newer sidecar taken
+on another PC), LightCraft keeps showing the old edit until you run **Synchronize Folder** on that folder. With the control port on, the
+app does that for you, until LightCraft does it by itself (upstream PR #3421), when this setting can be switched off:
+
+* the folder of each sidecar the app writes goes on a second small list in the state folder (`lightcraft-refresh/`), once per folder
+  however many sidecars it holds; nothing is lost if either program restarts. A folder that is not imported in LightCraft (normal on a
+  PC where you did not import it) is tried three times, then dropped with one line in the log, not in Problems;
+* at the next check (within 2 minutes, and right after a sync that wrote sidecars), after the new photos have been added, the app
+  asks `library.xmpPreferences` with no parameters, which only reads the setting. **Only if LightCraft writes its edits into sidecars**
+  does it go on, because reading a sidecar makes the sidecar win, and in a LightCraft that keeps edits only in its catalog a sidecar
+  that merely looks newer could replace them;
+* then, for up to three folders per check, one at a time, it sends `folder.synchronize` with exactly `readMetadata` on and
+  `importNew`, `relinkMoved` and `removeMissing` off: LightCraft reads the sidecars saved after the library last had its say, the
+  sidecar wins, as one undo step. No photo is added or removed and no file is touched; a sidecar LightCraft wrote itself is never an
+  update. An answer that takes up to a minute is waited for; no answer keeps the folder for the next check;
+* if LightCraft is **not** saving edits to sidecars, nothing is sent, the folders wait, and Status shows an amber line, on both roles:
+  "LightCraft isn't saving edits to sidecars, so they can't sync. In LightCraft: Settings, Import tab, XMP sidecars: tick Automatically
+  write changes into XMP sidecars." It goes as soon as the option is on. This is also why edits made on a Windows PC never reached the
+  phone: without that option they stay in LightCraft's catalog. The line is silent when LightCraft is closed or the port is off, and it
+  shows even with `lightcraft_refresh_edits = false`;
+* sidecars must be named like the photo with `.xmp` added, `IMG_1.CR3.xmp` (Settings, Import tab, **Sidecar names**): LightCraft's
+  other naming, `IMG_1.xmp`, would be one file for a raw and its JPEG.
 
 ### Rendering
 

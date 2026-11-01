@@ -176,14 +176,19 @@ pub fn queue_row(o: &OtherView) -> String {
 /// The LightCraft row: "Waiting for LightCraft: N photos" while photos wait to be added there (nothing when the feature is off
 /// or nothing waits), and a hint when the port has not answered.
 pub fn lightcraft_row(s: &AppStatus) -> Option<(String, Option<String>)> {
-    if s.lightcraft_port == 0 || s.lightcraft_waiting == 0 {
+    let folders = if s.lightcraft_port != 0 { s.lightcraft_refresh_waiting } else { 0 };
+    if s.lightcraft_port == 0 || (s.lightcraft_waiting == 0 && folders == 0) {
         return None;
     }
     let n = s.lightcraft_waiting;
-    let text = format!("Waiting for LightCraft: {n} {}", if n == 1 { "photo" } else { "photos" });
+    let mut text = if n == 0 { "Waiting for LightCraft".to_string() } else { format!("Waiting for LightCraft: {n} {}", if n == 1 { "photo" } else { "photos" }) };
+    if folders > 0 {
+        let f = format!("{folders} {} to read the new edits of", if folders == 1 { "folder" } else { "folders" });
+        text += &if n == 0 { format!(": {f}") } else { format!("; {f}") };
+    }
     let hint = (s.lightcraft_reachable == Some(false)).then(|| {
         format!(
-            "LightCraft is not answering on port {}. Open LightCraft with its control port on (see the README); the photos are added when it answers.",
+            "LightCraft is not answering on port {}. Open LightCraft with its control port on (see the README); what waits is sent when it answers.",
             s.lightcraft_port
         )
     });
@@ -278,6 +283,9 @@ pub fn show_with_actions(ui: &mut Ui, v: &StatusView, refused: &[(String, String
     let health = s.health();
     let (state_text, color) = (health.text, tone_color(health.tone));
     state_line(ui, &state_text, color);
+    if s.lightcraft_sidecars_off() {
+        caution(ui, crate::appstate::SIDECARS_OFF_LINE);
+    }
     // (only while the app is running: a status file left by one that stopped mid-job says nothing true about the time)
     if v.running && s.activity.is_busy() {
         progress_block(ui, s.activity.progress(), v.now);
@@ -417,6 +425,15 @@ mod tests {
         assert!(lightcraft_row(&s).unwrap().1.is_none());
         s.lightcraft_reachable = Some(false);
         assert!(lightcraft_row(&s).unwrap().1.unwrap().contains("7980"));
+        s.lightcraft_reachable = Some(true);
+        // folders whose new edits are to be read
+        s.lightcraft_waiting = 0;
+        assert_eq!(lightcraft_row(&s), None);
+        s.lightcraft_refresh_waiting = 2;
+        assert_eq!(lightcraft_row(&s).unwrap().0, "Waiting for LightCraft: 2 folders to read the new edits of");
+        s.lightcraft_waiting = 1;
+        s.lightcraft_refresh_waiting = 1;
+        assert_eq!(lightcraft_row(&s).unwrap().0, "Waiting for LightCraft: 1 photo; 1 folder to read the new edits of");
         s.lightcraft_port = 0;
         assert_eq!(lightcraft_row(&s), None, "off");
     }

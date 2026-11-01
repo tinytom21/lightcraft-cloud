@@ -63,6 +63,7 @@ impl HomeWorker {
             move || c.now()
         });
         pending::install_hook(&mut home, &cfg.state_dir, cfg.file.lightcraft_control_port);
+        pending::install_sidecar_hook(&mut home, &cfg.state_dir, cfg.file.lightcraft_control_port, cfg.file.lightcraft_refresh_edits);
         if let Some(feed) = &self.progress {
             let feed = feed.clone();
             home.set_progress_hook(move |p| feed.report(p));
@@ -168,6 +169,7 @@ impl Worker for HomeWorker {
             source_name,
             notices: newest_wins_notices(&report.inbox),
             failed: report.failed.len(),
+            sidecars: report.inbox.applied + report.inbox.merged,
             ..SyncOutcome::default()
         })
     }

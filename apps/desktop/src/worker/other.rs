@@ -80,6 +80,10 @@ impl OtherWorker {
         if cfg.file.lightcraft_control_port != 0 {
             let list = PendingList::new(&cfg.state_dir);
             other.set_adopted_hook(move |p| list.add(p, &utc_iso(std::time::SystemTime::now())));
+            // (and the folders where the home PC's sidecars replace this PC's, for the same LightCraft to read again)
+            if cfg.file.lightcraft_refresh_edits {
+                other.set_sidecar_hook(crate::refresh::queue_hook(&cfg.state_dir));
+            }
         }
         let logfile = super::log_path(&cfg.state_dir);
         other.set_logger(move |m| {
@@ -126,6 +130,7 @@ pub(crate) fn outcome_of(r: &OtherReport) -> SyncOutcome {
             held_unchecked: r.queue.held_unchecked,
         }),
         recheck: r.recheck,
+        sidecars: r.sidecars_updated.len(),
         ..SyncOutcome::default()
     }
 }

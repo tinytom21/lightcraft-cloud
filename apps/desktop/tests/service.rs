@@ -529,6 +529,59 @@ fn a_problem_from_lightcraft_is_shown_once_and_a_silent_lightcraft_never_stops_s
     assert!(calls.contains(&"sync".to_string()), "{calls:?}");
 }
 
+fn sidecars(on: Option<bool>, folders: usize) -> BridgeReport {
+    BridgeReport { port: 7980, reachable: Some(true), sidecars: on, refresh_waiting: folders, ..BridgeReport::default() }
+}
+
+#[test]
+fn the_sidecar_warning_appears_when_lightcraft_says_it_is_off_and_goes_as_soon_as_it_is_on_or_lightcraft_is_gone() {
+    use lightcraft_cloud_desktop::appstate::{HealthKind, SIDECARS_OFF_SHORT, Tone};
+    for other in [false, true] {
+        let mut r = rig(if other { "sc-other" } else { "sc-home" });
+        r.fake.0.lock().unwrap().other = other;
+        r.advance(20);
+        assert!(!r.svc.status().lightcraft_sidecars_off);
+        r.fake.0.lock().unwrap().bridge = vec![sidecars(Some(false), 2), sidecars(Some(false), 2), sidecars(Some(true), 0)];
+        r.advance(120);
+        let st = r.svc.status();
+        assert!(st.lightcraft_sidecars_off() && st.lightcraft_refresh_waiting == 2, "{st:?}");
+        let h = st.health();
+        assert_eq!((h.kind, h.tone, h.text.as_str()), (HealthKind::Waiting, Tone::Wait, SIDECARS_OFF_SHORT), "calm amber, not a failure");
+        assert!(st.last_error.is_none() && st.errors.is_empty(), "nothing is listed as a problem: {st:?}");
+        r.advance(120);
+        assert!(r.svc.status().lightcraft_sidecars_off(), "it stays while LightCraft keeps saying so");
+        r.advance(120);
+        let st = r.svc.status();
+        assert!(!st.lightcraft_sidecars_off());
+        assert_eq!(st.health().kind, HealthKind::UpToDate, "gone as soon as it is on");
+        // LightCraft closes (no answer): nothing to say, so nothing is shown
+        r.fake.0.lock().unwrap().bridge = vec![sidecars(Some(false), 0), BridgeReport { port: 7980, reachable: Some(false), ..BridgeReport::default() }];
+        r.advance(120);
+        assert!(r.svc.status().lightcraft_sidecars_off());
+        r.advance(120);
+        assert!(!r.svc.status().lightcraft_sidecars_off(), "silent when LightCraft is closed");
+        // the feature off
+        r.fake.0.lock().unwrap().bridge = vec![sidecars(Some(false), 0), BridgeReport::default()];
+        r.advance(120);
+        r.advance(120);
+        assert!(!r.svc.status().lightcraft_sidecars_off());
+    }
+}
+
+#[test]
+fn a_sync_that_wrote_sidecars_asks_lightcraft_at_once_and_one_that_wrote_none_does_not() {
+    let mut r = rig("sc-sync");
+    r.fake.0.lock().unwrap().syncs = vec![edits(0, 0, &[]), edits(2, 0, &["A"]), Ok(SyncOutcome { sidecars: 1, ..SyncOutcome::default() })];
+    r.advance(20); // the startup sync: nothing written
+    assert_eq!(r.fake.0.lock().unwrap().bridge_calls.len(), 0);
+    r.svc.handle(Command::SyncNow);
+    r.advance(0);
+    assert_eq!(r.fake.0.lock().unwrap().bridge_calls.len(), 1, "two phone edits applied");
+    r.svc.handle(Command::SyncNow);
+    r.advance(0);
+    assert_eq!(r.fake.0.lock().unwrap().bridge_calls.len(), 2, "the home PC's sidecar taken on another PC");
+}
+
 #[test]
 fn with_the_feature_off_nothing_shows() {
     let mut r = rig("lc3");

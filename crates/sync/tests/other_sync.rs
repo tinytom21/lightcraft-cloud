@@ -527,6 +527,29 @@ fn a_newer_home_sidecar_replaces_an_unchanged_local_one_and_the_old_one_is_kept_
 }
 
 #[test]
+fn the_sidecar_hook_hears_of_each_pulled_sidecar_and_of_nothing_when_the_pass_changed_nothing() {
+    let mut fx = Fx::new("pull-hook", &["A"]);
+    let told = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+    let t = told.clone();
+    fx.other.set_sidecar_hook(move |p| {
+        t.lock().unwrap().push(p.to_path_buf());
+        Ok(())
+    });
+    fx.publish(vec![ph("A/x.jpg").sc("A/x.xmp", xmp(1))]);
+    fx.sync();
+    assert!(told.lock().unwrap().is_empty(), "a photo downloaded with its sidecar is imported after, which reads the sidecar");
+    fx.tick(3600);
+    fx.sync();
+    assert!(told.lock().unwrap().is_empty(), "nothing changed");
+    fx.home_edits("A/x.jpg", xmp(2));
+    let r = fx.sync();
+    assert_eq!(r.sidecars_updated, ["A/x.xmp"]);
+    assert_eq!(*told.lock().unwrap(), [fx.src.join("A").join("x.xmp")]);
+    fx.sync();
+    assert_eq!(told.lock().unwrap().len(), 1, "a pass that pulls nothing tells nothing");
+}
+
+#[test]
 fn a_sidecar_the_home_pc_made_for_a_photo_without_one_is_downloaded() {
     let mut fx = Fx::new("pull-new", &["A"]);
     fx.publish(vec![ph("A/x.jpg")]);

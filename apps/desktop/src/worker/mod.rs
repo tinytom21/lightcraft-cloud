@@ -14,6 +14,7 @@ use crate::config::{Config, Role};
 use crate::lightcraft::LightCraftLink;
 use crate::live::Feed;
 use crate::pending::{self, PendingList};
+use crate::refresh;
 use crate::service::{BridgeReport, JobError, PurgeOutcome, QueueView, SyncOutcome, UploadOutcome, Worker, WorkerInfo};
 
 #[cfg(feature = "home")]
@@ -68,8 +69,23 @@ pub(crate) fn flush_pending(cfg: Option<&Config>, link: &LinkFactory, retry_give
     }
     let list = PendingList::new(&cfg.state_dir);
     let mut link = link(port);
+    // 1. the photos first, so that a photo that is new to the library is in it when its folder is read
     let r = pending::flush(&list, &mut *link, retry_given_up);
-    BridgeReport { port, delivered: r.delivered, waiting: r.waiting, given_up: r.given_up, reachable: r.reachable, problems: r.problems, log: r.log }
+    let mut rep = BridgeReport { port, delivered: r.delivered, waiting: r.waiting, given_up: r.given_up, reachable: r.reachable, problems: r.problems, log: r.log, ..BridgeReport::default() };
+    // 2. LightCraft's setting for sidecars (asked at every check, even with nothing to refresh) and then the folders whose sidecars were
+    //    written. Not when the photos found the port silent: that costs no second try.
+    if rep.reachable != Some(false) {
+        let folders = refresh::list(&cfg.state_dir);
+        let f = refresh::run(&folders, &mut *link, cfg.file.lightcraft_refresh_edits);
+        rep.sidecars = f.auto_write;
+        rep.refresh_waiting = if cfg.file.lightcraft_refresh_edits { f.waiting } else { 0 };
+        rep.refreshed = f.refreshed;
+        rep.reachable = f.reachable.or(rep.reachable);
+        rep.log.extend(f.log);
+    } else {
+        rep.refresh_waiting = if cfg.file.lightcraft_refresh_edits { refresh::list(&cfg.state_dir).list().len() } else { 0 };
+    }
+    rep
 }
 
 /// Picks the worker for the config's role.
@@ -239,5 +255,118 @@ mod login_tests {
         let JobError::Failed(text) = to_job_error(Error::Remote(DEAD.into())) else { panic!() };
         assert!(text.ends_with("rclone config reconnect gdrive:"), "{text}");
         assert!(login_line("invalid_grant").ends_with("rclone config reconnect <remote>:"));
+    }
+}
+
+#[cfg(test)]
+mod flush_tests {
+    use super::*;
+    use crate::lightcraft::{ImportReply, LinkError, SyncReply};
+    use std::sync::Mutex;
+
+    /// A LightCraft that records what it was asked, in order, and has the setting it is told.
+    #[derive(Clone)]
+    struct Recorder {
+        calls: Arc<Mutex<Vec<String>>>,
+        auto_write: Arc<Mutex<Result<bool, LinkError>>>,
+        identify: Arc<Mutex<Option<LinkError>>>,
+    }
+
+    impl LightCraftLink for Recorder {
+        fn identify(&mut self) -> Result<(), LinkError> {
+            self.calls.lock().unwrap().push("identify".into());
+            self.identify.lock().unwrap().clone().map_or(Ok(()), Err)
+        }
+        fn import_add(&mut self, paths: &[String]) -> Result<ImportReply, LinkError> {
+            self.calls.lock().unwrap().push(format!("import {}", paths.len()));
+            Ok(ImportReply { imported: paths.len(), ..ImportReply::default() })
+        }
+        fn xmp_auto_write(&mut self) -> Result<bool, LinkError> {
+            self.calls.lock().unwrap().push("prefs".into());
+            self.auto_write.lock().unwrap().clone()
+        }
+        fn sync_folder(&mut self, f: &str) -> Result<SyncReply, LinkError> {
+            self.calls.lock().unwrap().push(format!("sync {f}"));
+            Ok(SyncReply { read: 1, ..SyncReply::default() })
+        }
+    }
+
+    fn setup(tag: &str, extra: &str) -> (PathBuf, Config, Recorder) {
+        let d = std::env::temp_dir().join(format!("lc-desktop-flush-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("c.toml");
+        std::fs::write(&f, format!("remote = '{}'\nstate_dir = '{}'\nlightcraft_control_port = 7999\n{extra}", d.join("cloud").display(), d.join("state").display())).unwrap();
+        let cfg = Config::load(Some(&f)).unwrap();
+        let rec = Recorder { calls: Arc::default(), auto_write: Arc::new(Mutex::new(Ok(true))), identify: Arc::default() };
+        (d, cfg, rec)
+    }
+
+    fn factory(rec: &Recorder) -> LinkFactory {
+        let rec = rec.clone();
+        Box::new(move |_| Box::new(rec.clone()))
+    }
+
+    #[test]
+    fn photos_are_added_first_and_then_the_folders_are_read_and_the_setting_is_asked_even_with_nothing_queued() {
+        let (d, cfg, rec) = setup("order", "");
+        let link = factory(&rec);
+        // nothing queued: only the question
+        let r = flush_pending(Some(&cfg), &link, false);
+        assert_eq!((r.sidecars, r.refresh_waiting, r.reachable), (Some(true), 0, Some(true)));
+        assert_eq!(*rec.calls.lock().unwrap(), ["identify", "prefs"]);
+        rec.calls.lock().unwrap().clear();
+        // a new photo and the folder of a sidecar written beside it
+        let photo = d.join("Photos").join("Trip").join("new.jpg");
+        PendingList::new(&cfg.state_dir).add(&photo, "2026-11-01T10:00:00Z").unwrap();
+        refresh::queue_hook(&cfg.state_dir)(&photo.with_extension("xmp")).unwrap();
+        let r = flush_pending(Some(&cfg), &link, false);
+        let calls = rec.calls.lock().unwrap().clone();
+        let folder = photo.parent().unwrap().to_str().unwrap().to_string();
+        assert_eq!(calls, ["identify", "import 1", "identify", "prefs", &format!("sync {folder}")], "the import first");
+        assert_eq!((r.delivered, r.refreshed, r.refresh_waiting, r.waiting), (1, 1, 0, 0));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn autowrite_off_is_reported_and_sends_nothing_a_closed_lightcraft_keeps_the_folders_and_the_setting_off_in_the_config_does_too() {
+        let (d, cfg, rec) = setup("off", "");
+        let link = factory(&rec);
+        let hook = refresh::queue_hook(&cfg.state_dir);
+        hook(&d.join("Photos").join("A").join("a.xmp")).unwrap();
+        hook(&d.join("Photos").join("B").join("b.xmp")).unwrap();
+        *rec.auto_write.lock().unwrap() = Ok(false);
+        let r = flush_pending(Some(&cfg), &link, false);
+        assert_eq!((r.sidecars, r.refresh_waiting, r.refreshed), (Some(false), 2, 0));
+        assert!(!rec.calls.lock().unwrap().iter().any(|c| c.starts_with("sync")));
+        // closed
+        *rec.identify.lock().unwrap() = Some(LinkError::Unreachable("refused".into()));
+        let r = flush_pending(Some(&cfg), &link, false);
+        assert_eq!((r.sidecars, r.refresh_waiting, r.reachable), (None, 2, Some(false)));
+        *rec.identify.lock().unwrap() = None;
+        // on: drained
+        *rec.auto_write.lock().unwrap() = Ok(true);
+        let r = flush_pending(Some(&cfg), &link, false);
+        assert_eq!((r.sidecars, r.refresh_waiting, r.refreshed), (Some(true), 0, 2));
+        let _ = std::fs::remove_dir_all(&d);
+        // the choice off in the config: still asked (for the warning), nothing sent, nothing dropped, nothing shown as waiting
+        let (d, cfg, rec) = setup("cfgoff", "lightcraft_refresh_edits = false\n");
+        hook_one(&cfg, &d);
+        let r = flush_pending(Some(&cfg), &factory(&rec), false);
+        assert_eq!((r.sidecars, r.refreshed, r.refresh_waiting), (Some(true), 0, 0));
+        assert!(!rec.calls.lock().unwrap().iter().any(|c| c.starts_with("sync")));
+        assert_eq!(refresh::list(&cfg.state_dir).list().len(), 1, "kept for when it is switched on again");
+        let _ = std::fs::remove_dir_all(&d);
+        // the port off: nothing at all
+        let (d, cfg, rec) = setup("portoff", "");
+        let mut cfg = cfg;
+        cfg.file.lightcraft_control_port = 0;
+        assert_eq!(flush_pending(Some(&cfg), &factory(&rec), false), BridgeReport::default());
+        assert!(rec.calls.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn hook_one(cfg: &Config, d: &Path) {
+        refresh::queue_hook(&cfg.state_dir)(&d.join("Photos").join("A").join("a.xmp")).unwrap();
     }
 }

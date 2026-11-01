@@ -40,7 +40,7 @@ impl Notifier for Spy {
 
 /// Stands in for LightCraft: takes every photo it is sent.
 #[derive(Clone, Default)]
-struct FakeLightCraft(Arc<Mutex<Vec<String>>>);
+struct FakeLightCraft(Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<String>>>);
 
 impl LightCraftLink for FakeLightCraft {
     fn identify(&mut self) -> Result<(), LinkError> {
@@ -49,6 +49,13 @@ impl LightCraftLink for FakeLightCraft {
     fn import_add(&mut self, paths: &[String]) -> Result<ImportReply, LinkError> {
         self.0.lock().unwrap().extend(paths.iter().cloned());
         Ok(ImportReply { imported: paths.len(), ..ImportReply::default() })
+    }
+    fn xmp_auto_write(&mut self) -> Result<bool, LinkError> {
+        Ok(true)
+    }
+    fn sync_folder(&mut self, folder: &str) -> Result<lightcraft_cloud_desktop::lightcraft::SyncReply, LinkError> {
+        self.1.lock().unwrap().push(folder.to_string());
+        Ok(lightcraft_cloud_desktop::lightcraft::SyncReply { read: 1, ..Default::default() })
     }
 }
 
@@ -186,6 +193,29 @@ fn the_first_pass_downloads_the_chosen_folder_tells_lightcraft_and_the_status_sa
     // the next pass has nothing to do, so says nothing
     run_due(&mut svc, &e, 15 * 60);
     assert_eq!(spy.0.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn the_home_pcs_new_sidecar_is_taken_and_its_folder_is_read_in_lightcraft_once() {
+    let e = env("refresh", "other");
+    let mut svc = service(&e, &Spy::default(), false);
+    run_due(&mut svc, &e, 20);
+    run_due(&mut svc, &e, 15 * 60);
+    assert!(e.lightcraft.1.lock().unwrap().is_empty(), "downloading a photo with its sidecar needs no refresh: the import reads the sidecar");
+    // the home PC applies a phone edit: a new sidecar and a new manifest
+    let new = b"<x:xmpmeta>version two, from the phone</x:xmpmeta>".to_vec();
+    put(&e.cloud, "originals/Lisbon/A.xmp", &new);
+    let mpath = e.cloud.join("mobile/manifest.json");
+    let mut m: serde_json::Value = serde_json::from_slice(&std::fs::read(&mpath).unwrap()).unwrap();
+    m["photos"][0]["sidecarVersion"] = json!(sha16(&new));
+    m["generated"] = json!("2026-11-01T10:00:00Z");
+    put(&e.cloud, "mobile/manifest.json", m.to_string().as_bytes());
+    run_due(&mut svc, &e, 15 * 60);
+    assert_eq!(std::fs::read(e.photos.join("Lisbon/A.xmp")).unwrap(), new);
+    assert_eq!(*e.lightcraft.1.lock().unwrap(), [e.photos.join("Lisbon").to_str().unwrap().to_string()]);
+    assert_eq!(svc.status().lightcraft_refresh_waiting, 0);
+    run_due(&mut svc, &e, 15 * 60);
+    assert_eq!(e.lightcraft.1.lock().unwrap().len(), 1, "nothing changed, so nothing more is read");
 }
 
 #[test]

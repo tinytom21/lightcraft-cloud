@@ -174,6 +174,8 @@ pub struct Home {
     import_crash: Option<String>,
     /// Told of every photo an adoption leaves on disk, before the import is filed away (see [`Home::set_adopted_hook`]).
     adopted_hook: Option<AdoptedHook>,
+    /// Told of every sidecar a phone edit was written into (see [`Home::set_sidecar_hook`]).
+    sidecar_hook: Option<AdoptedHook>,
     /// Where the stages of a sync are reported (see [`Home::set_progress_hook`]).
     rp: Reporter,
 }
@@ -185,7 +187,7 @@ impl Home {
     /// Refuses a state folder under `~/Pictures` (keep it out of backups and away from the user's libraries).
     pub fn new(cfg: HomeConfig, remote: Arc<dyn Remote>) -> Result<Self> {
         check_state_dir(&cfg.state_dir)?;
-        Ok(Home { cfg, remote, clock: Arc::new(SystemTime::now), log: Arc::new(|m| log::info!("{m}")), retry_delay: Duration::from_secs(2), import_crash: None, adopted_hook: None, rp: Reporter::new(None, Arc::new(SystemTime::now)) })
+        Ok(Home { cfg, remote, clock: Arc::new(SystemTime::now), log: Arc::new(|m| log::info!("{m}")), retry_delay: Duration::from_secs(2), import_crash: None, adopted_hook: None, sidecar_hook: None, rp: Reporter::new(None, Arc::new(SystemTime::now)) })
     }
 
     pub fn config(&self) -> &HomeConfig {
@@ -218,6 +220,22 @@ impl Home {
     /// again). Not called in a dry run.
     pub fn set_adopted_hook(&mut self, f: impl Fn(&Path) -> std::result::Result<(), String> + Send + Sync + 'static) {
         self.adopted_hook = Some(Arc::new(f));
+    }
+
+    /// Be told the absolute path of every sidecar a phone edit (applied or merged) was written into, just after it is in the photo
+    /// folder. The app uses it to have a running LightCraft read the new edits. It is not called for an edit that was kept off, for
+    /// one that changes nothing, or in a dry run. An `Err` is only logged: the edit is already written.
+    pub fn set_sidecar_hook(&mut self, f: impl Fn(&Path) -> std::result::Result<(), String> + Send + Sync + 'static) {
+        self.sidecar_hook = Some(Arc::new(f));
+    }
+
+    /// Tell the sidecar hook (if any) that `path` was just written.
+    pub(crate) fn sidecar_written(&self, path: &Path) {
+        if let Some(h) = &self.sidecar_hook
+            && let Err(e) = h(path)
+        {
+            self.logln(format!("{}: the sidecar hook failed: {e}", path.display()));
+        }
     }
 
     /// Pause before the second and third attempt of a remote call that failed (default 2 s).

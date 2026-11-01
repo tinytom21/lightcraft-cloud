@@ -5,6 +5,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -244,8 +245,9 @@ fn the_cli_and_the_app_do_not_sync_at_the_same_time() {
 
 // ------------------------------------------------------------------ telling LightCraft about adopted photos
 
-/// A LightCraft on a loopback port: the command list, and an import that adds everything it is sent. Keeps the lines it got.
-fn fake_lightcraft(port: u16) -> Arc<Mutex<Vec<String>>> {
+/// A LightCraft on a loopback port: the command list, an import that adds everything it is sent, the XMP preferences (with the
+/// `autoWrite` the test holds), and a synchronize that reads one sidecar. Keeps the lines it got.
+fn fake_lightcraft_with(port: u16, auto_write: Arc<AtomicBool>) -> Arc<Mutex<Vec<String>>> {
     let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let s = seen.clone();
@@ -258,6 +260,10 @@ fn fake_lightcraft(port: u16) -> Arc<Mutex<Vec<String>>> {
                 let id = &v["id"];
                 let reply = if v["method"] == "engine.commands" {
                     serde_json::json!({"id": id, "ok": true, "result": [{"id": "library.folders", "enabled": true}, {"id": "library.import", "enabled": true}]})
+                } else if v["params"]["command"] == "library.xmpPreferences" {
+                    serde_json::json!({"id": id, "ok": true, "result": {"autoWrite": auto_write.load(Ordering::SeqCst), "naming": "stem"}})
+                } else if v["params"]["command"] == "folder.synchronize" {
+                    serde_json::json!({"id": id, "ok": true, "result": {"imported": 0, "relinked": 0, "removed": 0, "read": 1, "failed": []}})
                 } else {
                     let n = v["params"]["params"]["paths"].as_array().unwrap().len();
                     serde_json::json!({"id": id, "ok": true, "result": {"duplicates": [], "failed": [], "imported": (1..=n).collect::<Vec<_>>(), "scanned": n, "sidecars": 0}})
@@ -267,6 +273,20 @@ fn fake_lightcraft(port: u16) -> Arc<Mutex<Vec<String>>> {
         }
     });
     seen
+}
+
+fn fake_lightcraft(port: u16) -> Arc<Mutex<Vec<String>>> {
+    fake_lightcraft_with(port, Arc::new(AtomicBool::new(true)))
+}
+
+/// The lines of the given command that LightCraft was sent.
+fn lines_of(seen: &Arc<Mutex<Vec<String>>>, command: &str) -> Vec<serde_json::Value> {
+    seen.lock()
+        .unwrap()
+        .iter()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .filter(|v| v["params"]["command"] == command)
+        .collect()
 }
 
 fn free_port() -> u16 {
@@ -313,15 +333,132 @@ fn an_adopted_photo_waits_for_lightcraft_across_a_restart_and_goes_in_when_it_op
     let st = svc.status();
     assert_eq!((st.lightcraft_waiting, st.lightcraft_reachable), (0, Some(true)));
     assert!(st.errors.is_empty(), "{:?}", st.errors);
-    let lines = seen.lock().unwrap().clone();
-    assert_eq!(lines.len(), 2, "{lines:?}");
-    let sent: serde_json::Value = serde_json::from_str(&lines[1]).unwrap();
-    assert_eq!(sent["params"]["command"], "library.import");
-    assert_eq!(sent["params"]["params"], serde_json::json!({"paths": [photo.to_str().unwrap()], "mode": "add"}));
+    let imports = lines_of(&seen, "library.import");
+    assert_eq!(imports.len(), 1, "{:?}", seen.lock().unwrap());
+    assert_eq!(imports[0]["params"]["params"], serde_json::json!({"paths": [photo.to_str().unwrap()], "mode": "add"}));
     assert!(lightcraft_cloud_desktop::pending::PendingList::new(&e.state).list().is_empty());
-    // nothing is sent again
+    assert!(lines_of(&seen, "folder.synchronize").is_empty(), "no sidecar was written, so no folder is read");
+    // nothing is imported again (the setting is still asked at each check)
     run_due(&mut svc, &e, 240);
-    assert_eq!(seen.lock().unwrap().len(), 2);
+    assert_eq!(lines_of(&seen, "library.import").len(), 1);
+    assert!(!lines_of(&seen, "library.xmpPreferences").is_empty());
+}
+
+/// A phone edit for `a.jpg` (the first generated photo) waits in the inbox.
+fn phone_edit_for_a(e: &Env) {
+    let id: String = Sha256::digest(std::fs::read(e.photos.join("a.jpg")).unwrap()).iter().take(16).map(|b| format!("{b:02x}")).collect();
+    let p = e.remote.join("inbox").join(format!("phone1/{id}-20261101T000100Z-none.xmp"));
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, br#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:lc="http://ns.lightcraft.app/lc/1.0/"><lc:settings>{"version":1}</lc:settings></rdf:Description></rdf:RDF></x:xmpmeta>"#).unwrap();
+}
+
+fn config_with_port(e: &Env, port: u16, extra: &str) {
+    let mut cfg = std::fs::read_to_string(&e.config).unwrap();
+    cfg.push_str(&format!("lightcraft_control_port = {port}\n{extra}"));
+    std::fs::write(&e.config, cfg).unwrap();
+}
+
+#[test]
+fn an_applied_phone_edit_makes_lightcraft_read_that_folder_at_once_with_exactly_the_reading_only_request() {
+    let e = env("refresh1", "2026-11-01T00:00:00Z");
+    let port = free_port();
+    config_with_port(&e, port, "");
+    let seen = fake_lightcraft(port);
+    let mut svc = service(&e, &Spy::default());
+    run_due(&mut svc, &e, 20);
+    assert!(lines_of(&seen, "folder.synchronize").is_empty());
+    assert!(!svc.status().lightcraft_sidecars_off());
+    phone_edit_for_a(&e);
+    run_due(&mut svc, &e, 120);
+    assert!(e.photos.join("a.xmp").is_file(), "the edit was applied: {:?}", svc.status().last_sync);
+    let folder = std::fs::canonicalize(&e.photos).unwrap();
+    let syncs = lines_of(&seen, "folder.synchronize");
+    assert_eq!(syncs.len(), 1, "{:?}", seen.lock().unwrap());
+    assert_eq!(
+        syncs[0]["params"]["params"],
+        serde_json::json!({"path": folder.to_str().unwrap(), "importNew": false, "relinkMoved": false, "removeMissing": false, "readMetadata": true})
+    );
+    assert!(lightcraft_cloud_desktop::refresh::list(&e.state).list().is_empty(), "answered, so off the list");
+    let st = svc.status();
+    assert_eq!((st.lightcraft_refresh_waiting, st.lightcraft_sidecars_off), (0, false));
+    assert!(st.errors.is_empty() && st.last_error.is_none(), "{st:?}");
+    // nothing more is sent while nothing is written
+    run_due(&mut svc, &e, 240);
+    assert_eq!(lines_of(&seen, "folder.synchronize").len(), 1);
+}
+
+#[test]
+fn with_lightcraft_not_writing_sidecars_nothing_is_read_the_folder_waits_the_status_warns_and_it_drains_once_it_is_on() {
+    let e = env("refresh2", "2026-11-01T00:00:00Z");
+    let port = free_port();
+    config_with_port(&e, port, "");
+    let auto_write = Arc::new(AtomicBool::new(false));
+    let seen = fake_lightcraft_with(port, auto_write.clone());
+    let mut svc = service(&e, &Spy::default());
+    run_due(&mut svc, &e, 20);
+    run_due(&mut svc, &e, 120); // (the first two minute check)
+    assert!(svc.status().lightcraft_sidecars_off(), "asked at the check, with nothing queued");
+    phone_edit_for_a(&e);
+    run_due(&mut svc, &e, 120);
+    assert!(e.photos.join("a.xmp").is_file());
+    run_due(&mut svc, &e, 240);
+    assert!(lines_of(&seen, "folder.synchronize").is_empty(), "never sent while it is off");
+    let st = svc.status().clone();
+    assert!(st.lightcraft_sidecars_off() && st.lightcraft_refresh_waiting == 1, "{st:?}");
+    assert_eq!(st.health().tone, lightcraft_cloud_desktop::appstate::Tone::Wait);
+    assert!(st.last_error.is_none() && st.errors.is_empty(), "{st:?}");
+    assert_eq!(lightcraft_cloud_desktop::refresh::list(&e.state).list().len(), 1);
+    // it is switched on in LightCraft (and the app restarts meanwhile: the list is on disk)
+    auto_write.store(true, Ordering::SeqCst);
+    drop(svc);
+    let mut svc = service(&e, &Spy::default());
+    run_due(&mut svc, &e, 120);
+    run_due(&mut svc, &e, 120);
+    assert_eq!(lines_of(&seen, "folder.synchronize").len(), 1);
+    let st = svc.status();
+    assert!(!st.lightcraft_sidecars_off() && st.lightcraft_refresh_waiting == 0, "{st:?}");
+    assert!(lightcraft_cloud_desktop::refresh::list(&e.state).list().is_empty());
+}
+
+#[test]
+fn refresh_switched_off_or_the_port_off_queues_nothing_and_a_closed_lightcraft_keeps_the_folder() {
+    // lightcraft_refresh_edits = false: the setting is still asked (for the warning), nothing is queued or sent
+    let e = env("refresh3", "2026-11-01T00:00:00Z");
+    let port = free_port();
+    config_with_port(&e, port, "lightcraft_refresh_edits = false\n");
+    let seen = fake_lightcraft_with(port, Arc::new(AtomicBool::new(false)));
+    let mut svc = service(&e, &Spy::default());
+    run_due(&mut svc, &e, 20);
+    phone_edit_for_a(&e);
+    run_due(&mut svc, &e, 120);
+    assert!(e.photos.join("a.xmp").is_file());
+    assert!(!e.state.join("lightcraft-refresh").exists());
+    assert!(lines_of(&seen, "folder.synchronize").is_empty());
+    assert!(svc.status().lightcraft_sidecars_off(), "the warning does not depend on the refresh");
+    // the port off: nothing is queued, sent or shown
+    let e = env("refresh4", "2026-11-01T00:00:00Z");
+    config_with_port(&e, 0, "");
+    let mut svc = service(&e, &Spy::default());
+    run_due(&mut svc, &e, 20);
+    phone_edit_for_a(&e);
+    run_due(&mut svc, &e, 120);
+    assert!(e.photos.join("a.xmp").is_file());
+    assert!(!e.state.join("lightcraft-refresh").exists());
+    assert_eq!((svc.status().lightcraft_port, svc.status().lightcraft_sidecars_off), (0, false));
+    // LightCraft closed: the folder is queued on disk and kept, nothing is counted against it and nothing is shown as wrong
+    let e = env("refresh5", "2026-11-01T00:00:00Z");
+    let port = free_port();
+    config_with_port(&e, port, "");
+    let mut svc = service(&e, &Spy::default());
+    run_due(&mut svc, &e, 20);
+    phone_edit_for_a(&e);
+    run_due(&mut svc, &e, 120);
+    run_due(&mut svc, &e, 600);
+    let left = lightcraft_cloud_desktop::refresh::list(&e.state).list();
+    assert_eq!((left.len(), left[0].attempts), (1, 0));
+    let st = svc.status();
+    assert_eq!((st.lightcraft_sidecars_off, st.lightcraft_reachable, st.lightcraft_refresh_waiting), (false, Some(false), 1));
+    assert!(st.errors.is_empty() && st.last_error.is_none(), "{st:?}");
 }
 
 #[test]

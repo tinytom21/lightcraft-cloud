@@ -55,6 +55,11 @@ impl PendingList {
         PendingList { dir: state_dir.join(Self::DIR) }
     }
 
+    /// A list of its own beside the photos' one (same files, same rules): the folders waiting to be read again ([`crate::refresh`]).
+    pub fn in_dir(state_dir: &Path, name: &str) -> PendingList {
+        PendingList { dir: state_dir.join(name) }
+    }
+
     /// The file for a path: its LightCraft content hash (32 hex, so any length of path gives a short, safe name).
     fn file_of(&self, path: &str) -> PathBuf {
         self.dir.join(format!("{}.json", lightcraft_cloud_client::home::content_hash_bytes(path.as_bytes())))
@@ -87,6 +92,20 @@ impl PendingList {
             return Ok(());
         }
         self.write(&Entry { path: p.to_string(), added: now.to_string(), ..Entry::default() })
+    }
+
+    /// Queue a path, or, when it is queued already, start its tries over: something new has happened to it since the last try
+    /// (a list of folders uses this; a photo is queued once and is never touched again).
+    pub fn touch(&self, path: &Path, now: &str) -> Result<(), String> {
+        if let Some(mut e) = path.to_str().and_then(|p| std::fs::read(self.file_of(p)).ok()).and_then(|b| serde_json::from_slice::<Entry>(&b).ok())
+            && (e.attempts > 0 || e.last_error.is_some() || e.given_up)
+        {
+            e.attempts = 0;
+            e.last_error = None;
+            e.given_up = false;
+            return self.write(&e);
+        }
+        self.add(path, now)
     }
 
     /// Everything queued, oldest first. A file that cannot be read is skipped (and left alone).
@@ -249,6 +268,15 @@ pub fn install_hook(home: &mut lightcraft_cloud_client::home::Home, state_dir: &
     }
     let list = PendingList::new(state_dir);
     home.set_adopted_hook(move |p| list.add(p, &lightcraft_cloud_client::home::utc_iso(std::time::SystemTime::now())));
+}
+
+/// The hook the sync crate calls for each sidecar it writes into the photo folder: its folder goes on the list to refresh. Not
+/// installed when the control port is off or `lightcraft_refresh_edits` is.
+#[cfg(feature = "home")]
+pub fn install_sidecar_hook(home: &mut lightcraft_cloud_client::home::Home, state_dir: &Path, port: u16, refresh: bool) {
+    if port != 0 && refresh {
+        home.set_sidecar_hook(crate::refresh::queue_hook(state_dir));
+    }
 }
 
 // (written with POSIX paths, which are not absolute on Windows; `windows_tests` below covers the rule there)

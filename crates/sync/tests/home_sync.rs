@@ -1013,6 +1013,68 @@ fn inbox_merge_that_changes_nothing_is_a_noop() {
     assert_eq!((im.pc(), im.history().len()), (pc1, 0));
 }
 
+/// Wires the sidecar hook of `im`'s home and returns what it is told.
+fn watch_sidecars(im: &mut Im) -> Arc<std::sync::Mutex<Vec<std::path::PathBuf>>> {
+    let told = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let t = told.clone();
+    im.fx.home.set_sidecar_hook(move |p| {
+        t.lock().unwrap().push(p.to_path_buf());
+        Ok(())
+    });
+    told
+}
+
+#[test]
+fn the_sidecar_hook_hears_of_an_applied_edit_and_a_merged_one_and_of_nothing_else() {
+    let v0 = sc().build();
+    let pc1 = sc().s(&[("color.vibrance", j(30.0))]).build();
+    let e1 = sc().s(&[("light.exposure", j(0.5))]).build();
+    // applied
+    let mut im = Im::new(&v0, 1000, &[&v0]);
+    let told = watch_sidecars(&mut im);
+    let s = im.run(&[(Im::name(&v0, LATER), e1.clone())], false);
+    assert_eq!((s.applied, s.merged), (1, 0));
+    assert_eq!(*told.lock().unwrap(), [im.fx.src.join("A").join("x.xmp")], "the absolute path of the sidecar, told after it was written");
+    // merged
+    let mut im = Im::new(&pc1, 1000, &[&v0]);
+    let told = watch_sidecars(&mut im);
+    let s = im.run(&[(Im::name(&v0, LATER), e1.clone())], false);
+    assert_eq!(s.merged, 1);
+    assert_eq!(told.lock().unwrap().len(), 1);
+    // a merge that changes nothing, a PC sidecar that is newer (the edit is kept off), a dry run, and a pass with nothing in the inbox
+    let mut im = Im::new(&pc1, 1000, &[&v0]);
+    let told = watch_sidecars(&mut im);
+    let s = im.run(&[(Im::name(&v0, LATER), sc().lay(Lay::Indent("  ")).build())], false);
+    assert_eq!(s.noop, 1);
+    let mut im2 = Im::new(&pc1, 0, &[]);
+    let told2 = watch_sidecars(&mut im2);
+    let s = im2.run(&[(Im::name(&v0, "20000101T000000Z"), e1.clone())], false);
+    assert_eq!(s.kept, 1);
+    let mut im3 = Im::new(&pc1, 1000, &[&v0]);
+    let told3 = watch_sidecars(&mut im3);
+    im3.fx.put_inbox(&Im::name(&v0, LATER), &e1);
+    im3.fx.home.process_inbox(&im3.st, true).unwrap();
+    let s = im3.run(&[], false);
+    assert_eq!(s.items.len(), 1, "the dry run left the file for this run: {:?}", s.items);
+    assert_eq!(told3.lock().unwrap().len(), 1, "only the real run told it");
+    let s = im3.run(&[], false);
+    assert_eq!(s.items.len(), 0);
+    assert_eq!(told3.lock().unwrap().len(), 1, "an empty pass tells nothing");
+    assert!(told.lock().unwrap().is_empty() && told2.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_sidecar_hook_that_fails_is_logged_and_does_not_undo_the_edit() {
+    let v0 = sc().build();
+    let e1 = sc().s(&[("light.exposure", j(0.5))]).build();
+    let mut im = Im::new(&v0, 1000, &[&v0]);
+    im.fx.home.set_sidecar_hook(|_| Err("disk full".into()));
+    let s = im.run(&[(Im::name(&v0, LATER), e1.clone())], false);
+    assert_eq!(s.applied, 1);
+    assert_eq!(im.pc(), e1);
+    assert!(im.fx.lines().iter().any(|l| l.contains("sidecar hook failed") && l.contains("disk full")));
+}
+
 #[test]
 fn inbox_phone_chain_in_one_run() {
     // E2 names E1 as its base. E1 was merged, so the PC never had E1 as a version; the inbox file is the store.

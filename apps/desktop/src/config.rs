@@ -71,6 +71,11 @@ pub struct File {
     /// running LightCraft that answers there is asked to add the photos other PCs sent (never anything else, and never by
     /// opening a library). 0 switches it off.
     pub lightcraft_control_port: u16,
+    /// After a sidecar is written into the photo folder (a phone edit applied, or the home PC's version taken), ask a running LightCraft
+    /// to read the sidecars of that folder, as Synchronize Folder does, so the edit shows without anyone running it. Only when
+    /// LightCraft writes its edits into sidecars itself. Needs the control port (`lightcraft_control_port`). Off: nothing is queued
+    /// or sent for this; the warning that LightCraft is not saving sidecars still shows.
+    pub lightcraft_refresh_edits: bool,
 }
 
 impl Default for File {
@@ -94,6 +99,7 @@ impl Default for File {
             device_history_days: 30,
             photo_backup: "restic".into(),
             lightcraft_control_port: crate::lightcraft::DEFAULT_PORT,
+            lightcraft_refresh_edits: true,
         }
     }
 }
@@ -118,6 +124,7 @@ const KNOWN_KEYS: &[&str] = &[
     "device_history_days",
     "photo_backup",
     "lightcraft_control_port",
+    "lightcraft_refresh_edits",
 ];
 
 impl File {
@@ -522,6 +529,21 @@ mod tests {
         assert_eq!(c.file.lightcraft_control_port, 0);
         c.file.save(&f).unwrap();
         assert_eq!(Config::load(Some(&f)).unwrap().file.lightcraft_control_port, 0, "saving the settings keeps it");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn refreshing_edits_in_lightcraft_is_on_unless_switched_off_and_the_choice_is_kept_when_saving() {
+        let d = std::env::temp_dir().join(format!("lc-desktop-cfg5-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("c.toml");
+        std::fs::write(&f, "remote = \"/tmp/r\"\nstate_dir = \"/tmp/lc-state-x\"\n").unwrap();
+        assert!(Config::load(Some(&f)).unwrap().file.lightcraft_refresh_edits, "an existing config without the key");
+        std::fs::write(&f, "remote = \"/tmp/r\"\nstate_dir = \"/tmp/lc-state-x\"\nlightcraft_refresh_edits = false\n").unwrap();
+        let c = Config::load(Some(&f)).unwrap();
+        assert!(!c.file.lightcraft_refresh_edits);
+        c.file.save(&f).unwrap();
+        assert!(!Config::load(Some(&f)).unwrap().file.lightcraft_refresh_edits, "saving the settings keeps it");
         let _ = std::fs::remove_dir_all(&d);
     }
 

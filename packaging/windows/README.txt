@@ -42,3 +42,14 @@ port. Start LightCraft with the port on, once: either a shortcut with
 or, for every start:  setx LIGHTCRAFT_CONTROL_PORT 7980   (then restart LightCraft).
 The port listens on this PC only. Without it the photos still arrive in your photo
 folder; use Synchronize Folder in LightCraft to pick them up.
+
+Showing new edits in LightCraft: when the app writes a sidecar into your photo
+folder (an edit from the phone, or the home PC's newer sidecar), LightCraft keeps
+showing the old edit until you run Synchronize Folder. With the port on, the app
+asks LightCraft to do that for you, for the folders that changed, within a couple
+of minutes. It only does so while LightCraft is saving edits to sidecars (the
+option above); otherwise Status shows a yellow line telling you to switch it on,
+and nothing is sent. Sidecar names must be IMG_1.CR3.xmp. To stop it, put
+lightcraft_refresh_edits = false in the config file (the yellow line still shows).
+When LightCraft itself notices changed sidecars (upstream pull request #3421) this
+will not be needed any more.

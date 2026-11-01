@@ -76,6 +76,9 @@ pub struct SyncOutcome {
     pub problems: Vec<String>,
     /// The other PC's role: new photos were not ready (still being copied, or not all hashed yet): look again after this long.
     pub recheck: Option<Duration>,
+    /// Sidecars the sync wrote into the photo folder (phone edits applied or merged, the home PC's sidecars taken): LightCraft is asked
+    /// to read them at once (see [`crate::refresh`]).
+    pub sidecars: usize,
 }
 
 /// What telling LightCraft about the adopted photos did (see [`crate::pending`]).
@@ -91,6 +94,12 @@ pub struct BridgeReport {
     pub given_up: usize,
     /// Whether the port answered as LightCraft; None when it was not asked.
     pub reachable: Option<bool>,
+    /// What LightCraft said about writing its edits into XMP sidecars (`autoWrite`); None: it did not say (closed, not asked).
+    pub sidecars: Option<bool>,
+    /// Folders whose sidecars LightCraft read in this check.
+    pub refreshed: usize,
+    /// Folders still waiting to be read (see [`crate::refresh`]).
+    pub refresh_waiting: usize,
     /// Lines for Problems.
     pub problems: Vec<String>,
     /// Lines for the log.
@@ -497,7 +506,7 @@ impl<W: Worker> Service<W> {
                 if o.downloaded > 0 && self.info.notify {
                     self.notifier.notify(notifier::TITLE, &notifier::photos_downloaded(o.downloaded));
                 }
-                if o.imported > 0 || o.downloaded > 0 {
+                if o.imported > 0 || o.downloaded > 0 || o.sidecars > 0 || n > 0 {
                     self.run_bridge();
                 }
                 self.refresh_queue(false);
@@ -550,6 +559,9 @@ impl<W: Worker> Service<W> {
         self.status.lightcraft_port = r.port;
         self.status.lightcraft_waiting = r.waiting;
         self.status.lightcraft_given_up = r.given_up;
+        self.status.lightcraft_refresh_waiting = r.refresh_waiting;
+        // (only a LightCraft that answered can say; a closed one, a silent port and the feature off all clear the warning)
+        self.status.lightcraft_sidecars_off = r.port != 0 && r.sidecars == Some(false);
         if r.reachable.is_some() {
             self.status.lightcraft_reachable = r.reachable;
         }

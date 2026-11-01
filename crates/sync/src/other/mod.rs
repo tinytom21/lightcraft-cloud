@@ -186,6 +186,8 @@ pub struct Other {
     log: Logger,
     retry_delay: Duration,
     adopted_hook: Option<AdoptedHook>,
+    /// Told of every sidecar this PC replaced with the home PC's (see [`Other::set_sidecar_hook`]).
+    sidecar_hook: Option<AdoptedHook>,
     /// Where the stages of a pass and of an upload step are reported (see [`Other::set_progress_hook`]).
     rp: Reporter,
 }
@@ -202,7 +204,7 @@ impl Other {
         crate::home::check_state_dir(&cfg.state_dir)?;
         cfg.source = std::path::absolute(&cfg.source).map_err(|e| Error::io(cfg.source.display(), e))?;
         cfg.folders = cfg.folders.iter().map(|f| f.trim().trim_matches('/').to_string()).collect();
-        Ok(Other { cfg, remote, clock: Arc::new(SystemTime::now), log: Arc::new(|m| log::info!("{m}")), retry_delay: Duration::from_secs(2), adopted_hook: None, rp: Reporter::new(None, Arc::new(SystemTime::now)) })
+        Ok(Other { cfg, remote, clock: Arc::new(SystemTime::now), log: Arc::new(|m| log::info!("{m}")), retry_delay: Duration::from_secs(2), adopted_hook: None, sidecar_hook: None, rp: Reporter::new(None, Arc::new(SystemTime::now)) })
     }
 
     pub fn config(&self) -> &OtherConfig {
@@ -237,6 +239,21 @@ impl Other {
     /// hook said no, until it says yes). The app uses it to tell a running LightCraft to add the photo.
     pub fn set_adopted_hook(&mut self, f: impl Fn(&Path) -> std::result::Result<(), String> + Send + Sync + 'static) {
         self.adopted_hook = Some(Arc::new(f));
+    }
+
+    /// Be told the absolute path of every sidecar this PC replaced with the home PC's version (a pull), just after it is in the photo
+    /// folder. The app uses it to have a running LightCraft read the new edits. Not called for a pass where nothing changed. An `Err`
+    /// is only logged: the sidecar is already written.
+    pub fn set_sidecar_hook(&mut self, f: impl Fn(&Path) -> std::result::Result<(), String> + Send + Sync + 'static) {
+        self.sidecar_hook = Some(Arc::new(f));
+    }
+
+    pub(crate) fn sidecar_written(&self, path: &Path) {
+        if let Some(h) = &self.sidecar_hook
+            && let Err(e) = h(path)
+        {
+            self.logln(format!("{}: the sidecar hook failed: {e}", path.display()));
+        }
     }
 
     fn now(&self) -> SystemTime {

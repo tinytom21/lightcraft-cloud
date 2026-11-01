@@ -170,6 +170,11 @@ pub struct AppStatus {
     pub lightcraft_reachable: Option<bool>,
     /// Photos LightCraft would not add after several tries (they are in the photo folder; the user adds them).
     pub lightcraft_given_up: usize,
+    /// Folders whose new sidecars LightCraft has not been asked to read yet (or has not answered about).
+    pub lightcraft_refresh_waiting: usize,
+    /// LightCraft answered that it does not write its edits into XMP sidecars (so they cannot sync, and a sidecar written here is not
+    /// read there). Cleared by the next answer that says otherwise, and when LightCraft does not answer.
+    pub lightcraft_sidecars_off: bool,
     /// What is wrong right now, one line each: the problems the last sync found. Unlike the Problems list (a history), it clears when
     /// a sync finds nothing wrong, and it is what keeps the state line from saying "Up to date".
     pub active_problems: Vec<String>,
@@ -187,6 +192,12 @@ pub struct AppStatus {
     /// The error the last sync ended with; cleared by a sync that works.
     pub last_error: Option<String>,
 }
+
+/// The state line while LightCraft is not saving edits to sidecars.
+pub const SIDECARS_OFF_SHORT: &str = "LightCraft isn't saving edits to sidecars";
+
+/// What to do about it, for the Status window (both roles).
+pub const SIDECARS_OFF_LINE: &str = "LightCraft isn't saving edits to sidecars, so they can't sync. In LightCraft: Settings, Import tab, XMP sidecars: tick Automatically write changes into XMP sidecars.";
 
 /// How many lines the lists keep.
 pub const KEEP_LINES: usize = 20;
@@ -261,6 +272,11 @@ impl AppStatus {
         v
     }
 
+    /// LightCraft is answering and is not writing its edits into XMP sidecars (and the bridge is on).
+    pub fn lightcraft_sidecars_off(&self) -> bool {
+        self.lightcraft_port != 0 && self.lightcraft_sidecars_off
+    }
+
     /// Photos the home PC refused and nobody has dealt with.
     pub fn refused(&self) -> usize {
         self.other.as_ref().map_or(0, |o| o.rejected)
@@ -307,6 +323,11 @@ impl AppStatus {
         }
         if self.last_sync.is_none() {
             return h(HealthKind::NotSynced, Tone::Wait, "Waiting for the first sync".to_string());
+        }
+        // (last, so that it never hides a failure, an offline library, a pause, a problem or something waiting: it only takes the place of
+        // "Up to date", which would be untrue while edits made in LightCraft cannot leave this PC. Amber, not red: nothing failed.)
+        if self.lightcraft_sidecars_off() {
+            return h(HealthKind::Waiting, Tone::Wait, SIDECARS_OFF_SHORT.to_string());
         }
         h(HealthKind::UpToDate, Tone::Ok, "Up to date".to_string())
     }
@@ -612,6 +633,40 @@ mod tests {
         assert_eq!(AppStatus::default().health().kind, HealthKind::NotSetUp);
         let s = AppStatus { configured: true, ..AppStatus::default() };
         assert_eq!((s.health().kind, s.health().tone), (HealthKind::NotSynced, Tone::Wait));
+    }
+
+    #[test]
+    fn the_sidecar_warning_only_takes_the_place_of_up_to_date_and_never_hides_the_real_state() {
+        let mut s = settled();
+        s.lightcraft_port = 7980;
+        s.lightcraft_sidecars_off = true;
+        let h = s.health();
+        assert_eq!((h.kind, h.tone, h.text.as_str()), (HealthKind::Waiting, Tone::Wait, SIDECARS_OFF_SHORT));
+        assert_eq!(s.tray_state(), TrayState::Waiting);
+        // every real state outranks it
+        let mut t = s.clone();
+        t.offline = true;
+        assert_eq!(t.health().kind, HealthKind::Offline);
+        let mut t = s.clone();
+        t.active_problems = vec!["p".into()];
+        assert_eq!(t.health().kind, HealthKind::Problem);
+        let mut t = s.clone();
+        t.last_error = Some("boom".into());
+        assert_eq!(t.health().kind, HealthKind::Failed);
+        let mut t = s.clone();
+        t.paused = true;
+        assert_eq!(t.health().kind, HealthKind::Paused);
+        let mut t = s.clone();
+        t.inbox_pending = Some(2);
+        assert_eq!(t.health().text, "2 phone edits waiting", "what waits is told as before");
+        let mut t = s.clone();
+        t.last_sync = None;
+        assert_eq!(t.health().kind, HealthKind::NotSynced);
+        // the bridge off: the flag means nothing
+        s.lightcraft_port = 0;
+        assert_eq!(s.health().kind, HealthKind::UpToDate);
+        assert!(!s.lightcraft_sidecars_off());
+        assert!(SIDECARS_OFF_LINE.contains("Automatically write changes into XMP sidecars") && SIDECARS_OFF_LINE.contains("Import tab"));
     }
 
     #[test]

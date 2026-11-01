@@ -577,6 +577,7 @@ impl Other {
             }
             return Err(Error::io(dest.display(), e));
         }
+        self.sidecar_written(dest);
         rec.manifest = Some(version.to_string());
         rec.base = Some(version.to_string());
         rec.synced = Some(sha256_hex(&bytes));
