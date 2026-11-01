@@ -270,6 +270,26 @@ fn split_url(u: &str) -> Option<(&str, &str)> {
     Some((scheme, host))
 }
 
+/// Why a request did not give the file.
+#[derive(Debug)]
+struct HttpError {
+    /// The server's answer, when it gave one.
+    status: Option<u16>,
+    message: String,
+}
+
+impl HttpError {
+    fn other(message: impl Into<String>) -> HttpError {
+        HttpError { status: None, message: message.into() }
+    }
+}
+
+impl std::fmt::Display for HttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
 /// The one HTTP client: GET with the redirect rules of the [`Source`].
 struct Client<'a> {
     source: &'a Source,
@@ -281,6 +301,7 @@ impl Client<'_> {
             .user_agent(USER_AGENT)
             .max_redirects(0)
             .max_redirects_will_error(false)
+            .http_status_as_error(false)
             .https_only(!self.source.insecure)
             .timeout_connect(Some(Duration::from_secs(15)))
             .timeout_global(Some(total))
@@ -290,41 +311,41 @@ impl Client<'_> {
 
     /// GET `url`, handing the body to `on_data` in pieces with the total length when the server said it. Redirects are followed only
     /// when `follow` and only to the hosts the source allows. At most `limit` bytes.
-    fn get(&self, url: &str, follow: bool, accept: &str, limit: u64, total: Duration, on_data: &mut dyn FnMut(&[u8], Option<u64>) -> Result<(), String>) -> Result<(), String> {
+    fn get(&self, url: &str, follow: bool, accept: &str, limit: u64, total: Duration, on_data: &mut dyn FnMut(&[u8], Option<u64>) -> Result<(), String>) -> Result<(), HttpError> {
         let agent = self.agent(total);
         let mut url = url.to_string();
         for _ in 0..=REDIRECTS {
-            let resp = agent.get(&url).header("Accept", accept).call().map_err(|e| e.to_string())?;
+            let resp = agent.get(&url).header("Accept", accept).call().map_err(|e| HttpError::other(e.to_string()))?;
             let status = resp.status().as_u16();
             if (300..400).contains(&status) {
                 let to = resp.headers().get("location").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
                 if !follow || !self.source.redirect_ok(&to) {
-                    return Err(format!("the server redirected to an address that is not allowed ({status})"));
+                    return Err(HttpError::other(format!("the server redirected to an address that is not allowed ({status})")));
                 }
                 url = to;
                 continue;
             }
             if status != 200 {
-                return Err(format!("the server answered {status}"));
+                return Err(HttpError { status: Some(status), message: format!("the server answered {status}") });
             }
             let len = resp.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
             if len.is_some_and(|l| l > limit) {
-                return Err("the file is larger than expected".into());
+                return Err(HttpError::other("the file is larger than expected"));
             }
             let mut reader = resp.into_body().into_with_config().limit(limit).reader();
             let mut buf = vec![0u8; 64 << 10];
             loop {
-                let n = reader.read(&mut buf).map_err(|e| e.to_string())?;
+                let n = reader.read(&mut buf).map_err(|e| HttpError::other(e.to_string()))?;
                 if n == 0 {
                     return Ok(());
                 }
-                on_data(&buf[..n], len)?;
+                on_data(&buf[..n], len).map_err(HttpError::other)?;
             }
         }
-        Err("too many redirects".into())
+        Err(HttpError::other("too many redirects"))
     }
 
-    fn get_bytes(&self, url: &str, follow: bool, accept: &str, limit: u64) -> Result<Vec<u8>, String> {
+    fn get_bytes(&self, url: &str, follow: bool, accept: &str, limit: u64) -> Result<Vec<u8>, HttpError> {
         let mut out = Vec::new();
         self.get(url, follow, accept, limit, Duration::from_secs(60), &mut |d, _| {
             out.extend_from_slice(d);
@@ -604,11 +625,23 @@ impl Updater {
     }
 
     fn check(&mut self, now: SystemTime, notify: bool) {
-        let result = Client { source: &self.source }
-            .get_bytes(&self.source.latest, false, "application/vnd.github+json", API_LIMIT)
-            .and_then(|b| parse_latest(&b));
+        let answer = Client { source: &self.source }.get_bytes(&self.source.latest, false, "application/vnd.github+json", API_LIMIT);
+        let result = match answer {
+            Ok(b) => parse_latest(&b).map(Some),
+            // (a repository with no published release yet: nothing newer, and no reason to ask again before tomorrow)
+            Err(e) if e.status == Some(404) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        };
         let rel = match result {
-            Ok(r) => r,
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                self.next_check = now + CHECK_EVERY;
+                self.state.checked = Some(utc_iso(now));
+                self.state.latest = None;
+                self.release = None;
+                self.save();
+                return;
+            }
             Err(e) => {
                 // (silent: a line in the log; the sync status is not touched)
                 self.say(format!("update check: {e}"));
@@ -690,7 +723,7 @@ impl Updater {
             }
             Ok(())
         });
-        let finished = result.and_then(|()| file.sync_all().map_err(|e| e.to_string()));
+        let finished = result.map_err(|e| e.to_string()).and_then(|()| file.sync_all().map_err(|e| e.to_string()));
         drop(file);
         if let Err(e) = finished {
             let _ = std::fs::remove_file(&part);
@@ -1040,7 +1073,7 @@ mod tests {
         let status = crate::appstate::AppStatus { configured: true, ..Default::default() };
         status.save(&dir).unwrap();
         let before = std::fs::read(dir.join("status.json")).unwrap();
-        for answer in [reply(500, "oops"), reply(404, "no"), reply(200, "{ this is not json"), reply(200, "")] {
+        for answer in [reply(500, "oops"), reply(403, "rate limited"), reply(200, "{ this is not json"), reply(200, "")] {
             let answer = Arc::new(Mutex::new(Some(answer)));
             server.route(LATEST, move || {
                 let a = answer.lock().unwrap().take();
@@ -1068,6 +1101,22 @@ mod tests {
         // nothing about the sync changed
         assert_eq!(std::fs::read(dir.join("status.json")).unwrap(), before);
         assert_eq!(crate::appstate::AppStatus::load(&dir).unwrap().health().text, status.health().text);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_repository_with_no_published_release_is_not_a_failure_and_is_not_asked_again_for_a_day() {
+        let (server, dir) = (Server::start(), temp("none"));
+        // (the API answers 404 when there is no published release)
+        let (mut u, f) = updater(&server, &dir, "0.2.0", true);
+        u.tick(later(100), ON);
+        assert_eq!(server.count(LATEST), 1);
+        assert!(u.state().latest.is_none() && u.state().checked.is_some());
+        assert!(f.logs.lock().unwrap().is_empty() && f.notified.lock().unwrap().is_empty());
+        u.tick(later(100 + RETRY_AFTER.as_secs() + 1), ON);
+        assert_eq!(server.count(LATEST), 1, "not before tomorrow");
+        u.tick(later(100 + CHECK_EVERY.as_secs()), ON);
+        assert_eq!(server.count(LATEST), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
