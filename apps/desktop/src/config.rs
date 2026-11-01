@@ -47,6 +47,10 @@ pub struct File {
     /// A command that answers `snapshots --latest 1 --json` (restic). The purge only runs when the newest snapshot is at most
     /// 48 hours old; an empty string switches the purge off.
     pub photo_backup: String,
+    /// The port of LightCraft's control channel (`lightcraft --control PORT`, or `LIGHTCRAFT_CONTROL_PORT`) on this PC. A
+    /// running LightCraft that answers there is asked to add the photos other PCs sent (never anything else, and never by
+    /// opening a library). 0 switches it off.
+    pub lightcraft_control_port: u16,
 }
 
 impl Default for File {
@@ -66,6 +70,7 @@ impl Default for File {
             notify: true,
             device_history_days: 30,
             photo_backup: "restic".into(),
+            lightcraft_control_port: crate::lightcraft::DEFAULT_PORT,
         }
     }
 }
@@ -86,6 +91,7 @@ const KNOWN_KEYS: &[&str] = &[
     "notify",
     "device_history_days",
     "photo_backup",
+    "lightcraft_control_port",
 ];
 
 impl File {
@@ -313,6 +319,21 @@ mod tests {
         assert_eq!((h.exclude, h.pair_primary, h.remote_label.as_str()), (vec!["a".to_string()], PairPrimary::Raw, "/tmp/r"));
         std::fs::write(&f, "remote = \"/tmp/r\"\npair_primary = \"tiff\"\nstate_dir = \"/tmp/lc-state-x\"\n").unwrap();
         assert!(Config::load(Some(&f)).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_lightcraft_port_defaults_to_7980_zero_is_off_and_it_is_kept_when_saving() {
+        let d = std::env::temp_dir().join(format!("lc-desktop-cfg4-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("c.toml");
+        std::fs::write(&f, "remote = \"/tmp/r\"\nstate_dir = \"/tmp/lc-state-x\"\nfuture_key = true\n").unwrap();
+        assert_eq!(Config::load(Some(&f)).unwrap().file.lightcraft_control_port, 7980, "an existing config without the key");
+        std::fs::write(&f, "remote = \"/tmp/r\"\nstate_dir = \"/tmp/lc-state-x\"\nlightcraft_control_port = 0\n").unwrap();
+        let c = Config::load(Some(&f)).unwrap();
+        assert_eq!(c.file.lightcraft_control_port, 0);
+        c.file.save(&f).unwrap();
+        assert_eq!(Config::load(Some(&f)).unwrap().file.lightcraft_control_port, 0, "saving the settings keeps it");
         let _ = std::fs::remove_dir_all(&d);
     }
 

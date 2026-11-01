@@ -2,6 +2,8 @@
 //! remote, with a trivial renderer (the engine itself is covered by `engine.rs`), a fake clock, and a fake `restic`. Nothing
 //! touches the user's config, state, remotes or desktop.
 
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -238,4 +240,111 @@ fn the_cli_and_the_app_do_not_sync_at_the_same_time() {
     run_due(&mut svc, &e, 60);
     assert_eq!(svc.status().last_sync.as_ref().unwrap().photos, 2);
     let _ = e.clock.now();
+}
+
+// ------------------------------------------------------------------ telling LightCraft about adopted photos
+
+/// A LightCraft on a loopback port: the command list, and an import that adds everything it is sent. Keeps the lines it got.
+fn fake_lightcraft(port: u16) -> Arc<Mutex<Vec<String>>> {
+    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let s = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut w = stream.try_clone().unwrap();
+            for line in BufReader::new(stream).lines().map_while(std::result::Result::ok) {
+                s.lock().unwrap().push(line.clone());
+                let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let id = &v["id"];
+                let reply = if v["method"] == "engine.commands" {
+                    serde_json::json!({"id": id, "ok": true, "result": [{"id": "library.folders", "enabled": true}, {"id": "library.import", "enabled": true}]})
+                } else {
+                    let n = v["params"]["params"]["paths"].as_array().unwrap().len();
+                    serde_json::json!({"id": id, "ok": true, "result": {"duplicates": [], "failed": [], "imported": (1..=n).collect::<Vec<_>>(), "scanned": n, "sidecars": 0}})
+                };
+                let _ = writeln!(w, "{reply}");
+            }
+        }
+    });
+    seen
+}
+
+fn free_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+#[test]
+fn an_adopted_photo_waits_for_lightcraft_across_a_restart_and_goes_in_when_it_opens() {
+    let e = env("lc", "2026-11-01T00:00:00Z");
+    let port = free_port();
+    let mut cfg = std::fs::read_to_string(&e.config).unwrap();
+    cfg.push_str(&format!("lightcraft_control_port = {port}\nsome_future_key = 1\n"));
+    std::fs::write(&e.config, cfg).unwrap();
+    // another PC uploaded a photo
+    let bytes = b"a photo from the laptop".to_vec();
+    let id = lightcraft_cloud_client::home::content_hash_bytes(&bytes);
+    let put = |rel: &str, data: &[u8]| {
+        let p = e.remote.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, data).unwrap();
+    };
+    put(&format!("imports/laptop/{id}/c.jpg"), &bytes);
+    put(
+        &format!("imports/laptop/{id}.json"),
+        serde_json::json!({"format": 1, "id": id, "folder": "Trip", "name": "c.jpg", "size": bytes.len(), "mtime": "2024-05-01T12:00:00Z", "sidecar": null}).to_string().as_bytes(),
+    );
+    let spy = Spy::default();
+    let mut svc = service(&e, &spy);
+    run_due(&mut svc, &e, 20); // (nothing listens on the port: LightCraft is closed)
+    let photo = std::fs::canonicalize(&e.photos).unwrap().join("Trip/c.jpg");
+    assert_eq!(std::fs::read(&photo).unwrap(), bytes, "the photo was adopted");
+    let st = svc.status().clone();
+    assert!(st.last_error.is_none(), "{:?}", st.errors);
+    assert_eq!((st.lightcraft_port, st.lightcraft_waiting, st.lightcraft_reachable), (port, 1, Some(false)));
+    assert!(e.state.join("lightcraft-pending").is_dir());
+    // the app restarts: the list is still there; LightCraft is still closed
+    drop(svc);
+    let mut svc = service(&e, &spy);
+    run_due(&mut svc, &e, 120);
+    assert_eq!((svc.status().lightcraft_waiting, svc.status().lightcraft_reachable), (1, Some(false)));
+    // LightCraft opens
+    let seen = fake_lightcraft(port);
+    run_due(&mut svc, &e, 120);
+    let st = svc.status();
+    assert_eq!((st.lightcraft_waiting, st.lightcraft_reachable), (0, Some(true)));
+    assert!(st.errors.is_empty(), "{:?}", st.errors);
+    let lines = seen.lock().unwrap().clone();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    let sent: serde_json::Value = serde_json::from_str(&lines[1]).unwrap();
+    assert_eq!(sent["params"]["command"], "library.import");
+    assert_eq!(sent["params"]["params"], serde_json::json!({"paths": [photo.to_str().unwrap()], "mode": "add"}));
+    assert!(lightcraft_cloud_desktop::pending::PendingList::new(&e.state).list().is_empty());
+    // nothing is sent again
+    run_due(&mut svc, &e, 240);
+    assert_eq!(seen.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn port_zero_turns_the_feature_off_nothing_is_queued_or_sent() {
+    let e = env("lc0", "2026-11-01T00:00:00Z");
+    let mut cfg = std::fs::read_to_string(&e.config).unwrap();
+    cfg.push_str("lightcraft_control_port = 0\n");
+    std::fs::write(&e.config, cfg).unwrap();
+    let bytes = b"another photo".to_vec();
+    let id = lightcraft_cloud_client::home::content_hash_bytes(&bytes);
+    let put = |rel: &str, data: &[u8]| {
+        let p = e.remote.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, data).unwrap();
+    };
+    put(&format!("imports/laptop/{id}/d.jpg"), &bytes);
+    put(
+        &format!("imports/laptop/{id}.json"),
+        serde_json::json!({"format": 1, "id": id, "folder": "", "name": "d.jpg", "size": bytes.len(), "mtime": "2024-05-01T12:00:00Z"}).to_string().as_bytes(),
+    );
+    let mut svc = service(&e, &Spy::default());
+    run_due(&mut svc, &e, 20);
+    assert!(e.photos.join("d.jpg").is_file());
+    assert!(!e.state.join("lightcraft-pending").exists());
+    assert_eq!((svc.status().lightcraft_port, svc.status().lightcraft_waiting), (0, 0));
 }

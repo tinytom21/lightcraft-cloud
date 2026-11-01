@@ -8,7 +8,7 @@ use lightcraft_cloud_desktop::appstate::{Activity, AppStatus, Persisted, TraySta
 use lightcraft_cloud_desktop::clock::{Clock, FakeClock};
 use lightcraft_cloud_desktop::notifier::{self, Notifier};
 use lightcraft_cloud_desktop::scheduler::Timing;
-use lightcraft_cloud_desktop::service::{Command, JobError, PurgeOutcome, Service, SyncOutcome, Worker, WorkerInfo};
+use lightcraft_cloud_desktop::service::{BridgeReport, Command, JobError, PurgeOutcome, Service, SyncOutcome, Worker, WorkerInfo};
 
 #[derive(Default)]
 struct Script {
@@ -22,6 +22,9 @@ struct Script {
     info: Option<WorkerInfo>,
     /// What `reload` makes the info.
     after_reload: Option<WorkerInfo>,
+    /// What the next LightCraft tries return (the last repeats); each try's `retry_given_up` goes to `bridge_calls`.
+    bridge: Vec<BridgeReport>,
+    bridge_calls: Vec<bool>,
 }
 
 #[derive(Clone, Default)]
@@ -56,6 +59,11 @@ impl Worker for Fake {
     fn imports_waiting(&mut self) -> Result<usize, String> {
         let mut s = self.0.lock().unwrap();
         next(&mut s.imports, Ok(0))
+    }
+    fn lightcraft_flush(&mut self, retry_given_up: bool) -> BridgeReport {
+        let mut s = self.0.lock().unwrap();
+        s.bridge_calls.push(retry_given_up);
+        next(&mut s.bridge, BridgeReport::default())
     }
     fn purge(&mut self) -> Result<PurgeOutcome, JobError> {
         let mut s = self.0.lock().unwrap();
@@ -469,4 +477,58 @@ fn import_problems_reach_the_status_window_once() {
     assert_eq!(errs.len(), 1, "{errs:?}");
     assert!(errs[0].contains("not enough free disk space"));
     assert!(r.svc.status().last_error.is_none(), "the sync itself worked");
+}
+
+// ------------------------------------------------------------------ telling LightCraft
+
+fn bridge(waiting: usize, reachable: Option<bool>, problems: &[&str]) -> BridgeReport {
+    BridgeReport { port: 7980, waiting, reachable, problems: problems.iter().map(|p| p.to_string()).collect(), ..BridgeReport::default() }
+}
+
+#[test]
+fn lightcraft_is_tried_on_every_two_minute_check_and_right_after_a_sync_that_added_photos() {
+    let mut r = rig("lc1");
+    r.fake.0.lock().unwrap().bridge = vec![bridge(2, Some(false), &[])];
+    r.fake.0.lock().unwrap().syncs = vec![imported(&[("laptop", 2)], 0), imported(&[], 0)];
+    r.advance(20); // the startup sync added two photos
+    assert_eq!(r.fake.0.lock().unwrap().bridge_calls, [true], "tried at once, and it is the first try since the start");
+    let st = r.svc.status();
+    assert_eq!((st.lightcraft_port, st.lightcraft_waiting, st.lightcraft_reachable), (7980, 2, Some(false)));
+    r.advance(120);
+    assert_eq!(r.fake.0.lock().unwrap().bridge_calls, [true, false], "the 2 minute check; the given-up photos are retried only the first time");
+    r.fake.0.lock().unwrap().bridge = vec![bridge(0, Some(true), &[])];
+    r.advance(120);
+    let st = r.svc.status();
+    assert_eq!((st.lightcraft_waiting, st.lightcraft_reachable), (0, Some(true)));
+    // a sync that added nothing does not try again by itself
+    let n = r.fake.0.lock().unwrap().bridge_calls.len();
+    r.svc.handle(Command::SyncNow);
+    r.advance(0);
+    assert_eq!(r.fake.0.lock().unwrap().bridge_calls.len(), n);
+}
+
+#[test]
+fn a_problem_from_lightcraft_is_shown_once_and_a_silent_lightcraft_never_stops_syncing() {
+    let mut r = rig("lc2");
+    r.advance(20);
+    r.fake.0.lock().unwrap().bridge = vec![bridge(1, Some(false), &[]), bridge(0, None, &["LightCraft would not add a.jpg after 10 tries (denied)."]), bridge(0, None, &[])];
+    for _ in 0..4 {
+        r.advance(120);
+    }
+    let st = r.svc.status();
+    assert_eq!(st.errors.iter().filter(|e| e.text.contains("would not add a.jpg")).count(), 1);
+    assert_eq!(st.lightcraft_reachable, Some(false), "not asked is not the same as answering: the last answer stays");
+    assert!(st.last_error.is_none(), "the sync itself is fine");
+    // the 15 minute sync still happens
+    let calls = r.advance(900);
+    assert!(calls.contains(&"sync".to_string()), "{calls:?}");
+}
+
+#[test]
+fn with_the_feature_off_nothing_shows() {
+    let mut r = rig("lc3");
+    r.advance(20);
+    r.advance(120);
+    let st = r.svc.status();
+    assert_eq!((st.lightcraft_port, st.lightcraft_waiting, st.lightcraft_reachable), (0, 0, None));
 }

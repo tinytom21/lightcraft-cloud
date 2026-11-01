@@ -96,6 +96,26 @@ fn the_status_panel_says_when_syncing_paused_failed_not_set_up_or_not_running() 
     h.get_by_label("The app has not run yet.");
 }
 
+#[test]
+fn the_status_panel_shows_the_lightcraft_row_only_while_photos_wait() {
+    let mut s = busy_status();
+    s.lightcraft_port = 7980;
+    let mut h = status_harness(Some(s.clone()), true);
+    h.run();
+    assert!(h.query_by_label_contains("Waiting for LightCraft").is_none());
+    s.lightcraft_waiting = 2;
+    s.lightcraft_reachable = Some(false);
+    let mut h = status_harness(Some(s.clone()), true);
+    h.run();
+    h.get_by_label("Waiting for LightCraft: 2 photos");
+    h.get_by_label_contains("not answering on port 7980");
+    s.lightcraft_reachable = Some(true);
+    let mut h = status_harness(Some(s), true);
+    h.run();
+    h.get_by_label("Waiting for LightCraft: 2 photos");
+    assert!(h.query_by_label_contains("not answering").is_none());
+}
+
 struct Rig {
     dir: PathBuf,
     photos: PathBuf,

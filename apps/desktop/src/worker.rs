@@ -11,13 +11,18 @@ use lightcraft_cloud_client::{Error, Remote};
 use crate::backup;
 use crate::clock::Clock;
 use crate::config::Config;
-use crate::service::{JobError, PurgeOutcome, SyncOutcome, Worker, WorkerInfo};
+use crate::lightcraft::{LightCraftLink, TcpLink};
+use crate::pending::{self, PendingList};
+use crate::service::{BridgeReport, JobError, PurgeOutcome, SyncOutcome, Worker, WorkerInfo};
 
 /// Makes the renderer for one sync (the real one opens the engine's scratch library; tests give a fake one).
 pub type RendererFactory = Box<dyn Fn(&Config) -> Box<dyn Renderer>>;
 
 /// Opens the remote of a config (the real one is [`Config::open_remote`]; tests can count or fake it).
 pub type RemoteFactory = Box<dyn Fn(&Config) -> Result<Arc<dyn Remote>, String>>;
+
+/// Makes the link to LightCraft's control port (the real one is loopback TCP; tests give a fake).
+pub type LinkFactory = Box<dyn Fn(u16) -> Box<dyn LightCraftLink>>;
 
 pub struct HomeWorker {
     /// Where the config is (it may not exist yet: the app then opens Setup).
@@ -28,13 +33,20 @@ pub struct HomeWorker {
     renderer: RendererFactory,
     remote: RemoteFactory,
     clock: Arc<dyn Clock>,
+    link: LinkFactory,
 }
 
 impl HomeWorker {
     pub fn new(config_path: PathBuf, renderer: RendererFactory, remote: RemoteFactory, clock: Arc<dyn Clock>) -> HomeWorker {
-        let mut w = HomeWorker { config_path, cfg: None, config_error: None, renderer, remote, clock };
+        let link: LinkFactory = Box::new(|port| Box::new(TcpLink::new(port)));
+        let mut w = HomeWorker { config_path, cfg: None, config_error: None, renderer, remote, clock, link };
         let _ = w.reload();
         w
+    }
+
+    /// Replace how LightCraft is reached (tests).
+    pub fn set_link_factory(&mut self, f: LinkFactory) {
+        self.link = f;
     }
 
     pub fn config(&self) -> Option<&Config> {
@@ -53,6 +65,7 @@ impl HomeWorker {
             let c = self.clock.clone();
             move || c.now()
         });
+        pending::install_hook(&mut home, &cfg.state_dir, cfg.file.lightcraft_control_port);
         let logfile = cfg.state_dir.join("logs").join("lightcraft-cloud-desktop.log");
         home.set_logger(move |m| {
             let line = format!("{} {m}", utc_iso(std::time::SystemTime::now()));
@@ -175,6 +188,18 @@ impl Worker for HomeWorker {
         let cfg = self.the_config().map_err(|e| e.text())?;
         let home = self.home(cfg).map_err(|e| e.text())?;
         home.imports_waiting().map_err(|e| e.to_string())
+    }
+
+    fn lightcraft_flush(&mut self, retry_given_up: bool) -> BridgeReport {
+        let Some(cfg) = self.cfg.as_ref() else { return BridgeReport::default() };
+        let port = cfg.file.lightcraft_control_port;
+        if port == 0 {
+            return BridgeReport::default();
+        }
+        let list = PendingList::new(&cfg.state_dir);
+        let mut link = (self.link)(port);
+        let r = pending::flush(&list, &mut *link, retry_given_up);
+        BridgeReport { port, delivered: r.delivered, waiting: r.waiting, reachable: r.reachable, problems: r.problems, log: r.log }
     }
 
     fn purge(&mut self) -> Result<PurgeOutcome, JobError> {

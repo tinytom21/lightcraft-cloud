@@ -3,6 +3,8 @@
 //! `lightcraft_cloud_client::home`.
 //!
 //! * [`scheduler`], [`service`], [`watcher`], [`worker`]: the background engine (UI-independent; tests move a fake [`clock`]);
+//! * [`lightcraft`], [`pending`]: telling a running LightCraft to add the photos that were adopted (its control channel, and the
+//!   durable list);
 //! * [`appstate`], [`config`], [`settings`], [`autostart`], [`instance`], [`backup`], [`notifier`]: what it keeps and uses;
 //! * [`ui`], [`tray`], [`app`]: the windows (egui, in a process of their own), the tray icon, and what ties them together.
 
@@ -14,7 +16,9 @@ pub mod clock;
 pub mod config;
 pub mod engine;
 pub mod instance;
+pub mod lightcraft;
 pub mod notifier;
+pub mod pending;
 pub mod scheduler;
 pub mod service;
 pub mod settings;

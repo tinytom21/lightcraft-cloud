@@ -62,6 +62,23 @@ pub struct SyncOutcome {
     pub import_problems: Vec<String>,
 }
 
+/// What telling LightCraft about the adopted photos did (see [`crate::pending`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BridgeReport {
+    /// The port of LightCraft's control channel; 0: the feature is off (and the other fields are empty).
+    pub port: u16,
+    /// Photos LightCraft now has.
+    pub delivered: usize,
+    /// Photos still waiting for LightCraft.
+    pub waiting: usize,
+    /// Whether the port answered as LightCraft; None when it was not asked.
+    pub reachable: Option<bool>,
+    /// Lines for Problems.
+    pub problems: Vec<String>,
+    /// Lines for the log.
+    pub log: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PurgeOutcome {
     Done { folders: usize, versions: usize },
@@ -89,6 +106,11 @@ pub trait Worker {
     /// says none.
     fn imports_waiting(&mut self) -> Result<usize, String> {
         Ok(0)
+    }
+    /// Tell a running LightCraft about the photos the sync added (at most a short try; never blocks for long). A worker with no
+    /// LightCraft bridge does nothing. `retry_given_up`: the first try after the app started also retries the photos given up on.
+    fn lightcraft_flush(&mut self, _retry_given_up: bool) -> BridgeReport {
+        BridgeReport::default()
     }
     /// The weekly purge.
     fn purge(&mut self) -> Result<PurgeOutcome, JobError>;
@@ -128,6 +150,8 @@ pub struct Service<W: Worker> {
     /// Imports the last sync left waiting: the 2-minute check starts a sync for imports beyond these, not for the same ones
     /// again (the 15-minute sync retries those).
     imports_stuck: usize,
+    /// No try to reach LightCraft has been made since the app started.
+    bridge_first: bool,
 }
 
 impl<W: Worker> Service<W> {
@@ -147,7 +171,7 @@ impl<W: Worker> Service<W> {
         {
             status.last_sync = Some(LastSync { when, ok: result.starts_with("ok"), result, photos, applied: 0, merged: 0, kept: 0 });
         }
-        let mut s = Service { worker, sched, clock, notifier, state_dir, persisted, status, info, sink, log, quit: false, announced: None, imports_stuck: 0 };
+        let mut s = Service { worker, sched, clock, notifier, state_dir, persisted, status, info, sink, log, quit: false, announced: None, imports_stuck: 0, bridge_first: true };
         s.publish();
         s
     }
@@ -281,6 +305,9 @@ impl<W: Worker> Service<W> {
                 if o.kept > 0 && self.info.notify {
                     self.notifier.notify(notifier::TITLE, &notifier::edits_kept(o.kept));
                 }
+                if o.imported > 0 {
+                    self.run_bridge();
+                }
                 Ended::Done
             }
             Err(JobError::Busy) => {
@@ -303,7 +330,30 @@ impl<W: Worker> Service<W> {
         }
     }
 
+    /// Tell LightCraft about the photos that wait for it, if it is running. Its answer never decides whether a sync happens.
+    fn run_bridge(&mut self) {
+        let now = self.iso(self.clock.now());
+        let r = self.worker.lightcraft_flush(self.bridge_first);
+        if r.port != 0 {
+            self.bridge_first = false;
+        }
+        for l in &r.log {
+            self.say(l);
+        }
+        self.status.lightcraft_port = r.port;
+        self.status.lightcraft_waiting = r.waiting;
+        if r.reachable.is_some() {
+            self.status.lightcraft_reachable = r.reachable;
+        }
+        for p in &r.problems {
+            if !self.status.errors.iter().any(|e| e.text == *p) {
+                self.status.push_error(&now, p.clone());
+            }
+        }
+    }
+
     fn run_inbox_check(&mut self) -> Ended {
+        self.run_bridge();
         let mut waiting = 0;
         match self.worker.inbox_waiting() {
             Ok(n) => {

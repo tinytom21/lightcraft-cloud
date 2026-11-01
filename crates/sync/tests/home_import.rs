@@ -1010,3 +1010,101 @@ fn the_hash_of_what_was_adopted_is_the_id_the_manifest_will_use() {
     assert_eq!((r.imports.added.len(), r.imports.duplicates), (0, 1));
     assert_eq!(visible(&fx).len(), 2);
 }
+
+// ------------------------------------------------------------------ the adopted-photo hook (Part B's durable list)
+
+type Seen = Arc<std::sync::Mutex<Vec<(std::path::PathBuf, bool)>>>;
+
+/// A hook that records each path with whether the import's note was still on the remote at that moment.
+fn watch(fx: &mut Fx) -> Seen {
+    let seen: Seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (s, remote) = (seen.clone(), fx.remote.clone());
+    fx.home.set_adopted_hook(move |p| {
+        let note_there = std::fs::read_dir(remote.join("imports").join(DEV)).is_ok_and(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().ends_with(".json")));
+        s.lock().unwrap().push((p.to_path_buf(), note_there));
+        Ok(())
+    });
+    seen
+}
+
+#[test]
+fn the_hook_gets_the_absolute_path_of_an_adopted_photo_before_the_import_is_filed_away() {
+    let mut fx = Fx::new("hook-add");
+    seed(&fx);
+    let seen = watch(&mut fx);
+    let u = up("Trip", "a.jpg", &bytes_of("a")).sidecar("a.xmp", xmp());
+    upload(&fx, &u);
+    sync(&fx);
+    let got = seen.lock().unwrap().clone();
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(got[0].0.is_absolute() && got[0].0.ends_with("Trip/a.jpg"), "{:?}", got[0].0);
+    assert!(got[0].0.starts_with(std::fs::canonicalize(&fx.src).unwrap()), "inside the photo folder");
+    assert!(got[0].1, "the note was still waiting on the remote when the hook ran");
+    assert!(got[0].0.is_file(), "the photo is on disk when it is announced");
+}
+
+#[test]
+fn a_duplicate_the_published_state_knows_is_not_announced_but_identical_bytes_on_disk_are() {
+    let mut fx = Fx::new("hook-dup");
+    seed(&fx);
+    let seen = watch(&mut fx);
+    // known by the published state
+    let k = up("Old", "k.jpg", &bytes_of("k"));
+    let mut st = State::open(&fx.state, false).unwrap();
+    st.put("Old/place/k.jpg", Row { size: k.bytes.len() as u64, status: "ok".into(), id: Some(k.id()), ..Row::default() });
+    st.commit().unwrap();
+    drop(st);
+    upload(&fx, &k);
+    // found at the target by its bytes
+    let d = up("Trip", "a.jpg", &bytes_of("a"));
+    fx.touch("Trip/a.jpg", &d.bytes, 500);
+    upload(&fx, &d);
+    sync(&fx);
+    let got = seen.lock().unwrap().clone();
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(got[0].0.ends_with("Trip/a.jpg"));
+}
+
+#[test]
+fn a_dry_run_announces_nothing_and_a_refusing_hook_leaves_the_import_waiting() {
+    let mut fx = Fx::new("hook-refuse");
+    seed(&fx);
+    let seen = watch(&mut fx);
+    let u = up("Trip", "a.jpg", &bytes_of("a"));
+    upload(&fx, &u);
+    fx.home.sync(&mut Fake::default(), true).unwrap();
+    assert!(seen.lock().unwrap().is_empty());
+    fx.home.set_adopted_hook(|_| Err("disk full".into()));
+    let r = sync(&fx);
+    assert_eq!(r.imports.added.len(), 0, "{:?}", r.imports);
+    assert_eq!(r.imports.waiting, 1);
+    assert_eq!(imports_files(&fx).len(), 2, "the note and the photo are still on the remote: {:?}", imports_files(&fx));
+    // a working hook on the next sync finds the photo already there and announces it
+    let seen = watch(&mut fx);
+    let r = sync(&fx);
+    assert_eq!(r.imports.waiting, 0);
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert!(imports_files(&fx).is_empty());
+}
+
+#[test]
+fn whatever_point_a_run_crashes_at_the_photo_was_announced_by_the_crashed_run_or_the_next() {
+    for point in CRASH_POINTS {
+        let mut fx = Fx::new(&format!("hook-crash-{point}"));
+        seed(&fx);
+        let seen = watch(&mut fx);
+        let u = up("Trip", "a.jpg", &bytes_of("a"));
+        upload(&fx, &u);
+        fx.home.set_import_crash_point(Some(point));
+        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let _ = fx.home.sync(&mut Fake::default(), false);
+        }));
+        fx.home.set_import_crash_point(None);
+        let before = seen.lock().unwrap().len();
+        // the crash points before the photo is on disk announce nothing; every later one has announced it already or will
+        sync(&fx);
+        let all: Vec<_> = seen.lock().unwrap().iter().map(|(p, _)| p.clone()).collect();
+        assert!(all.iter().any(|p| p.ends_with("Trip/a.jpg")), "{point}: never announced ({before} before the rerun)");
+        assert!(all.len() <= 2, "{point}: {all:?}");
+    }
+}

@@ -100,6 +100,12 @@ pub struct AppStatus {
     pub photos_imported: usize,
     /// ... and by the last sync.
     pub last_imported: usize,
+    /// The port of LightCraft's control channel the app uses; 0: that is switched off.
+    pub lightcraft_port: u16,
+    /// Photos added to the photo folder that LightCraft has not been told about yet (given-up ones not counted).
+    pub lightcraft_waiting: usize,
+    /// Whether LightCraft answered at the last try; None: it was not asked (nothing was waiting) or not yet.
+    pub lightcraft_reachable: Option<bool>,
     /// ISO time of the next scheduled sync (none while paused or not set up).
     pub next_sync: Option<String>,
     pub last_purge: Option<String>,

@@ -116,9 +116,40 @@ are ignored, so a Python config can be reused. State in `~/.local/state/lightcra
 | `previews_only` | `false` | upload sidecars, thumbnails, smart previews and the manifest, but not the photo files |
 | `notify` | `true` | desktop notifications (the app) |
 | `device_history_days`, `photo_backup` | `30`, `"restic"` | the weekly purge: age limit; the backup command it asks (`photo_backup snapshots --latest 1 --json`); `""` switches the purge off |
+| `lightcraft_control_port` | `7980` | the port of your running LightCraft's control channel (see "Telling your LightCraft about new photos"); `0` switches it off |
 | `state_dir` | `~/.local/state/lightcraft-cloud-desktop` | must not be under `~/Pictures` |
 | `rclone_config` | `$RCLONE_CONFIG`, else `~/.config/rclone/rclone.conf` | rclone config used for an rclone remote |
 | `librclone` | `$LIBRCLONE`, else `librclone.so` next to the executable, else `~/.local/lib/lightcraft-cloud/librclone.so`, else the system search path | the host `librclone.so` (see "Building the Rust part"); the desktop app looks in that order, so an installed app needs the library in one of those places |
+
+### Telling your LightCraft about new photos
+
+When another PC sends photos (FORMAT.md, "Imports") and the sync adds them to the photo folder, the app can ask the LightCraft
+you have open to add them to its library, so they appear without a manual import. It does this through LightCraft's control
+channel, which is off until you turn it on. For the Flatpak:
+
+```sh
+flatpak override --user --env=LIGHTCRAFT_CONTROL_PORT=7980 ai.storyteller.lightcraft
+```
+
+(or start LightCraft with `--control 7980`; any other port works if you set `lightcraft_control_port` to match). **The channel
+listens on `127.0.0.1` only and has no password:** any program running as you on this PC can drive LightCraft through it, so
+turn it on only if you accept that. The app never turns it on, and `lightcraft_control_port = 0` switches the feature off.
+
+What the app does with it, and nothing else:
+
+* the photos the sync adds are written to a list in the state folder (`lightcraft-pending/`) before anything is sent, so a crash
+  or restart loses none;
+* every 2 minutes, and right after a sync that added photos, if the list is not empty it checks that what answers on the port is
+  LightCraft (`engine.commands`) and then sends `library.import` with mode `add` and the photos' paths, ten at a time. `add` means
+  LightCraft keeps a reference to each file where it is: nothing is copied, moved, or deleted. No other command is ever sent;
+* a photo leaves the list only when LightCraft's reply says it has it (added, or already in the library). One it refuses is
+  retried and logged; after ten tries it is left alone, **Problems** in the Status window says so once, and it is tried once
+  more the next time the app starts;
+* LightCraft closed, or the channel off: the list is kept and the Status window shows "Waiting for LightCraft: N photos" with a
+  hint that the port has not answered. The photos go in the next time LightCraft opens with the channel on;
+* the app never starts LightCraft, never passes `--library`, never opens or names your library: LightCraft adds the photos to
+  whichever library it has open. The Flatpak can only see some folders (`xdg-pictures` by default): a photo folder it cannot see
+  comes back as a failure ("No such file"), so give it access (`flatpak override --user --filesystem=<folder> ai.storyteller.lightcraft`).
 
 ### Rendering
 

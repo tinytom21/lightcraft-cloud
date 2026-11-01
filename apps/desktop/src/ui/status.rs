@@ -81,6 +81,23 @@ fn state_line(ui: &mut Ui, text: &str, color: Color32) {
     });
 }
 
+/// The LightCraft row: "Waiting for LightCraft: N photos" while photos wait to be added there (nothing when the feature is off
+/// or nothing waits), and a hint when the port has not answered.
+pub fn lightcraft_row(s: &AppStatus) -> Option<(String, Option<String>)> {
+    if s.lightcraft_port == 0 || s.lightcraft_waiting == 0 {
+        return None;
+    }
+    let n = s.lightcraft_waiting;
+    let text = format!("Waiting for LightCraft: {n} {}", if n == 1 { "photo" } else { "photos" });
+    let hint = (s.lightcraft_reachable == Some(false)).then(|| {
+        format!(
+            "LightCraft is not answering on port {}. Open LightCraft with its control port on (see the README); the photos are added when it answers.",
+            s.lightcraft_port
+        )
+    });
+    Some((text, hint))
+}
+
 pub fn show(ui: &mut Ui, v: &StatusView) {
     let t = theme::CHARCOAL;
     theme::title(ui, "Status");
@@ -146,6 +163,12 @@ pub fn show(ui: &mut Ui, v: &StatusView) {
             },
         );
         row(ui, "Photos from other PCs", format!("{} in the last sync; {} in all", s.last_imported, s.photos_imported));
+        if let Some((text, hint)) = lightcraft_row(s) {
+            row(ui, "LightCraft", text);
+            if let Some(h) = hint {
+                theme::hint(ui, &h);
+            }
+        }
         row(
             ui,
             "Next sync",
@@ -163,4 +186,25 @@ pub fn show(ui: &mut Ui, v: &StatusView) {
     });
     list(ui, "Newest wins", "No conflicts between phone and PC edits.", &s.notices, v.now, None);
     list(ui, "Problems", "None.", &s.errors, v.now, Some(theme::CHARCOAL.reject));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_lightcraft_row_shows_only_while_photos_wait_and_hints_when_the_port_is_silent() {
+        let mut s = AppStatus { lightcraft_port: 7980, ..AppStatus::default() };
+        assert_eq!(lightcraft_row(&s), None);
+        s.lightcraft_waiting = 1;
+        assert_eq!(lightcraft_row(&s), Some(("Waiting for LightCraft: 1 photo".into(), None)));
+        s.lightcraft_waiting = 3;
+        s.lightcraft_reachable = Some(true);
+        assert_eq!(lightcraft_row(&s).unwrap().0, "Waiting for LightCraft: 3 photos");
+        assert!(lightcraft_row(&s).unwrap().1.is_none());
+        s.lightcraft_reachable = Some(false);
+        assert!(lightcraft_row(&s).unwrap().1.unwrap().contains("7980"));
+        s.lightcraft_port = 0;
+        assert_eq!(lightcraft_row(&s), None, "off");
+    }
 }

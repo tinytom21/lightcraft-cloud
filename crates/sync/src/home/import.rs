@@ -224,7 +224,8 @@ impl From<Error> for Fail {
 
 enum Outcome {
     Added { path: String, sidecar: Option<String>, wrote_sidecar: bool, reason: Option<String>, folder: String },
-    Duplicate { path: String },
+    /// `on_disk`: found by its bytes in the photo folder (not by the published state): a crashed adoption's photo looks like this.
+    Duplicate { path: String, on_disk: bool },
     /// A dry run: this is where it would go.
     Would { path: String },
 }
@@ -503,7 +504,18 @@ impl Home {
             let label = format!("{device}/{fid}");
             let files = listing.data.get(&(device.clone(), fid.clone())).cloned().unwrap_or_default();
             let key = format!("import-wait:{label}");
-            let step = self.import_one(&run, st, dry, device, fid, *note_size, &files, &key);
+            let step = self.import_one(&run, st, dry, device, fid, *note_size, &files, &key).and_then(|o| {
+                // tell the caller before anything is filed away (a crash after this repeats it, never loses it)
+                let on_disk = match &o {
+                    Outcome::Added { path, .. } | Outcome::Duplicate { path, on_disk: true } => Some(path),
+                    _ => None,
+                };
+                match (&self.adopted_hook, on_disk) {
+                    (Some(hook), Some(path)) if !dry => hook(&run.root.join(path)).map_err(|e| Fail::Wait(format!("cannot record {path} for the caller: {e}")))?,
+                    _ => {}
+                }
+                Ok(o)
+            });
             let mut result: Option<Value> = None;
             match step {
                 Ok(Outcome::Added { path, sidecar, wrote_sidecar, reason, folder }) => {
@@ -520,7 +532,7 @@ impl Home {
                     result = Some(json!({"id": fid, "status": "added", "path": path, "reason": reason}));
                     sum.added.push(ImportedPhoto { device: device.clone(), id: fid.clone(), path, sidecar: if wrote_sidecar { sidecar } else { None } });
                 }
-                Ok(Outcome::Duplicate { path }) => {
+                Ok(Outcome::Duplicate { path, .. }) => {
                     self.logln(format!("imports: duplicate {label} (already {path})"));
                     sum.items.push(format!("duplicate {label}: {path}"));
                     sum.duplicates += 1;
@@ -592,10 +604,10 @@ impl Home {
         }
         // a photo the library already has (or a file with the same bytes at the target) is a duplicate: no download, no write
         if let Some(p) = run.known.get(&note.id) {
-            return Ok(Outcome::Duplicate { path: p.clone() });
+            return Ok(Outcome::Duplicate { path: p.clone(), on_disk: false });
         }
         if let Some(p) = self.find_same(run.root, &rel_folder, &note)? {
-            return Ok(Outcome::Duplicate { path: p });
+            return Ok(Outcome::Duplicate { path: p, on_disk: true });
         }
         if dry {
             return Ok(Outcome::Would { path: rel_join(&rel_folder, &note.name) });
@@ -695,7 +707,7 @@ impl Home {
             // the photo's name: taken by the same bytes means it is already here; by other bytes, try the next number
             if let Some(real) = entry_named(&dir, &pname).map_err(|e| io("cannot list", e))? {
                 if has_bytes(&dir.join(&real), note.size, &note.id) {
-                    return Ok(Outcome::Duplicate { path: rel_join(&rel_folder, &real) });
+                    return Ok(Outcome::Duplicate { path: rel_join(&rel_folder, &real), on_disk: true });
                 }
                 n += 1;
                 continue;

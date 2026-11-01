@@ -22,7 +22,7 @@ use lightcraft_cloud_client::Error;
 use lightcraft_cloud_client::home::{Home, notify_message, utc_iso};
 use lightcraft_cloud_desktop::config::Config;
 use lightcraft_cloud_desktop::engine;
-use lightcraft_cloud_desktop::{app, backup, notifier, ui};
+use lightcraft_cloud_desktop::{app, backup, notifier, pending, ui};
 
 const USAGE: &str = "\
 lightcraft-cloud-desktop: keep the cloud library in step with a photo folder
@@ -135,6 +135,8 @@ impl From<Error> for Failure {
 
 fn build_home(cfg: &Config, log_to_file: bool) -> std::result::Result<Home, Failure> {
     let mut home = Home::new(cfg.home_config()?, cfg.open_remote()?)?;
+    // (photos adopted by the command line are queued too: the running app tells LightCraft about them)
+    pending::install_hook(&mut home, &cfg.state_dir, cfg.file.lightcraft_control_port);
     let logfile = cfg.state_dir.join("logs").join("lightcraft-cloud-desktop.log");
     home.set_logger(move |m| {
         let line = format!("{} {m}", utc_iso(SystemTime::now()));

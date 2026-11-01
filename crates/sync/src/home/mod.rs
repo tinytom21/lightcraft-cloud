@@ -169,13 +169,18 @@ pub struct Home {
     retry_delay: Duration,
     /// Test seam: the point of an adoption at which to panic, simulating a crash (see `import.rs`).
     import_crash: Option<String>,
+    /// Told of every photo an adoption leaves on disk, before the import is filed away (see [`Home::set_adopted_hook`]).
+    adopted_hook: Option<AdoptedHook>,
 }
+
+/// What [`Home::set_adopted_hook`] takes: the absolute path of the photo; `Err(why)` leaves the import waiting.
+pub type AdoptedHook = Arc<dyn Fn(&Path) -> std::result::Result<(), String> + Send + Sync>;
 
 impl Home {
     /// Refuses a state folder under `~/Pictures` (keep it out of backups and away from the user's libraries).
     pub fn new(cfg: HomeConfig, remote: Arc<dyn Remote>) -> Result<Self> {
         check_state_dir(&cfg.state_dir)?;
-        Ok(Home { cfg, remote, clock: Arc::new(SystemTime::now), log: Arc::new(|m| log::info!("{m}")), retry_delay: Duration::from_secs(2), import_crash: None })
+        Ok(Home { cfg, remote, clock: Arc::new(SystemTime::now), log: Arc::new(|m| log::info!("{m}")), retry_delay: Duration::from_secs(2), import_crash: None, adopted_hook: None })
     }
 
     pub fn config(&self) -> &HomeConfig {
@@ -190,6 +195,15 @@ impl Home {
     /// Where log lines go (default: the `log` crate at info level).
     pub fn set_logger(&mut self, f: impl Fn(&str) + Send + Sync + 'static) {
         self.log = Arc::new(f);
+    }
+
+    /// Be told, for every photo an import leaves in the photo folder, its absolute path: when the sync adds it, and when a run
+    /// finds the same bytes already at the target of an import that was never filed away (a crashed run's photo; a photo the
+    /// published state already knows is not announced again). It is called **before** the import is filed away, so a crash
+    /// anywhere leaves the photo announced by this run or by the next. An `Err` leaves the import waiting (the next sync asks
+    /// again). Not called in a dry run.
+    pub fn set_adopted_hook(&mut self, f: impl Fn(&Path) -> std::result::Result<(), String> + Send + Sync + 'static) {
+        self.adopted_hook = Some(Arc::new(f));
     }
 
     /// Pause before the second and third attempt of a remote call that failed (default 2 s).
