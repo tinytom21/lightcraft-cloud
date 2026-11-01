@@ -1,7 +1,7 @@
 name: installer-script
 
-# A quick check that the Inno Setup script compiles (about a minute, with stand-in files instead of a build). The full build and the install,
-# update and uninstall tests on Windows are in release.yml.
+# A quick check that the Inno Setup script compiles, as both editions (about a minute, with stand-in files instead of a build). The full build
+# and the install, update and uninstall tests on Windows are in release.yml.
 on:
   push:
     paths: ["packaging/windows/**", ".github/workflows/installer-script.yml"]
@@ -28,5 +28,10 @@ jobs:
             Set-Content -Path "stage\$f" -Value "stand-in"
           }
           & $iscc "/DAppVersion=0.0.0" "/DStage=$((Resolve-Path stage).Path)" "/DOutDir=$((Resolve-Path dist).Path)" packaging\windows\lightcraft-cloud.iss
-          if ($LASTEXITCODE -ne 0) { throw "ISCC failed: $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "ISCC (light) failed: $LASTEXITCODE" }
+          & $iscc "/DAppVersion=0.0.0" "/DHome" "/DStage=$((Resolve-Path stage).Path)" "/DOutDir=$((Resolve-Path dist).Path)" packaging\windows\lightcraft-cloud.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC (home) failed: $LASTEXITCODE" }
           Get-ChildItem dist | Format-Table Name, Length
+          foreach ($n in 'lightcraft-cloud-0.0.0-windows-setup.exe', 'lightcraft-cloud-0.0.0-windows-home-setup.exe') {
+            if (-not (Test-Path "dist\$n")) { throw "$n was not built" }
+          }

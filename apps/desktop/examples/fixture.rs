@@ -35,7 +35,7 @@ fn to_srgb8(img: &Rgb32f) -> Rgba8 {
     }
 }
 
-fn jpeg(scene: usize, w: usize, h: usize) -> Vec<u8> {
+pub fn jpeg(scene: usize, w: usize, h: usize) -> Vec<u8> {
     let scenes = lightcraft_scenes::demo_library();
     let img = to_srgb8(&scenes[scene % scenes.len()].render(w, h));
     encode_jpeg(&EncodeImage::rgba8(&img), 90, ChromaSubsampling::S420, &EncodeMeta::default()).expect("jpeg")

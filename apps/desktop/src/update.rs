@@ -6,7 +6,8 @@
 //!   check can never colour the tray or the Status window's state line. Off with `check_for_updates = false`.
 //! * **The offer**: the tray menu and the Status window say a newer version exists, with a link to its release notes. One desktop
 //!   notification per version at most. On Linux that is all: the app never replaces itself there.
-//! * **The update** (Windows, only after a click, see [`request_install`]): download `lightcraft-cloud-<version>-windows-setup.exe`
+//! * **The update** (Windows, only after a click, see [`request_install`]): download `lightcraft-cloud-<version>-windows-setup.exe` (the
+//!   home PC build: `...-windows-home-setup.exe`; a build never takes the other's)
 //!   and `SHA256SUMS` from that release into `<state>/update/`, check the installer against the SHA-256 in `SHA256SUMS`, wait until no
 //!   sync or upload runs, then run the installer silently. The installer stops this app, replaces the files and starts the app again
 //!   (`packaging/windows/lightcraft-cloud.iss`). Whatever goes wrong before that leaves the running app as it was.
@@ -48,9 +49,14 @@ const SUMS_LIMIT: u64 = 64 << 10;
 const INSTALLER_LIMIT: u64 = 300 << 20;
 const REDIRECTS: usize = 4;
 
-/// The file name of a version's Windows installer.
-pub fn setup_name(version: &Version) -> String {
-    format!("lightcraft-cloud-{version}-windows-setup.exe")
+/// Whether this program is the home PC build (with the engine) rather than the light one. A build updates only to its own kind: the home
+/// build installs `lightcraft-cloud-<version>-windows-home-setup.exe`, the light one `lightcraft-cloud-<version>-windows-setup.exe` (the
+/// name every v0.2.0 updater looks for), and neither ever fetches the other's.
+pub const THIS_BUILD_IS_HOME: bool = cfg!(feature = "home");
+
+/// The file name of a version's Windows installer, for the home PC build (`home`) or the light one.
+pub fn setup_name(version: &Version, home: bool) -> String {
+    if home { format!("lightcraft-cloud-{version}-windows-home-setup.exe") } else { format!("lightcraft-cloud-{version}-windows-setup.exe") }
 }
 
 /// The page of a version's release (its notes).
@@ -188,7 +194,7 @@ pub struct Release {
 
 /// Read the GitHub API's answer for "latest release". A draft or a prerelease is refused (the API does not return them, but this does not
 /// depend on that), as is a tag that is not a version.
-pub fn parse_latest(json: &[u8]) -> Result<Release, String> {
+pub fn parse_latest(json: &[u8], home: bool) -> Result<Release, String> {
     let raw: RawRelease = serde_json::from_slice(json).map_err(|e| format!("the release information is not understood: {e}"))?;
     if raw.draft || raw.prerelease {
         return Err("the latest release is a draft or a prerelease".into());
@@ -197,7 +203,7 @@ pub fn parse_latest(json: &[u8]) -> Result<Release, String> {
     if version.is_prerelease() {
         return Err("the latest release is a prerelease".into());
     }
-    let setup_file = setup_name(&version);
+    let setup_file = setup_name(&version, home);
     let find = |name: &str| raw.assets.iter().find(|a| a.name == name).map(|a| Asset { name: a.name.clone(), url: a.browser_download_url.clone() });
     Ok(Release { setup: find(&setup_file), sums: find("SHA256SUMS"), version, tag: raw.tag_name })
 }
@@ -462,7 +468,7 @@ fn clean_leftovers(state_dir: &Path, current: &Version) {
         let name = e.file_name().to_string_lossy().into_owned();
         let newer = name
             .strip_prefix("lightcraft-cloud-")
-            .and_then(|r| r.strip_suffix("-windows-setup.exe"))
+            .and_then(|r| r.strip_suffix("-windows-home-setup.exe").or_else(|| r.strip_suffix("-windows-setup.exe")))
             .and_then(Version::parse)
             .is_some_and(|v| v > *current);
         if !newer {
@@ -518,6 +524,8 @@ pub struct Updater {
     current: Version,
     /// This system installs updates itself (Windows); elsewhere the app only says that one exists.
     installs: bool,
+    /// The home PC build: its installer is the home one (see [`THIS_BUILD_IS_HOME`]).
+    home: bool,
     state: UpdateState,
     release: Option<Release>,
     ready: Option<Ready>,
@@ -531,7 +539,7 @@ pub struct Updater {
 impl Updater {
     /// The updater of the running app. `idle`: no sync or upload is running now.
     pub fn new(state_dir: &Path, now: SystemTime, idle: Box<dyn Fn() -> bool + Send>, notifier: Box<dyn Notifier>, log: Box<dyn Fn(&str) + Send>) -> Updater {
-        Updater::build(Source::github(), state_dir, now, current_version(), cfg!(windows), idle, notifier, Box::new(SetupLauncher), log)
+        Updater::build(Source::github(), state_dir, now, current_version(), cfg!(windows), THIS_BUILD_IS_HOME, idle, notifier, Box::new(SetupLauncher), log)
     }
 
     /// (The tests use this with a local source; the program only calls it through [`Updater::new`].)
@@ -541,6 +549,7 @@ impl Updater {
         now: SystemTime,
         current: Version,
         installs: bool,
+        home: bool,
         idle: Box<dyn Fn() -> bool + Send>,
         notifier: Box<dyn Notifier>,
         launcher: Box<dyn Launcher>,
@@ -552,7 +561,7 @@ impl Updater {
         state.latest = None;
         clean_leftovers(state_dir, &current);
         let _ = std::fs::remove_file(request_path(state_dir));
-        Updater { source, state_dir: state_dir.to_path_buf(), current, installs, state, release: None, ready: None, next_check: now + FIRST_CHECK_AFTER, idle, notifier, launcher, log }
+        Updater { source, state_dir: state_dir.to_path_buf(), current, installs, home, state, release: None, ready: None, next_check: now + FIRST_CHECK_AFTER, idle, notifier, launcher, log }
     }
 
     pub fn state(&self) -> &UpdateState {
@@ -627,7 +636,7 @@ impl Updater {
     fn check(&mut self, now: SystemTime, notify: bool) {
         let answer = Client { source: &self.source }.get_bytes(&self.source.latest, false, "application/vnd.github+json", API_LIMIT);
         let result = match answer {
-            Ok(b) => parse_latest(&b).map(Some),
+            Ok(b) => parse_latest(&b, self.home).map(Some),
             // (a repository with no published release yet: nothing newer, and no reason to ask again before tomorrow)
             Err(e) if e.status == Some(404) => Ok(None),
             Err(e) => Err(e.to_string()),
@@ -686,7 +695,7 @@ impl Updater {
         let (Some(setup), Some(sums)) = (rel.setup.clone(), rel.sums.clone()) else {
             return self.fail("This release has no installer.");
         };
-        let name = setup_name(&rel.version);
+        let name = setup_name(&rel.version, self.home);
         if setup.url != self.source.asset_url(&rel.tag, &name) || sums.url != self.source.asset_url(&rel.tag, "SHA256SUMS") {
             return self.fail("The update was not downloaded: its address is not one this app trusts. Nothing was changed.");
         }
@@ -813,23 +822,23 @@ mod tests {
 
     #[test]
     fn the_latest_release_is_read_and_drafts_prereleases_and_nonsense_are_refused() {
-        let ok = parse_latest(release_json("v0.3.0", false, false, "https://github.com/", true).as_bytes()).unwrap();
+        let ok = parse_latest(release_json("v0.3.0", false, false, "https://github.com/", true).as_bytes(), false).unwrap();
         assert_eq!(ok.version, v("0.3.0"));
         assert_eq!(ok.setup.unwrap().name, "lightcraft-cloud-0.3.0-windows-setup.exe");
         assert_eq!(ok.sums.unwrap().name, "SHA256SUMS");
         // no installer attached: still a release (the Linux app only needs the version), without the assets
-        let bare = parse_latest(release_json("v0.3.0", false, false, "", false).as_bytes()).unwrap();
+        let bare = parse_latest(release_json("v0.3.0", false, false, "", false).as_bytes(), false).unwrap();
         assert!(bare.setup.is_none() && bare.sums.is_none());
-        assert!(parse_latest(release_json("v0.3.0", true, false, "", true).as_bytes()).unwrap_err().contains("draft"));
-        assert!(parse_latest(release_json("v0.3.0", false, true, "", true).as_bytes()).unwrap_err().contains("prerelease"));
-        assert!(parse_latest(release_json("v0.3.0-rc.1", false, false, "", true).as_bytes()).unwrap_err().contains("prerelease"));
-        assert!(parse_latest(release_json("nightly", false, false, "", true).as_bytes()).unwrap_err().contains("not a version"));
+        assert!(parse_latest(release_json("v0.3.0", true, false, "", true).as_bytes(), false).unwrap_err().contains("draft"));
+        assert!(parse_latest(release_json("v0.3.0", false, true, "", true).as_bytes(), false).unwrap_err().contains("prerelease"));
+        assert!(parse_latest(release_json("v0.3.0-rc.1", false, false, "", true).as_bytes(), false).unwrap_err().contains("prerelease"));
+        assert!(parse_latest(release_json("nightly", false, false, "", true).as_bytes(), false).unwrap_err().contains("not a version"));
         for bad in ["", "not json", "[]", "{}", r#"{"tag_name":5}"#, r#"{"tag_name":"v1.0.0","assets":"x"}"#] {
-            assert!(parse_latest(bad.as_bytes()).is_err(), "{bad:?}");
+            assert!(parse_latest(bad.as_bytes(), false).is_err(), "{bad:?}");
         }
         // an asset of another version's name is not this version's installer
         let wrong = r#"{"tag_name":"v0.3.0","assets":[{"name":"lightcraft-cloud-0.2.0-windows-setup.exe","browser_download_url":"https://x/y"}]}"#;
-        assert!(parse_latest(wrong.as_bytes()).unwrap().setup.is_none());
+        assert!(parse_latest(wrong.as_bytes(), false).unwrap().setup.is_none());
     }
 
     #[test]
@@ -963,6 +972,10 @@ mod tests {
     }
 
     fn updater(server: &Server, state: &Path, current: &str, installs: bool) -> (Updater, Fakes) {
+        updater_of_kind(server, state, current, installs, false)
+    }
+
+    fn updater_of_kind(server: &Server, state: &Path, current: &str, installs: bool, home: bool) -> (Updater, Fakes) {
         let f = Fakes { notified: Arc::default(), launched: Arc::default(), idle: Arc::new(AtomicBool::new(true)), exit: Arc::default(), logs: Arc::default() };
         let (idle, logs) = (f.idle.clone(), f.logs.clone());
         let u = Updater::build(
@@ -971,6 +984,7 @@ mod tests {
             SystemTime::UNIX_EPOCH,
             v(current),
             installs,
+            home,
             Box::new(move || idle.load(Ordering::SeqCst)),
             Box::new(FakeNotifier(f.notified.clone())),
             Box::new(FakeLauncher { launched: f.launched.clone(), idle: f.idle.clone(), exit: f.exit.clone() }),
@@ -1199,6 +1213,102 @@ mod tests {
         let (mut u, _) = updater(&server, &temp("win2"), "0.2.0", true);
         u.tick(later(100), ON);
         assert!(u.state().latest.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- the two kinds of build: each updates only to its own installer
+
+    /// A release with both Windows installers (`kinds`: "light", "home") and the checksums of whichever are listed.
+    fn publish_kinds(s: &Server, tag: &str, kinds: &[(&str, &[u8])]) {
+        let ver = tag.trim_start_matches('v').to_string();
+        let base = format!("{}/{REPO}/releases/download/{tag}", s.base);
+        let file = |kind: &str| setup_name(&Version::parse(&ver).unwrap(), kind == "home");
+        let assets: Vec<String> = kinds
+            .iter()
+            .map(|(k, _)| format!(r#"{{"name":"{n}","browser_download_url":"{base}/{n}"}}"#, n = file(k)))
+            .chain([format!(r#"{{"name":"SHA256SUMS","browser_download_url":"{base}/SHA256SUMS"}}"#)])
+            .collect();
+        let json = format!(r#"{{"tag_name":"{tag}","draft":false,"prerelease":false,"html_url":"https://example.invalid/x","assets":[{}],"body":"n"}}"#, assets.join(","));
+        s.route(LATEST, move || reply(200, json.clone()));
+        let sums: String = kinds.iter().map(|(k, b)| format!("{:x}  {}\n", Sha256::digest(b), file(k))).collect();
+        s.route(&format!("/{REPO}/releases/download/{tag}/SHA256SUMS"), move || reply(200, sums.clone()));
+        for (k, b) in kinds {
+            let body = b.to_vec();
+            s.route(&format!("/{REPO}/releases/download/{tag}/{}", file(k)), move || reply(200, body.clone()));
+        }
+    }
+
+    #[test]
+    fn the_installer_names_are_the_light_one_v020_looks_for_and_a_home_one() {
+        let ver = Version::parse("1.2.3").unwrap();
+        assert_eq!(setup_name(&ver, false), "lightcraft-cloud-1.2.3-windows-setup.exe", "v0.2.0 updaters look for exactly this name");
+        assert_eq!(setup_name(&ver, true), "lightcraft-cloud-1.2.3-windows-home-setup.exe");
+        let both = r#"{"tag_name":"v1.2.3","assets":[{"name":"lightcraft-cloud-1.2.3-windows-home-setup.exe","browser_download_url":"https://x/h"},{"name":"lightcraft-cloud-1.2.3-windows-setup.exe","browser_download_url":"https://x/l"},{"name":"SHA256SUMS","browser_download_url":"https://x/s"}]}"#;
+        assert_eq!(parse_latest(both.as_bytes(), true).unwrap().setup.unwrap().url, "https://x/h");
+        assert_eq!(parse_latest(both.as_bytes(), false).unwrap().setup.unwrap().url, "https://x/l");
+        let only_light = r#"{"tag_name":"v1.2.3","assets":[{"name":"lightcraft-cloud-1.2.3-windows-setup.exe","browser_download_url":"https://x/l"}]}"#;
+        let only_home = r#"{"tag_name":"v1.2.3","assets":[{"name":"lightcraft-cloud-1.2.3-windows-home-setup.exe","browser_download_url":"https://x/h"}]}"#;
+        assert!(parse_latest(only_light.as_bytes(), true).unwrap().setup.is_none(), "a home build never takes the light installer");
+        assert!(parse_latest(only_home.as_bytes(), false).unwrap().setup.is_none(), "a light build never takes the home installer");
+    }
+
+    #[test]
+    fn a_build_offers_nothing_when_its_own_installer_is_not_attached() {
+        for (home, other_kind) in [(true, "light"), (false, "home")] {
+            let (server, dir) = (Server::start(), temp(&format!("kind-none-{home}")));
+            publish_kinds(&server, "v0.3.0", &[(other_kind, b"the other kind's installer")]);
+            let (mut u, f) = updater_of_kind(&server, &dir, "0.2.0", true, home);
+            u.tick(later(100), ON);
+            assert!(u.state().latest.is_none(), "home={home}: only the other kind's installer is there, so there is nothing to offer");
+            assert!(f.notified.lock().unwrap().is_empty());
+            assert!(f.logs.lock().unwrap().iter().any(|l| l.contains("has no installer yet")), "{:?}", f.logs.lock().unwrap());
+            // and a click cannot make it fetch the other kind's file
+            request_install(&dir, "0.3.0").unwrap();
+            u.tick(later(101), ON);
+            assert!(f.launched.lock().unwrap().is_empty());
+            for name in [setup_name(&v("0.3.0"), true), setup_name(&v("0.3.0"), false)] {
+                assert_eq!(server.count(&format!("/{REPO}/releases/download/v0.3.0/{name}")), 0, "home={home}: {name}");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn with_both_installers_attached_each_build_downloads_and_runs_only_its_own() {
+        for home in [true, false] {
+            let (server, dir) = (Server::start(), temp(&format!("kind-both-{home}")));
+            let (light, home_bytes): (&[u8], &[u8]) = (b"LIGHT installer bytes", b"HOME installer bytes");
+            publish_kinds(&server, "v0.3.0", &[("light", light), ("home", home_bytes)]);
+            let (mut u, f) = updater_of_kind(&server, &dir, "0.2.0", true, home);
+            u.tick(later(100), ON);
+            assert_eq!(u.state().latest.as_ref().map(|o| o.can_install), Some(true));
+            request_install(&dir, "0.3.0").unwrap();
+            u.tick(later(101), ON);
+            let (mine, theirs) = (setup_name(&v("0.3.0"), home), setup_name(&v("0.3.0"), !home));
+            let launched = f.launched.lock().unwrap().clone();
+            assert_eq!(launched.len(), 1, "home={home}");
+            assert!(launched[0].0.ends_with(&mine), "{:?}", launched[0]);
+            assert_eq!(server.count(&format!("/{REPO}/releases/download/v0.3.0/{mine}")), 1);
+            assert_eq!(server.count(&format!("/{REPO}/releases/download/v0.3.0/{theirs}")), 0, "home={home}: the other kind's installer is never fetched");
+            assert_eq!(std::fs::read(dir.join("update").join(&mine)).unwrap(), if home { home_bytes } else { light });
+            assert!(!dir.join("update").join(&theirs).exists());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn the_checksum_must_be_for_the_installer_of_this_kind() {
+        // a SHA256SUMS that lists only the other kind's file (or a different file's hash) is no reason to run this kind's installer
+        let (server, dir) = (Server::start(), temp("kind-sums"));
+        publish_kinds(&server, "v0.3.0", &[("light", b"light"), ("home", b"home")]);
+        let wrong = format!("{:x}  {}\n", Sha256::digest(b"home"), setup_name(&v("0.3.0"), false));
+        server.route(&format!("/{REPO}/releases/download/v0.3.0/SHA256SUMS"), move || reply(200, wrong.clone()));
+        let (mut u, f) = updater_of_kind(&server, &dir, "0.2.0", true, true);
+        u.tick(later(100), ON);
+        request_install(&dir, "0.3.0").unwrap();
+        u.tick(later(101), ON);
+        assert!(f.launched.lock().unwrap().is_empty(), "home build, checksum listed only for the light file");
+        assert!(matches!(u.state().phase, Phase::Failed { .. }), "{:?}", u.state().phase);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

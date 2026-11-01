@@ -2,8 +2,14 @@
 ;
 ; Per user, no administrator: it installs to %LOCALAPPDATA%\Programs\LightCraft Cloud.
 ; Build (CI does this, see .github/workflows/release.yml):
-;   iscc /DAppVersion=0.2.0 /DStage=<folder with the files> /DOutDir=<folder for the setup> lightcraft-cloud.iss
-; <Stage> holds lightcraft-cloud-desktop.exe, librclone.dll, README.txt and the LICENSE-*.txt files.
+;   iscc /DAppVersion=0.2.1 /DStage=<folder with the files> /DOutDir=<folder for the setup> lightcraft-cloud.iss         -> lightcraft-cloud-0.2.1-windows-setup.exe
+;   iscc /DAppVersion=0.2.1 /DHome /DStage=...                                                                           -> lightcraft-cloud-0.2.1-windows-home-setup.exe
+; <Stage> holds lightcraft-cloud-desktop.exe, librclone.dll, README.txt and the LICENSE-*.txt files. One script builds both editions:
+;  * the light one (no /DHome) is the other-PC app, and its file name must never change (every v0.2.0 app looks for exactly it);
+;  * the home one (/DHome) has the engine and can be the home PC.
+; Both have the same AppId, folder, Start menu entry and Run value: there is one LightCraft Cloud on a PC, and installing one edition
+; over the other is an update of it. The one thing that is refused is the light edition over the home one (it would stop the home PC
+; publishing): see InitializeSetup. The edition installed is recorded in {app}\edition.txt (a v0.2.0 install has none: it is light).
 ;
 ; What it does that matters:
 ;  * Before it replaces anything it stops a running app with the new exe's `quit` command (the app ends after the job it is running; if it
@@ -23,6 +29,15 @@
   #define OutDir "."
 #endif
 
+#ifdef Home
+  #define Edition "home"
+  #define SetupSuffix "windows-home-setup"
+  #define DisplayName "LightCraft Cloud (home PC)"
+#else
+  #define Edition "light"
+  #define SetupSuffix "windows-setup"
+  #define DisplayName "LightCraft Cloud"
+#endif
 #define AppName "LightCraft Cloud"
 #define AppExe "lightcraft-cloud-desktop.exe"
 #define RunKey "Software\Microsoft\Windows\CurrentVersion\Run"
@@ -42,10 +57,10 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#OutDir}
-OutputBaseFilename=lightcraft-cloud-{#AppVersion}-windows-setup
+OutputBaseFilename=lightcraft-cloud-{#AppVersion}-{#SetupSuffix}
 SetupIconFile=..\..\apps\desktop\assets\icon.ico
 UninstallDisplayIcon={app}\{#AppExe}
-UninstallDisplayName={#AppName}
+UninstallDisplayName={#DisplayName}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -78,6 +93,7 @@ Root: HKCU; Subkey: "{#RunKey}"; ValueType: string; ValueName: "{#AppName}"; Val
 Filename: "{app}\{#AppExe}"; Parameters: "run"; WorkingDir: "{app}"; Description: "Start {#AppName}"; Flags: nowait postinstall skipifsilent; Check: NotWasRunning
 
 [UninstallDelete]
+Type: files; Name: "{app}\edition.txt"
 Type: dirifempty; Name: "{app}"
 
 [Code]
@@ -87,6 +103,37 @@ var
 function NotWasRunning: Boolean;
 begin
   Result := not WasRunning;
+end;
+
+const
+  UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{AD15624E-CC27-4CAD-9106-87BE24794BB7}_is1';
+
+{ "home" or "light": the edition installed now ('' when nothing is, or the install is v0.2.0's, which only ever was the light one). }
+function InstalledEdition: String;
+var
+  Dir: String;
+  Text: AnsiString;
+begin
+  Result := '';
+  if RegQueryStringValue(HKCU, UninstallKey, 'InstallLocation', Dir) then
+    if LoadStringFromFile(AddBackslash(Dir) + 'edition.txt', Text) then
+      Result := Trim(String(Text));
+end;
+
+function InitializeSetup: Boolean;
+begin
+  Result := True;
+#ifndef Home
+  { The light edition cannot publish. Over a home PC's install it would replace the engine and stop the home PC without a word, so it
+    does not: nothing is changed, and the exit code is not 0. (The home edition over the light one is an upgrade and is fine.) }
+  if InstalledEdition = 'home' then
+  begin
+    MsgBox('This PC has the home PC edition of LightCraft Cloud, and this is the other-PC edition, which cannot publish your photos. ' +
+      'Installing it would stop this PC from being your home PC, so nothing was changed.' + #13#10#13#10 +
+      'To go back to the other-PC edition on purpose, uninstall LightCraft Cloud first (Settings > Apps), then run this installer.', mbError, MB_OK);
+    Result := False;
+  end;
+#endif
 end;
 
 function PreviouslyInstalled: Boolean;
@@ -150,6 +197,13 @@ begin
   ExtractTemporaryFile('{#AppExe}');
   WasRunning := StopApp(ExpandConstant('{tmp}\{#AppExe}'));
   Result := '';
+end;
+
+{ Record which edition is installed (the light installer refuses to go over a home install). }
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    SaveStringToFile(ExpandConstant('{app}\edition.txt'), '{#Edition}' + #13#10, False);
 end;
 
 { Start the app again if it was running (also when the install failed: the old one is still there). }

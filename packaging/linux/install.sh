@@ -33,7 +33,7 @@ for l in "$here"/LICENSE-*.txt; do
     [ -f "$l" ] && put "$l" 644 "$lib/licenses/$(basename "$l")"
 done
 
-echo "Installed LightCraft Cloud $("$bin/lightcraft-cloud-desktop" --version 2>/dev/null | sed 's/^lightcraft-cloud-desktop //')."
+echo "Installed LightCraft Cloud $("$bin/lightcraft-cloud-desktop" --version 2>/dev/null | head -n 1 | sed 's/^lightcraft-cloud-desktop //')."
 echo "  program: $bin/lightcraft-cloud-desktop"
 echo "  library: $lib/librclone.so"
 case ":$PATH:" in

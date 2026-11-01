@@ -66,6 +66,10 @@ required-features = ["home"]
 name = "app"
 required-features = ["home"]
 
+[[test]]
+name = "home_e2e"
+required-features = ["home"]
+
 # The tray icon's Linux backend is a StatusNotifierItem over D-Bus (`ksni`); the other systems use tray-icon's own.
 [target.'cfg(target_os = "linux")'.dependencies]
 tray-icon = { workspace = true }
@@ -75,7 +79,7 @@ tray-icon = { version = "0.26", default-features = false }
 
 # Windows: the tray's message pump, the console of a command-line run, the per-user Run key (see `winsys`).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Console", "Win32_System_Registry", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 # The exe's icon (assets/icon.ico, made by `examples/make_icon.rs`).
 [target.'cfg(windows)'.build-dependencies]

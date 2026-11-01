@@ -10,7 +10,7 @@ use super::state::{Row, save_history};
 use super::xmp;
 use super::{Home, State};
 use crate::progress::Stage;
-use crate::util::{parse_stamp, sidecar_version, temp_beside, utc_stamp, write_atomic};
+use crate::util::{is_busy, parse_stamp, sidecar_version, temp_beside, utc_stamp, write_atomic_io};
 use crate::{Error, Result};
 
 /// What one pass over the inbox did.
@@ -28,6 +28,11 @@ pub struct InboxSummary {
     pub folders: Vec<String>,
     /// The sidecars (relative to the source) written by this pass: complete files, not ones still being saved by something else.
     pub written: Vec<String>,
+    /// Edits that could not be written now because another program (LightCraft with the sidecar open, a virus scanner) holds the
+    /// sidecar: they stay in the cloud inbox and are applied by a later sync. Always 0 off Windows.
+    pub left: usize,
+    /// Things the user can act on, one line each (an edit that waits for a sidecar to be let go of).
+    pub problems: Vec<String>,
 }
 
 /// A parsed `<device>/<id>-<UTCstamp>-<base>.xmp`.
@@ -344,7 +349,22 @@ impl Home {
                     save_history(&self.cfg.state_dir, &date, &target, &data, &tag)?;
                 }
                 let out = merged.as_deref().unwrap_or(&data);
-                write_atomic(&abs_t, out)?;
+                if let Err(e) = write_atomic_io(&abs_t, out) {
+                    if is_busy(&e) {
+                        // Another program holds the sidecar (LightCraft, a scanner). The edit stays in the cloud inbox, untouched, and the
+                        // next sync applies it; the rest of this sync goes on. It is shown in Status: a sidecar that stays held would
+                        // otherwise never take the phone's edit and nothing would say so.
+                        summary.left += 1;
+                        summary.items.push(format!("wait {path}: the sidecar {target} is in use"));
+                        self.logln(format!("inbox: {path} waits: the sidecar {target} cannot be replaced now ({e})"));
+                        let line = format!("The sidecar {target} is in use by another program, so an edit from another device was not applied yet. It is tried again at the next sync.");
+                        if !summary.problems.contains(&line) {
+                            summary.problems.push(line);
+                        }
+                        continue;
+                    }
+                    return Err(Error::io(abs_t.display(), e));
+                }
                 self.sidecar_written(&abs_t);
                 let new_hash = sidecar_version(out);
                 versions.store(out, &new_hash);

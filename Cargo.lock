@@ -2545,7 +2545,7 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-cloud-client"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libloading",
  "lightcraft-engine 0.14.0",
@@ -2563,7 +2563,7 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-cloud-desktop"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "eframe",
  "egui",

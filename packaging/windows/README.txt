@@ -1,9 +1,15 @@
-LightCraft Cloud for Windows (light build: another PC)
-======================================================
+LightCraft Cloud for Windows (other-PC edition)
+===============================================
 
-This is the build for a PC that keeps a copy of some folders of your LightCraft
+This is the edition for a PC that keeps a copy of some folders of your LightCraft
 cloud library and sends its edits and imported photos back to the home PC. It
-has no LightCraft engine and does not publish.
+has no LightCraft engine and does not publish. If this PC is your home PC (the
+one with the master copy of your photos), you want the home PC edition instead,
+lightcraft-cloud-<version>-windows-home-setup.exe from the same Releases page.
+It installs over this one and keeps your settings. The other way round is not
+done for you: the installer of this edition stops without changing anything if
+the home PC edition is installed (uninstall it first if you really want this
+one).
 
 Install and update
   Run lightcraft-cloud-<version>-windows-setup.exe from the Releases page
@@ -16,7 +22,8 @@ Install and update
 
   Updating: when a newer version is published, the tray menu shows "Update to vX.Y.Z" and
   the Status window shows "Update now". Nothing is installed until you click. The app
-  downloads the installer from the GitHub release, checks it against the checksum in the
+  downloads the installer of this edition (windows-setup.exe, never the home PC one) from
+  the GitHub release, checks it against the checksum in the
   release, waits until no sync is running, and runs it; the app restarts by itself. You can
   also run a newer setup.exe by hand over the old one. "Check for new versions" in
   Settings switches the daily look off (config key check_for_updates).

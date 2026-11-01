@@ -264,7 +264,7 @@ impl SettingsPanel {
             theme::gap(ui);
             theme::panel(ui, Some("Photos on this PC"), |ui| {
                 let label = theme::field_label(ui, "Folder for the photos");
-                self.source_row(ui, parent, label.id, "/path/to/a/folder");
+                self.source_row(ui, parent, label.id, folder_hint());
                 ui.add(egui::Label::new(RichText::new("Set LightCraft's import destination to this folder. New photos you import there, in any folders inside it, are sent to the home PC by themselves, with your folders kept. Photos imported anywhere else are not uploaded.").color(t.text)).wrap());
                 theme::hint(ui, "The folders you choose below are downloaded here. Use a folder that is only for this, and add it to LightCraft. The folders you import into are added to the ones kept on this PC automatically.");
             });
@@ -279,7 +279,7 @@ impl SettingsPanel {
         } else {
             theme::panel(ui, None, |ui| {
                 let label = theme::field_label(ui, "Photo folder");
-                self.source_row(ui, parent, label.id, "/path/to/your/photos");
+                self.source_row(ui, parent, label.id, photos_hint());
                 ui.add_space(4.0);
                 let label = theme::field_label(ui, "Folders to leave out (one name pattern per line, e.g. exported)");
                 let width = ui.available_width();
@@ -438,7 +438,7 @@ impl SettingsPanel {
                 Storage::Local { dir } => {
                     let label = theme::field_label(ui, "Folder on this PC");
                     let width = ui.available_width();
-                    ui.add_sized([width, 30.0], theme::text_edit(dir).hint_text("/path/to/a/folder")).labelled_by(label.id);
+                    ui.add_sized([width, 30.0], theme::text_edit(dir).hint_text(folder_hint())).labelled_by(label.id);
                 }
             }
             if !self.form.is_other() {
@@ -451,6 +451,15 @@ impl SettingsPanel {
             }
         });
     }
+}
+
+/// What an empty folder field shows as a hint: a path of this system.
+fn folder_hint() -> &'static str {
+    if cfg!(windows) { r"D:\Photos\LightCraft Cloud" } else { "/path/to/a/folder" }
+}
+
+fn photos_hint() -> &'static str {
+    if cfg!(windows) { r"D:\Photos" } else { "/path/to/your/photos" }
 }
 
 #[cfg(test)]

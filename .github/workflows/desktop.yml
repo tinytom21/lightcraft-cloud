@@ -1,10 +1,11 @@
 name: desktop
 
-# The light build of the desktop app (--no-default-features: no LightCraft engine, role "another PC") on Windows and Linux.
-# No secrets are used. What users download is built by release.yml (the installer and the Linux archives).
+# The light build of the desktop app (--no-default-features: no LightCraft engine, role "another PC") on Windows and Linux, and the full build
+# (the home PC, with LightCraft's engine) with the whole workspace's tests on Windows and Linux.
+# No secrets are used. What users download is built by release.yml (the installers and the Linux archives).
 on:
   push:
-    branches: [main]
+    branches: [main, v0.2.1-work] # (v0.2.1-work: temporary, removed before the work is merged)
   pull_request:
 
 permissions:
@@ -78,3 +79,57 @@ jobs:
           $sub = [BitConverter]::ToUInt16($bytes, $pe + 24 + 68)
           Write-Output "PE subsystem: $sub"
           if ($sub -ne 2) { throw "the exe is not a windows-subsystem program" }
+
+  full:
+    # The default features: the home PC app with the engine. Every test of the workspace runs, none is skipped by default (a test that cannot
+    # run says "skipped"/"SKIPPED" and this job fails on the word).
+    name: full build and all tests (${{ matrix.name }})
+    needs: librclone
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows, os: windows-latest, lib: librclone.dll }
+          - { name: linux, os: ubuntu-latest, lib: librclone.so }
+    runs-on: ${{ matrix.os }}
+    env:
+      # (the tests render on the CPU: a runner has no graphics card, and no test needs one)
+      LIGHTCRAFT_GPU: "0"
+      # (the symbolic-link tests need the privilege to make links: a runner has it, so a missing one is a failure here, not a skip)
+      LC_REQUIRE_SYMLINKS: "1"
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (the version rust-toolchain.toml pins)
+        shell: bash
+        run: |
+          rustup toolchain install "$(grep -oP 'channel = "\K[^"]+' rust-toolchain.toml)" --profile minimal --component clippy
+          rustc --version
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: ${{ matrix.name }}-full
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: librclone-${{ matrix.name }}
+          path: out
+      - name: Clippy (the whole workspace, all targets)
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Tests (the whole workspace, with the real librclone)
+        shell: bash
+        env:
+          RUST_BACKTRACE: "1"
+        run: |
+          export LIBRCLONE="$PWD/out/${{ matrix.lib }}"
+          cargo test --locked --no-fail-fast --workspace -- --nocapture 2>&1 | tee all-tests.log
+          # (a test that could not run says so with one of these; "unstable-skipped=0" in a sync log is not one)
+          if grep -E 'skipped: set LIBRCLONE|SKIPPED:' all-tests.log; then
+            echo "a test was skipped"; exit 1
+          fi
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: full-tests-${{ matrix.name }}
+          path: all-tests.log
+          if-no-files-found: ignore
+          retention-days: 7

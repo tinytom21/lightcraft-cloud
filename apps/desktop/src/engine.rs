@@ -7,7 +7,8 @@
 //! (`library.xmpPreferences autoWrite=false`).
 //!
 //! The user's LightCraft library is never opened, locked or written: [`EngineRenderer::open`] refuses a library folder
-//! under `~/Pictures` or one named `LightCraft Library`, and the app has no setting to point it anywhere else.
+//! under a Pictures folder (`~/Pictures`, `%USERPROFILE%\Pictures`, Windows' own Pictures folder), one named like `LightCraft Library`, or
+//! one that holds or sits inside a catalog it did not make; and the app has no setting to point it anywhere else.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -30,38 +31,116 @@ fn engine(e: impl std::fmt::Display) -> Error {
     Error::Engine(e.to_string())
 }
 
-/// The scratch library must be this app's own: not under `~/Pictures` and not a LightCraft library by name.
-pub fn check_library_path(lib: &Path) -> Result<()> {
-    let abs = std::path::absolute(lib).map_err(engine)?;
-    let resolved = {
+/// The file that marks a scratch library as this app's own (written when the app creates one).
+pub const SCRATCH_MARKER: &str = ".lightcraft-cloud-scratch";
+
+/// The names LightCraft's catalog has in a library folder (the engine's `catalog.snap`, `catalog.log`, `catalog.lock`).
+const CATALOG_FILES: [&str; 3] = ["catalog.snap", "catalog.log", "catalog.lock"];
+
+/// Where LightCraft's own library may be, as this PC says. Refusing a scratch library near any of these is the second line of defence
+/// (the first is that the app only ever passes `<state>/lib`): the engine must never open, lock or write the user's library.
+#[derive(Debug, Clone, Default)]
+pub struct LibraryGuard {
+    /// `Pictures` folders: LightCraft's default library is `<home>\Pictures\LightCraft Library` (`%USERPROFILE%` on Windows, `$HOME`
+    /// elsewhere), and Windows may have moved Pictures (OneDrive).
+    pub pictures: Vec<PathBuf>,
+    /// `$LIGHTCRAFT_LIBRARY`, which LightCraft opens instead of the default.
+    pub library_env: Option<PathBuf>,
+    /// Windows (and macOS) file systems ignore case: `c:\users\me\pictures` is the same folder.
+    pub case_insensitive: bool,
+}
+
+impl LibraryGuard {
+    /// The places this PC names: `$HOME` and (on Windows) `%USERPROFILE%` with `Pictures`, Windows' own Pictures folder and the
+    /// OneDrive ones, and `$LIGHTCRAFT_LIBRARY`.
+    pub fn from_env() -> LibraryGuard {
+        let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+        let mut pictures: Vec<PathBuf> = Vec::new();
+        for home in [var("HOME"), if cfg!(windows) { var("USERPROFILE") } else { None }].into_iter().flatten() {
+            pictures.push(home.join("Pictures"));
+        }
+        if cfg!(windows) {
+            for k in ["OneDrive", "OneDriveConsumer", "OneDriveCommercial"] {
+                pictures.extend(var(k).map(|d| d.join("Pictures")));
+            }
+            #[cfg(windows)]
+            pictures.extend(crate::winsys::known_pictures_folder());
+        }
+        LibraryGuard { pictures, library_env: var("LIGHTCRAFT_LIBRARY"), case_insensitive: cfg!(windows) || cfg!(target_os = "macos") }
+    }
+
+    /// The path as a list of comparable components: made absolute, symbolic links resolved as far as the path exists, the Windows
+    /// `\\?\` prefix dropped, lower-cased where case does not count.
+    fn parts(&self, p: &Path) -> Vec<String> {
+        let abs = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
         let mut existing = abs.clone();
         let mut tail = Vec::new();
         while !existing.exists() {
             match (existing.file_name().map(|n| n.to_owned()), existing.parent().map(Path::to_path_buf)) {
-                (Some(n), Some(p)) => {
+                (Some(n), Some(parent)) => {
                     tail.push(n);
-                    existing = p;
+                    existing = parent;
                 }
                 _ => break,
             }
         }
-        let mut r = std::fs::canonicalize(&existing).unwrap_or(existing);
+        let mut resolved = std::fs::canonicalize(&existing).unwrap_or(existing);
         for t in tail.iter().rev() {
-            r.push(t);
+            resolved.push(t);
         }
-        r
-    };
-    if resolved.to_string_lossy().contains("LightCraft Library") {
-        return Err(Error::Invalid(format!("library path {} is not allowed (it looks like a LightCraft library)", resolved.display())));
+        let text = resolved.to_string_lossy().replace('\\', "/");
+        let text = text.strip_prefix("//?/UNC/").map(|r| format!("//{r}")).or_else(|| text.strip_prefix("//?/").map(str::to_string)).unwrap_or(text);
+        text.split('/')
+            .filter(|c| !c.is_empty())
+            .map(|c| if self.case_insensitive { c.to_lowercase() } else { c.to_string() })
+            .collect()
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        let pictures = std::fs::canonicalize(home.join("Pictures")).unwrap_or_else(|_| home.join("Pictures"));
-        if resolved.starts_with(&pictures) {
-            return Err(Error::Invalid(format!("library path {} is under ~/Pictures; not allowed", resolved.display())));
+
+    fn within(&self, inner: &[String], outer: &[String]) -> bool {
+        inner.len() >= outer.len() && inner[..outer.len()] == *outer
+    }
+
+    /// `Err` when `lib` could be, or could hold, LightCraft's library.
+    pub fn check(&self, lib: &Path) -> Result<()> {
+        let mine = self.parts(lib);
+        let refuse = |why: &str| Err(Error::Invalid(format!("library path {} is not allowed ({why})", lib.display())));
+        // a folder named like LightCraft's library, anywhere in the path
+        if mine.iter().any(|c| c.to_lowercase().contains("lightcraft library")) {
+            return refuse("it looks like a LightCraft library");
         }
+        for pictures in &self.pictures {
+            if self.within(&mine, &self.parts(pictures)) {
+                return refuse("it is under the Pictures folder, where LightCraft keeps its library");
+            }
+        }
+        if let Some(user) = &self.library_env {
+            let user = self.parts(user);
+            if self.within(&mine, &user) || self.within(&user, &mine) {
+                return refuse("it is, or is next to the place of, the library LIGHTCRAFT_LIBRARY names");
+            }
+        }
+        // a catalog in the folder itself (unless the folder is this app's own scratch library) or in any folder above it
+        let abs = std::path::absolute(lib).unwrap_or_else(|_| lib.to_path_buf());
+        let has_catalog = |d: &Path| CATALOG_FILES.iter().any(|f| d.join(f).exists());
+        if has_catalog(&abs) {
+            let ours = abs.join(SCRATCH_MARKER).is_file() || abs.parent().is_some_and(|p| p.join("state.json").is_file());
+            if !ours {
+                return refuse("it already holds a LightCraft catalog that this app did not make");
+            }
+        }
+        for up in abs.ancestors().skip(1) {
+            if has_catalog(up) {
+                return refuse(&format!("it is inside a LightCraft library ({})", up.display()));
+            }
+        }
+        Ok(())
     }
-    Ok(())
+}
+
+/// The scratch library must be this app's own: not under a `Pictures` folder, not named like a LightCraft library, not LightCraft's
+/// `$LIGHTCRAFT_LIBRARY`, and not a folder that holds (or sits inside) a catalog this app did not make. See [`LibraryGuard`].
+pub fn check_library_path(lib: &Path) -> Result<()> {
+    LibraryGuard::from_env().check(lib)
 }
 
 impl EngineRenderer {
@@ -69,6 +148,11 @@ impl EngineRenderer {
     pub fn open(lib: &Path) -> Result<Self> {
         check_library_path(lib)?;
         std::fs::create_dir_all(lib).map_err(|e| Error::Io(format!("{}: {e}", lib.display())))?;
+        // (this folder is the app's own from now on: a later check accepts the catalog the engine puts in it)
+        let marker = lib.join(SCRATCH_MARKER);
+        if !marker.exists() {
+            let _ = std::fs::write(&marker, concat!("made by lightcraft-cloud-desktop ", env!("CARGO_PKG_VERSION"), "\n"));
+        }
         // (a plain session: no denoise, SAM or face models are wired in; rendering only)
         let mut h = Headless::new(Session::new().with_fs());
         h.session.open_library(lib, false).map_err(|e| Error::Engine(format!("scratch library {}: {e}", lib.display())))?;

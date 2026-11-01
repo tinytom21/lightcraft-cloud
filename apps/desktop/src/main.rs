@@ -105,6 +105,8 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("--version" | "-V") => {
             println!("lightcraft-cloud-desktop {}", env!("CARGO_PKG_VERSION"));
+            // (which build this is: the installers' tests read it)
+            println!("edition: {}", if cfg!(feature = "home") { "home (can be the home PC)" } else { "light (another PC only)" });
             return ExitCode::SUCCESS;
         }
         Some("--help" | "-h" | "help") => {

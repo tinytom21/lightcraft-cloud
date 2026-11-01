@@ -211,7 +211,7 @@ pub fn default_device() -> String {
 pub fn expand(p: &str) -> Result<PathBuf, String> {
     match p {
         "~" => home_dir(),
-        _ => match p.strip_prefix("~/") {
+        _ => match p.strip_prefix("~/").or_else(|| if cfg!(windows) { p.strip_prefix("~\\") } else { None }) {
             Some(rest) => Ok(home_dir()?.join(rest)),
             None => Ok(PathBuf::from(p)),
         },
@@ -424,6 +424,20 @@ mod tests {
         for r in ["gdrive:LC", "C:", "c:lib", "lccrypt:"] {
             assert!(!is_windows_path(r), "{r} is an rclone remote");
         }
+    }
+
+    #[test]
+    fn a_tilde_means_the_users_home_folder_on_either_kind_of_slash_where_the_system_has_both() {
+        let home = home_dir().unwrap();
+        assert_eq!(expand("~").unwrap(), home);
+        assert_eq!(expand("~/Pictures/Photos").unwrap(), home.join("Pictures/Photos"));
+        let back = expand(r"~\Pictures\Photos").unwrap();
+        if cfg!(windows) {
+            assert_eq!(back, home.join(r"Pictures\Photos"));
+        } else {
+            assert_eq!(back, PathBuf::from(r"~\Pictures\Photos"), "a backslash is an ordinary character in a Linux name");
+        }
+        assert_eq!(expand("/abs/x").unwrap(), PathBuf::from("/abs/x"));
     }
 
     #[test]

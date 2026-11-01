@@ -1,14 +1,15 @@
 name: release
 
-# Builds everything a release has: the Windows installer, the two Linux archives and SHA256SUMS.
+# Builds everything a release has: the two Windows installers (the other-PC edition, and the home PC edition with the LightCraft engine), the
+# two Linux archives and SHA256SUMS.
 #   * a tag `v*`: builds, checks, and creates a DRAFT GitHub release with the files and generated notes. Nothing is ever published by
 #     this workflow: the draft is published by hand (the in-app updater only sees published releases);
-#   * `workflow_dispatch` and a push to the branch `installer`: the same build and the same checks, no release at all.
+#   * `workflow_dispatch` (and, for now, a push to the branch v0.2.1-work): the same build and the same checks, no release at all.
 # The only secret used is the automatic GITHUB_TOKEN, and only in the last job, only on a tag.
 on:
   push:
     tags: ["v*"]
-    branches: [installer]
+    branches: [v0.2.1-work] # (temporary, removed before the work is merged)
   workflow_dispatch:
 
 permissions:
@@ -22,10 +23,17 @@ jobs:
   librclone:
     uses: ./.github/workflows/librclone.yml
 
-  windows:
-    name: Windows installer
+  windows-exe:
+    # the program of each edition: the light one (another PC) and the home one (the default features, with the engine)
+    name: Windows program (${{ matrix.variant }})
     needs: librclone
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { variant: light, cargo_flags: "--no-default-features" }
+          - { variant: home, cargo_flags: "" }
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -47,19 +55,62 @@ jobs:
           rustc --version
       - uses: Swatinem/rust-cache@v2.9.3
         with:
-          key: windows-release
+          key: windows-release-${{ matrix.variant }}
+      - name: Build (release, the ${{ matrix.variant }} edition; .cargo/config.toml makes the C runtime part of the exe)
+        run: cargo build --release --locked -p lightcraft-cloud-desktop ${{ matrix.cargo_flags }}
+      - name: Smoke test of the exe
+        shell: pwsh
+        run: |
+          $exe = ".\target\release\lightcraft-cloud-desktop.exe"
+          $v = & $exe --version | Out-String
+          Write-Output $v
+          if ($v -notmatch "lightcraft-cloud-desktop ${{ steps.ver.outputs.version }}") { throw "wrong version output" }
+          if ($v -notmatch "edition: ${{ matrix.variant }}") { throw "this is not the ${{ matrix.variant }} edition" }
+          $h = & $exe --help | Out-String
+          if ($h -notmatch 'USAGE') { throw "no help output" }
+          # the subsystem must be GUI (2), so the tray app opens no console window
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $exe))
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $sub = [BitConverter]::ToUInt16($bytes, $pe + 24 + 68)
+          Write-Output "PE subsystem: $sub"
+          if ($sub -ne 2) { throw "the exe is not a windows-subsystem program" }
+          "exe: $((Get-Item $exe).Length) bytes"
+      - name: The exe needs nothing but system DLLs (no Visual C++ runtime, no vcruntime)
+        shell: pwsh
+        run: python tools/ci/pe_imports.py target/release/lightcraft-cloud-desktop.exe
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: exe-windows-${{ matrix.variant }}
+          path: target/release/lightcraft-cloud-desktop.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    name: Windows installers
+    needs: [librclone, windows-exe]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Version
+        id: ver
+        shell: bash
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v8.0.2
         with:
           name: librclone-windows
           path: out
-      - name: Build (release, the light build)
-        run: cargo build --release --locked -p lightcraft-cloud-desktop --no-default-features
-      - name: Smoke test of the exe
-        shell: pwsh
-        run: |
-          $v = & .\target\release\lightcraft-cloud-desktop.exe --version | Out-String
-          Write-Output $v
-          if ($v -notmatch "lightcraft-cloud-desktop ${{ steps.ver.outputs.version }}") { throw "wrong version output" }
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: exe-windows-light
+          path: exe-light
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: exe-windows-home
+          path: exe-home
       - name: Inno Setup (the image's, else a pinned version)
         shell: pwsh
         run: |
@@ -79,25 +130,37 @@ jobs:
             if ([int]$parts[0] -ne 6 -or [int]$parts[1] -lt 3) { throw "Inno Setup $ver is not 6.3 or newer" }
           }
           "ISCC=$iscc" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-      - name: Build the installer
+      - name: Build the two installers (one script, /DHome for the home edition)
         shell: pwsh
         run: |
-          $d = "stage"
-          New-Item -ItemType Directory $d | Out-Null
-          Copy-Item target\release\lightcraft-cloud-desktop.exe, out\librclone.dll, out\LICENSE-rclone.txt $d
-          Copy-Item LICENSE-MIT "$d\LICENSE-MIT.txt"
-          Copy-Item LICENSE-APACHE "$d\LICENSE-APACHE.txt"
-          Copy-Item apps\desktop\assets\fonts\OFL-Inter.txt "$d\LICENSE-Inter-OFL.txt"
-          Copy-Item packaging\windows\README.txt $d
           New-Item -ItemType Directory dist | Out-Null
-          & $env:ISCC "/DAppVersion=${{ steps.ver.outputs.version }}" "/DStage=$((Resolve-Path $d).Path)" "/DOutDir=$((Resolve-Path dist).Path)" packaging\windows\lightcraft-cloud.iss
-          if ($LASTEXITCODE -ne 0) { throw "ISCC failed: $LASTEXITCODE" }
+          foreach ($v in 'light', 'home') {
+            $d = "stage-$v"
+            New-Item -ItemType Directory $d | Out-Null
+            Copy-Item "exe-$v\lightcraft-cloud-desktop.exe", out\librclone.dll, out\LICENSE-rclone.txt $d
+            Copy-Item LICENSE-MIT "$d\LICENSE-MIT.txt"
+            Copy-Item LICENSE-APACHE "$d\LICENSE-APACHE.txt"
+            Copy-Item apps\desktop\assets\fonts\OFL-Inter.txt "$d\LICENSE-Inter-OFL.txt"
+            Copy-Item $(if ($v -eq 'home') { 'packaging\windows\README-home.txt' } else { 'packaging\windows\README.txt' }) "$d\README.txt"
+            $iscArgs = @("/DAppVersion=${{ steps.ver.outputs.version }}", "/DStage=$((Resolve-Path $d).Path)", "/DOutDir=$((Resolve-Path dist).Path)")
+            if ($v -eq 'home') { $iscArgs += '/DHome' }
+            & $env:ISCC @iscArgs packaging\windows\lightcraft-cloud.iss
+            if ($LASTEXITCODE -ne 0) { throw "ISCC ($v) failed: $LASTEXITCODE" }
+          }
           Get-ChildItem dist | Format-Table Name, Length
-          $exe = Get-Item target\release\lightcraft-cloud-desktop.exe
-          "exe: $($exe.Length) bytes"
-      - name: Test the installer on Windows (install, run, update over a running copy, uninstall)
+          foreach ($n in "lightcraft-cloud-${{ steps.ver.outputs.version }}-windows-setup.exe", "lightcraft-cloud-${{ steps.ver.outputs.version }}-windows-home-setup.exe") {
+            if (-not (Test-Path "dist\$n")) { throw "$n was not built" }
+          }
+      - name: Test the light installer on Windows (install, run, update over a running copy, uninstall; the home one over it, and not the other way)
         shell: pwsh
-        run: ./packaging/windows/test-installer.ps1 -Setup (Resolve-Path "dist\lightcraft-cloud-${{ steps.ver.outputs.version }}-windows-setup.exe").Path -Version "${{ steps.ver.outputs.version }}"
+        run: |
+          $d = "dist\lightcraft-cloud-${{ steps.ver.outputs.version }}"
+          ./packaging/windows/test-installer.ps1 -Setup (Resolve-Path "$d-windows-setup.exe").Path -Version "${{ steps.ver.outputs.version }}" -Variant light -OtherSetup (Resolve-Path "$d-windows-home-setup.exe").Path
+      - name: Test the home installer on Windows (the same; and the light one does not go over it)
+        shell: pwsh
+        run: |
+          $d = "dist\lightcraft-cloud-${{ steps.ver.outputs.version }}"
+          ./packaging/windows/test-installer.ps1 -Setup (Resolve-Path "$d-windows-home-setup.exe").Path -Version "${{ steps.ver.outputs.version }}" -Variant home -OtherSetup (Resolve-Path "$d-windows-setup.exe").Path
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
@@ -108,7 +171,9 @@ jobs:
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: release-windows
-          path: dist/lightcraft-cloud-${{ steps.ver.outputs.version }}-windows-setup.exe
+          path: |
+            dist/lightcraft-cloud-${{ steps.ver.outputs.version }}-windows-setup.exe
+            dist/lightcraft-cloud-${{ steps.ver.outputs.version }}-windows-home-setup.exe
           if-no-files-found: error
           retention-days: 14
 
@@ -181,6 +246,7 @@ jobs:
           test -f "$t/home/.local/lib/lightcraft-cloud/licenses/LICENSE-rclone.txt"
           test -f "$t/home/.local/lib/lightcraft-cloud/licenses/LICENSE-Inter-OFL.txt"
           HOME="$t/home" "$t/home/.local/bin/lightcraft-cloud-desktop" --version | grep -q "lightcraft-cloud-desktop ${{ steps.ver.outputs.version }}"
+          HOME="$t/home" "$t/home/.local/bin/lightcraft-cloud-desktop" --version | grep -q "edition: ${{ matrix.variant }}"
           "$t/home/.local/bin/lightcraft-cloud-desktop" --help | head -3
           # once more over the top: replaced, not an error
           HOME="$t/home" sh "$t/unpacked/$name/install.sh" >/dev/null
@@ -210,7 +276,9 @@ jobs:
           ls -l
           sha256sum lightcraft-cloud-* > SHA256SUMS
           cat SHA256SUMS
-          test "$(wc -l < SHA256SUMS)" = 3
+          # both Windows installers and both Linux archives, and nothing else
+          test "$(wc -l < SHA256SUMS)" = 4
+          for k in windows-setup.exe windows-home-setup.exe linux-light.tar.gz linux-home.tar.gz; do grep -q -- "-$k\$" SHA256SUMS; done
           sha256sum -c SHA256SUMS
       - uses: actions/upload-artifact@v7.0.2
         with:

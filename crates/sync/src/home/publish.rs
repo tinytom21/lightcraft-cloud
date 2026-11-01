@@ -14,7 +14,7 @@ use super::scan::{FileInfo, Plan, Scan, diff_scan, ext_lower, in_scope, publishe
 use super::state::{Meta, Row, RunLock, State, Uploaded};
 use super::{Added, Home, PhotoInfo, Renderer};
 use crate::progress::Stage;
-use crate::util::{iso, parallel, utc_stamp, write_atomic};
+use crate::util::{is_busy, iso, parallel, utc_stamp, write_atomic};
 use crate::{Error, FORMAT, Result};
 
 /// Uploads at once.
@@ -58,6 +58,9 @@ pub struct SyncReport {
     pub manifest_uploaded: bool,
     /// Photos in the manifest.
     pub photos: usize,
+    /// Things the user can act on, one line each (a sidecar or a photo another program holds, so it waits for the next sync). The
+    /// inbox's own are in `inbox.problems`.
+    pub problems: Vec<String>,
 }
 
 /// What [`Home::status`] reports.
@@ -163,7 +166,7 @@ impl Home {
         self.rp.stage(Stage::Checking, 0, 0);
         let versions = self.versions();
         let settled: Vec<String> = report.inbox.written.iter().chain(&report.imports.written).cloned().collect();
-        let scan = scan_source_settled(&cfg.source, self.now(), &cfg.exclude, (!dry).then_some(&versions), &settled);
+        let mut scan = scan_source_settled(&cfg.source, self.now(), &cfg.exclude, (!dry).then_some(&versions), &settled);
         if scan.entries.is_empty() {
             return refuse(format!("no photos found under {}; refusing (unmounted?)", cfg.source.display()));
         }
@@ -186,6 +189,10 @@ impl Home {
             scan.unstable.len()
         ));
         report.plan = plan.clone();
+        for (sc, why) in &scan.unreadable {
+            self.logln(format!("WARNING: the sidecar {sc} cannot be read now ({why}); its photo waits for the next sync"));
+            report.problems.push(format!("The sidecar {sc} cannot be read now (another program may have it open); its photo is left for the next sync."));
+        }
         let mobile = self.mobile();
         let date = self.today();
         let suffix = format!(".{}", &utc_stamp(self.now())[9..15]);
@@ -220,7 +227,20 @@ impl Home {
         // (3) renderer
         self.logln("step 3/6: scratch library (import, smart previews, thumbnails)");
         if plan.any() {
-            report.failed = self.refresh_library(st, &plan, &scan, renderer)?;
+            let (failed, busy) = self.refresh_library(st, &plan, &scan, renderer)?;
+            report.failed = failed;
+            if !busy.is_empty() {
+                // (held by another program: left out of this sync altogether, so nothing half-done is published)
+                self.logln(format!("WARNING: {} photos are in use by another program and wait for the next sync: {:?}", busy.len(), &busy[..busy.len().min(5)]));
+                report.problems.push(format!(
+                    "{} {} in use by another program ({}), so {} left for the next sync.",
+                    busy.len(),
+                    if busy.len() == 1 { "photo is" } else { "photos are" },
+                    busy.iter().take(3).cloned().collect::<Vec<_>>().join(", ") + &if busy.len() > 3 { ", ...".to_string() } else { String::new() },
+                    if busy.len() == 1 { "it is" } else { "they are" }
+                ));
+                scan.unstable.extend(busy);
+            }
             if !report.failed.is_empty() {
                 self.logln(format!("WARNING: {} photos failed to import: {:?}", report.failed.len(), &report.failed[..report.failed.len().min(5)]));
             }
@@ -267,7 +287,7 @@ impl Home {
     }
 
     /// Import, smart-preview and thumbnail what the plan lists; update the state rows. Returns the paths that failed.
-    fn refresh_library(&self, st: &mut State, plan: &Plan, scan: &Scan, renderer: &mut dyn Renderer) -> Result<Vec<String>> {
+    fn refresh_library(&self, st: &mut State, plan: &Plan, scan: &Scan, renderer: &mut dyn Renderer) -> Result<(Vec<String>, Vec<String>)> {
         let cfg = &self.cfg;
         let known = st.files().clone();
         let src = &cfg.source;
@@ -291,10 +311,19 @@ impl Home {
         let mut infos: BTreeMap<String, PhotoInfo> = BTreeMap::new();
         let mut dups: BTreeSet<&String> = BTreeSet::new();
         let mut added: Vec<&String> = Vec::new();
+        let mut busy: Vec<String> = Vec::new();
         let rereads = plan.sc_changed.iter().filter(|p| known.get(*p).is_some_and(|r| r.status == "ok")).count();
         self.rp.stage(Stage::Reading, (todo_import.len() + rereads) as u64, 0);
         for (n, &p) in todo_import.iter().enumerate() {
             self.rp.at(n as u64);
+            // A photo another program has open without sharing (Windows: LightCraft importing it, a scanner) cannot be read now. It is
+            // not a failure: nothing is recorded for it, and the next sync looks again.
+            if let Err(e) = std::fs::File::open(src.join(p))
+                && is_busy(&e)
+            {
+                busy.push(p.clone());
+                continue;
+            }
             match renderer.add(&src.join(p)) {
                 Ok(Added::Photo(i)) => {
                     infos.insert(p.clone(), i);
@@ -366,6 +395,9 @@ impl Home {
         // update state rows
         let mut failed = Vec::new();
         for p in todo_import.iter().copied().chain(&plan.sc_changed) {
+            if busy.contains(p) {
+                continue;
+            }
             let e = &scan.entries[p];
             let mut row = Row {
                 size: e.size,
@@ -406,7 +438,7 @@ impl Home {
             st.put(p, row);
         }
         st.commit()?;
-        Ok(failed)
+        Ok((failed, busy))
     }
 
     fn mirror_originals(&self, st: &mut State, scan: &Scan, date: &str, suffix: &str, dry: bool) -> Result<MirrorStats> {

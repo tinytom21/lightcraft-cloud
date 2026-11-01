@@ -69,11 +69,21 @@ impl Drop for Env {
     }
 }
 
+/// A stand-in for `restic snapshots --latest 1 --json`: a shell script, or on Windows a batch file (which Windows starts through `cmd`).
 fn fake_restic(dir: &Path, time: &str) -> PathBuf {
-    let f = dir.join("restic");
-    std::fs::write(&f, format!("#!/bin/sh\necho '[{{\"time\":\"{time}\"}}]'\n")).unwrap();
-    std::fs::set_permissions(&f, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    f
+    #[cfg(unix)]
+    {
+        let f = dir.join("restic");
+        std::fs::write(&f, format!("#!/bin/sh\necho '[{{\"time\":\"{time}\"}}]'\n")).unwrap();
+        std::fs::set_permissions(&f, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        f
+    }
+    #[cfg(windows)]
+    {
+        let f = dir.join("restic.bat");
+        std::fs::write(&f, format!("@echo off\r\necho [{{\"time\":\"{time}\"}}]\r\n")).unwrap();
+        f
+    }
 }
 
 fn env(tag: &str, backup_time: &str) -> Env {
@@ -289,8 +299,19 @@ fn lines_of(seen: &Arc<Mutex<Vec<String>>>, command: &str) -> Vec<serde_json::Va
         .collect()
 }
 
+/// A port nothing listens on now, and that no other test of this process was given. (Asking the system for a free port and letting it go,
+/// as this once did, can hand the same number to two tests that run side by side, and the second fake LightCraft then cannot bind it.
+/// The tests need the port closed at first and open later, so the listener cannot simply be kept.)
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    static GIVEN: Mutex<Vec<u16>> = Mutex::new(Vec::new());
+    loop {
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let mut given = GIVEN.lock().unwrap_or_else(|e| e.into_inner());
+        if !given.contains(&port) {
+            given.push(port);
+            return port;
+        }
+    }
 }
 
 #[test]

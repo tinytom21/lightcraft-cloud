@@ -463,16 +463,47 @@ fn an_excluded_folder_and_a_bad_sidecar_are_rejected_in_a_sync() {
     assert_eq!(visible(&fx), vec!["Seed/seed.jpg".to_string()]);
 }
 
-#[cfg(unix)]
+/// A symbolic link to a folder (`link` -> `target`). On Windows that needs the privilege to make links, which a CI runner has and an ordinary
+/// user may not: without it the test says so and stops, unless `LC_REQUIRE_SYMLINKS` is set (CI sets it, so a missing privilege fails there).
+fn symlink_dir(target: impl AsRef<std::path::Path>, link: impl AsRef<std::path::Path>) -> bool {
+    #[cfg(unix)]
+    let r = std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    let r = std::os::windows::fs::symlink_dir(target, link);
+    link_made(r)
+}
+
+fn symlink_file(target: impl AsRef<std::path::Path>, link: impl AsRef<std::path::Path>) -> bool {
+    #[cfg(unix)]
+    let r = std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    let r = std::os::windows::fs::symlink_file(target, link);
+    link_made(r)
+}
+
+fn link_made(r: std::io::Result<()>) -> bool {
+    match r {
+        Ok(()) => true,
+        // ERROR_PRIVILEGE_NOT_HELD
+        Err(e) if cfg!(windows) && e.raw_os_error() == Some(1314) && std::env::var_os("LC_REQUIRE_SYMLINKS").is_none() => {
+            eprintln!("SKIPPED: this user may not create symbolic links (set LC_REQUIRE_SYMLINKS=1 to make that a failure)");
+            false
+        }
+        Err(e) => panic!("cannot create a symbolic link: {e}"),
+    }
+}
+
 #[test]
 fn a_symlink_in_the_photo_folder_cannot_lead_outside_it() {
     let fx = Fx::new("symlink");
     seed(&fx);
     let outside = fx.root.join("elsewhere");
     std::fs::create_dir_all(outside.join("deeper")).unwrap();
-    std::os::unix::fs::symlink(&outside, fx.src.join("Link")).unwrap();
-    std::os::unix::fs::symlink("Real", fx.src.join("Alias")).unwrap(); // (a link that stays inside is fine)
     std::fs::create_dir_all(fx.src.join("Real")).unwrap();
+    if !symlink_dir(&outside, fx.src.join("Link")) {
+        return;
+    }
+    assert!(symlink_dir("Real", fx.src.join("Alias"))); // (a link that stays inside is fine)
     let a = up("Link", "a.jpg", &bytes_of("a"));
     let b = up("Link/deeper/new", "b.jpg", &bytes_of("b"));
     let c = up("Alias/sub", "c.jpg", &bytes_of("c"));
@@ -488,7 +519,7 @@ fn a_symlink_in_the_photo_folder_cannot_lead_outside_it() {
     assert!(fx.tree(&outside).is_empty(), "nothing was written outside the photo folder: {:?}", fx.tree(&outside));
     assert_eq!(read_src(&fx, "Real/sub/c.jpg"), bytes_of("c"));
     // a link as the file itself is not overwritten either
-    std::os::unix::fs::symlink(outside.join("target.jpg"), fx.src.join("Real/sub/d.jpg")).unwrap();
+    assert!(symlink_file(outside.join("target.jpg"), fx.src.join("Real/sub/d.jpg")));
     let d = up("Real/sub", "d.jpg", &bytes_of("d"));
     upload(&fx, &d);
     let r = sync(&fx);
@@ -911,19 +942,56 @@ fn the_sidecar_is_written_before_the_photo() {
     assert_eq!(visible(&fx).len(), 3);
 }
 
-#[cfg(unix)]
+/// Nothing can be created in the folder while this is alive: the permission bits on Unix, a deny entry in its access list on Windows
+/// (an administrator is stopped by an explicit deny too, unlike by a missing allow). Undone when dropped, also on a panic.
+struct NoWrites(std::path::PathBuf);
+
+impl NoWrites {
+    fn new(dir: &std::path::Path) -> NoWrites {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            let out = std::process::Command::new("icacls").arg(dir).arg("/deny").arg(format!("{}:(OI)(CI)(WD,AD)", NoWrites::who())).output().unwrap();
+            assert!(out.status.success(), "icacls /deny: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        }
+        NoWrites(dir.to_path_buf())
+    }
+
+    #[cfg(windows)]
+    fn who() -> String {
+        format!("{}\\{}", std::env::var("USERDOMAIN").unwrap_or_default(), std::env::var("USERNAME").unwrap())
+    }
+}
+
+impl Drop for NoWrites {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+        #[cfg(windows)]
+        {
+            let _ = std::process::Command::new("icacls").arg(&self.0).arg("/remove:d").arg(NoWrites::who()).output();
+        }
+    }
+}
+
 #[test]
 fn a_failure_to_write_leaves_the_import_waiting_and_is_not_a_rejection() {
-    use std::os::unix::fs::PermissionsExt;
     let fx = Fx::new("blocked");
     seed(&fx);
     fx.touch("Trip/other.jpg", b"already here", 500);
     let dir = fx.src.join("Trip");
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap(); // (nothing can be created in it)
+    let blocked = NoWrites::new(&dir); // (nothing can be created in it)
     let u = up("Trip", "a.jpg", &bytes_of("a"));
     upload(&fx, &u);
     let r = sync(&fx);
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    drop(blocked);
     if r.imports.added.len() == 1 {
         return; // (running as root: the permission does not stop anything)
     }

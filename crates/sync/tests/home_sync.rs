@@ -359,7 +359,8 @@ fn source_checks() {
 
 #[test]
 fn state_inside_pictures_is_refused() {
-    let home = std::env::var("HOME").unwrap();
+    // (LightCraft's default library is under <home>/Pictures, with <home> being %USERPROFILE% on Windows)
+    let home = std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).unwrap();
     let cfg = HomeConfig::new("/tmp/nonexistent-src", format!("{home}/Pictures/_x_state"), "r");
     let e = Home::new(cfg, Arc::new(DirRemote::new("/tmp/nonexistent-remote"))).err().unwrap();
     assert!(matches!(e, Error::Invalid(m) if m.contains("Pictures")));

@@ -369,7 +369,6 @@ fn a_newer_format_is_refused_before_anything_is_written() {
     assert!(fx.tree().is_empty());
 }
 
-#[cfg(unix)]
 #[test]
 fn too_little_free_disk_space_is_a_clear_error_and_nothing_is_downloaded() {
     let mut fx = Fx::with("space", &["A"], |c| c.free_margin = u64::MAX / 2);
@@ -983,7 +982,6 @@ fn photos_are_counted_the_way_the_home_pc_counts_them_a_raw_and_a_jpeg_of_one_sh
     assert_eq!((r2.photos, r2.downloaded.len(), r2.downloaded_photos), (home_count(&lib), 0, 0));
 }
 
-#[cfg(unix)]
 #[test]
 fn photos_waiting_to_download_are_shots_too_and_the_problem_line_counts_files() {
     let mut fx = Fx::with("shots-wait", &["L"], |c| c.free_margin = u64::MAX / 4);

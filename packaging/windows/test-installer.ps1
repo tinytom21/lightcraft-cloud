@@ -1,16 +1,21 @@
 # Tests the Windows installer on a real Windows (CI runs this; see .github/workflows/release.yml). It installs for the current user, so
 # run it only on a machine you do not mind: a throwaway runner. It touches the real default places (it is the point of the test).
 #
-#   test-installer.ps1 -Setup <lightcraft-cloud-x.y.z-windows-setup.exe> -Version x.y.z
+#   test-installer.ps1 -Setup <lightcraft-cloud-x.y.z-windows-setup.exe> -Version x.y.z                                  (the light edition)
+#   test-installer.ps1 -Setup <lightcraft-cloud-x.y.z-windows-home-setup.exe> -Version x.y.z -Variant home               (the home edition)
+#   ... -OtherSetup <the other edition's installer>   also tests installing one edition over the other
 #
 # What it checks: a silent install to the default place; the version, from there; the Run value; the Start menu entry and the uninstall
 # entry; the installer run again over a RUNNING copy (the app is asked to quit, files replaced, the app started again); `quit`; that a Run value
 # the user turned off stays off and one that points elsewhere (the zip) is moved here; a silent uninstall with the app running; and that a
-# planted config, state, rclone config and photo file all survive.
+# planted config, state, rclone config and photo file all survive. With -OtherSetup: the home edition goes over the light one (an upgrade), the
+# light edition does NOT go over the home one (nothing changes, the exit code is not 0), and after an uninstall either goes on.
 # What it cannot check: a runner has no desktop session, so there is no tray icon to look at, no Start menu to click and no window.
 param(
     [Parameter(Mandatory)][string]$Setup,
-    [Parameter(Mandatory)][string]$Version
+    [Parameter(Mandatory)][string]$Version,
+    [ValidateSet('light', 'home')][string]$Variant = 'light',
+    [string]$OtherSetup = ''
 )
 $ErrorActionPreference = 'Stop'
 
@@ -45,9 +50,9 @@ function RunAndWait($file, $arguments) {
     if (-not $p.WaitForExit(300000)) { $p.Kill(); throw "FAILED: $file did not finish in five minutes" }
     return $p.ExitCode
 }
-function RunSetup($tag) {
-    $log = Join-Path $logs "setup-$tag.log"
-    $code = RunAndWait $Setup @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$log`"")
+function RunSetup($tag, $file = $Setup) {
+    $log = Join-Path $logs "setup-$Variant-$tag.log"
+    $code = RunAndWait $file @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$log`"")
     Write-Host "setup ($tag) exit code $code"
     return $code
 }
@@ -81,6 +86,10 @@ Check ((RunValue) -eq "`"$exe`" run") "the Run value is the quoted exe and 'run'
 Check (Test-Path $lnk) 'the Start menu entry exists'
 $u = Get-ItemProperty $uninstKey
 Check ($u.DisplayVersion -eq $Version -and $u.DisplayName -like 'LightCraft Cloud*') "Apps & features lists '$($u.DisplayName)' $($u.DisplayVersion)"
+$wantName = if ($Variant -eq 'home') { 'LightCraft Cloud (home PC)' } else { 'LightCraft Cloud' }
+Check ($u.DisplayName -eq $wantName) "and it is the $Variant edition's name"
+Check ((Get-Content (Join-Path $app 'edition.txt') -Raw).Trim() -eq $Variant) "edition.txt says $Variant"
+Check ($v -match "edition: $Variant") "the exe says it is the $Variant edition"
 Check ((AppProcs).Count -eq 0) 'the first install starts nothing in a silent run'
 
 # ---------------------------------------------------------------- the installer run over a running copy
@@ -115,6 +124,34 @@ New-ItemProperty -Path $runKey -Name $runName -Value '"C:\old zip folder\lightcr
 Check ((RunSetup 'from-zip') -eq 0) 'the installer exits with 0'
 Check ((RunValue) -eq "`"$exe`" run") "it now points at $exe"
 
+# ---------------------------------------------------------------- one edition over the other
+function EditionNow { (Get-Content (Join-Path $app 'edition.txt') -Raw).Trim() }
+if ($OtherSetup) {
+    if ($Variant -eq 'light') {
+        Step 'the home edition over the light one is an upgrade (same place, same entries)'
+        $code = RunSetup 'home-over-light' $OtherSetup
+        Check ($code -eq 0) 'the home installer exits with 0'
+        Check ((EditionNow) -eq 'home') 'edition.txt now says home'
+        $vv = & $exe --version | Out-String
+        Check ($vv -match "lightcraft-cloud-desktop $([regex]::Escape($Version))" -and $vv -match 'edition: home') "the installed exe is the home edition: $($vv.Trim())"
+        Check ((RunValue) -eq "`"$exe`" run") 'the Run value is still right'
+        Check ((Get-ItemProperty $uninstKey).DisplayName -eq 'LightCraft Cloud (home PC)') 'Apps & features names the home edition'
+        Check (@(Get-ChildItem (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs') -Filter 'LightCraft Cloud*.lnk').Count -eq 1) 'still one Start menu entry'
+        $light = $Setup
+    } else {
+        $light = $OtherSetup
+    }
+    Step 'the light edition does NOT go over the home one'
+    $hash = (Get-FileHash $exe).Hash
+    $runBefore = RunValue
+    $code = RunSetup 'light-over-home' $light
+    Check ($code -ne 0) "the light installer refuses (exit code $code)"
+    Check ((EditionNow) -eq 'home') 'still the home edition'
+    Check ((Get-FileHash $exe).Hash -eq $hash) 'the exe was not replaced'
+    Check ((RunValue) -eq $runBefore) 'the Run value was not touched'
+    Check ((AppProcs).Count -eq 0) 'nothing was started or stopped'
+}
+
 # ---------------------------------------------------------------- uninstall
 Step 'silent uninstall with the app running'
 $running = StartApp
@@ -139,5 +176,14 @@ Check (Test-Path (Join-Path $state 'logs\lightcraft-cloud-desktop.log')) 'the lo
 Check (Test-Path (Join-Path $rclone 'planted-rclone.conf')) 'the rclone config folder'
 Check ((Get-Content (Join-Path $photos 'IMG_TEST.txt')) -eq 'not a photo') 'the photo folder'
 
+if ($OtherSetup -and $Variant -eq 'home') {
+    Step 'after an uninstall the mark is gone, so the light edition installs'
+    Check ((RunSetup 'light-fresh' $OtherSetup) -eq 0) 'the light installer exits with 0'
+    Check ((EditionNow) -eq 'light') 'edition.txt says light'
+    $un2 = Join-Path $app 'unins000.exe'
+    $code = RunAndWait $un2 @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$(Join-Path $logs 'uninstall-2.log')`"")
+    Check (WaitFor { -not (Test-Path $exe) } 90) 'and it uninstalls again'
+}
+
 Write-Host ""
-Write-Host "ALL INSTALLER CHECKS PASSED"
+Write-Host "ALL INSTALLER CHECKS PASSED ($Variant edition)"

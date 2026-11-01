@@ -169,6 +169,9 @@ impl Worker for HomeWorker {
             source_name,
             notices: newest_wins_notices(&report.inbox),
             failed: report.failed.len(),
+            // (a sidecar or a photo another program holds, which waits for a later sync: shown in Status, not only in the log)
+            problems: report.inbox.problems.iter().chain(&report.problems).cloned().collect(),
+            inbox_left: report.inbox.left,
             sidecars: report.inbox.applied + report.inbox.merged,
             ..SyncOutcome::default()
         })

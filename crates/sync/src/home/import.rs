@@ -810,8 +810,12 @@ mod tests {
         assert_eq!(std::fs::read(d.join("dest")).unwrap(), b"old");
         // not even a link that points nowhere
         #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(d.join("nowhere"), d.join("dangling")).unwrap();
+        let linked = std::os::unix::fs::symlink(d.join("nowhere"), d.join("dangling")).is_ok();
+        // (Windows: making a link needs a privilege that an ordinary user may not have; the test then has nothing to check here)
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(d.join("nowhere"), d.join("dangling")).is_ok();
+        assert!(linked || cfg!(windows), "a symbolic link could not be made");
+        if linked {
             assert_eq!(link_no_replace(&d.join("tmp"), &d.join("dangling")).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
             assert!(!d.join("nowhere").exists());
         }

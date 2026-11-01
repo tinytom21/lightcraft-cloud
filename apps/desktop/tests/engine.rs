@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 
 use lightcraft_cloud_client::DirRemote;
 use lightcraft_cloud_client::home::{Home, HomeConfig};
-use lightcraft_cloud_desktop::engine::{EngineRenderer, check_library_path};
+use lightcraft_cloud_desktop::engine::{EngineRenderer, LibraryGuard, check_library_path};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -189,18 +189,100 @@ fn changes_edits_and_removals_follow_through_the_engine() {
     let _ = std::fs::remove_dir_all(&e.root);
 }
 
+/// The user's home as LightCraft reads it: `%USERPROFILE%` on Windows, `$HOME` elsewhere.
+fn user_home() -> String {
+    std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).unwrap()
+}
+
 #[test]
 fn the_scratch_library_is_never_a_users_library() {
-    let home = std::env::var("HOME").unwrap();
+    let home = user_home();
+    let t = std::env::temp_dir();
     for bad in [
         format!("{home}/Pictures/LightCraft Library"),
         format!("{home}/Pictures/anything/lib"),
-        "/data/LightCraft Library".to_string(),
-        "/tmp/x/LightCraft Library/lib".to_string(),
+        t.join("x").join("LightCraft Library").join("lib").display().to_string(),
+        t.join("lightcraft library").display().to_string(),
     ] {
         assert!(check_library_path(Path::new(&bad)).is_err(), "{bad}");
         assert!(EngineRenderer::open(Path::new(&bad)).is_err(), "{bad}");
     }
     assert!(!Path::new(&format!("{home}/Pictures/anything")).exists());
-    assert!(check_library_path(Path::new("/tmp/lc-ok/state/lib")).is_ok());
+    assert!(check_library_path(&t.join("lc-ok").join("state").join("lib")).is_ok());
+}
+
+/// Windows: the same folder in other spellings (case, the `\\?\` form, mixed separators) is the same folder, and Windows' own idea of Pictures counts.
+#[cfg(windows)]
+#[test]
+fn on_windows_the_pictures_folder_is_found_whatever_its_spelling() {
+    let home = user_home();
+    for bad in [
+        format!(r"{home}\Pictures\LightCraft Library"),
+        format!(r"{home}\PICTURES\x\lib").to_uppercase(),
+        format!(r"{}\pictures\x\lib", home.to_lowercase()),
+        format!(r"\\?\{home}\Pictures\x\lib"),
+        format!("{home}/Pictures/x/lib"),
+        format!(r"{home}\Pictures\..\Pictures\x\lib"),
+    ] {
+        assert!(check_library_path(Path::new(&bad)).is_err(), "{bad}");
+    }
+    // (wherever Windows has put Pictures: OneDrive, another drive)
+    let known = lightcraft_cloud_desktop::winsys::known_pictures_folder().expect("Windows knows its Pictures folder");
+    assert!(check_library_path(&known.join("x").join("lib")).is_err(), "{}", known.display());
+    assert!(check_library_path(&known).is_err());
+    assert!(check_library_path(&known.join("LightCraft Library")).is_err());
+}
+
+fn guard(pictures: &[&str], env: Option<&str>, case_insensitive: bool) -> LibraryGuard {
+    LibraryGuard { pictures: pictures.iter().map(PathBuf::from).collect(), library_env: env.map(PathBuf::from), case_insensitive }
+}
+
+#[test]
+fn case_counts_only_where_the_file_system_ignores_it() {
+    let g = |ci| guard(&["/Users/Me/Pictures"], None, ci);
+    for p in ["/Users/Me/Pictures/x/lib", "/Users/Me/Pictures", "/users/me/PICTURES/x/lib"] {
+        assert!(g(true).check(Path::new(p)).is_err(), "{p}");
+    }
+    assert!(g(false).check(Path::new("/users/me/PICTURES/x/lib")).is_ok(), "a case-sensitive file system has two different folders");
+    assert!(g(false).check(Path::new("/Users/Me/Pictures/x/lib")).is_err());
+    assert!(g(true).check(Path::new("/Users/Me/Pictures2/lib")).is_ok(), "a folder that only starts like it is not inside it");
+    assert!(g(true).check(Path::new("/Users/Me/Documents/lib")).is_ok());
+}
+
+#[test]
+fn the_library_lightcraft_is_told_to_open_is_off_limits_too() {
+    let g = guard(&[], Some("/data/my photos library"), false);
+    for p in ["/data/my photos library", "/data/my photos library/x/lib", "/data"] {
+        assert!(g.check(Path::new(p)).is_err(), "{p}");
+    }
+    assert!(g.check(Path::new("/data/other/lib")).is_ok());
+}
+
+#[test]
+fn a_folder_with_a_catalog_is_a_library_unless_it_is_this_apps_own() {
+    let root = temp("guard-catalog");
+    let g = guard(&[], None, false);
+    // somebody's library, wherever it lives (not under Pictures, not called anything in particular)
+    let theirs = root.join("my catalog");
+    std::fs::create_dir_all(&theirs).unwrap();
+    std::fs::write(theirs.join("catalog.snap"), b"x").unwrap();
+    assert!(g.check(&theirs).is_err());
+    assert!(g.check(&theirs.join("state").join("lib")).is_err(), "inside a library");
+    // this app's own scratch library: marked, or (made by v0.2.0, before the mark) next to the state file
+    let state = root.join("state");
+    let lib = state.join("lib");
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::write(lib.join("catalog.log"), b"x").unwrap();
+    assert!(g.check(&lib).is_err(), "a catalog nobody vouches for");
+    std::fs::write(state.join("state.json"), b"{}").unwrap();
+    assert!(g.check(&lib).is_ok(), "next to this app's state file: made by an earlier version");
+    std::fs::remove_file(state.join("state.json")).unwrap();
+    std::fs::write(lib.join(lightcraft_cloud_desktop::engine::SCRATCH_MARKER), b"x").unwrap();
+    assert!(g.check(&lib).is_ok(), "marked");
+    // and the engine marks the one it makes
+    let fresh = root.join("fresh").join("lib");
+    drop(EngineRenderer::open(&fresh).unwrap());
+    assert!(fresh.join(lightcraft_cloud_desktop::engine::SCRATCH_MARKER).is_file());
+    assert!(g.check(&fresh).is_ok() && EngineRenderer::open(&fresh).is_ok(), "opened again");
+    let _ = std::fs::remove_dir_all(&root);
 }

@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lightcraft_cloud_desktop::appstate::{Activity, AppStatus, Persisted, TrayState};
+use lightcraft_cloud_desktop::appstate::{Activity, AppStatus, HealthKind, Persisted, TrayState};
 use lightcraft_cloud_desktop::clock::{Clock, FakeClock};
 use lightcraft_cloud_desktop::notifier::{self, Notifier};
 use lightcraft_cloud_desktop::scheduler::Timing;
@@ -427,6 +427,28 @@ fn an_import_that_stays_stuck_does_not_start_a_sync_every_two_minutes() {
     assert_eq!(r.advance(120), ["inbox"]);
     r.fake.0.lock().unwrap().imports = vec![Ok(2)];
     assert_eq!(r.advance(120), ["inbox", "sync"], "a new import does start one");
+}
+
+#[test]
+fn phone_edits_a_busy_sidecar_left_waiting_do_not_start_a_sync_every_two_minutes_and_the_problem_is_shown() {
+    let mut r = rig("inbox-busy");
+    // (Windows: LightCraft holds the sidecar, so the sync could not write the phone's edit and says so)
+    r.fake.0.lock().unwrap().syncs = vec![Ok(SyncOutcome {
+        inbox_left: 1,
+        problems: vec!["The sidecar A/one.xmp is in use by another program, so an edit from another device was not applied yet.".into()],
+        ..SyncOutcome::default()
+    })];
+    r.advance(20);
+    let s = r.svc.status();
+    assert_eq!(s.inbox_pending, Some(1), "the edit is still waiting in the cloud");
+    assert!(s.active_problems.iter().any(|p| p.contains("A/one.xmp")), "a problem in Status, not only in the log: {:?}", s.active_problems);
+    assert!(s.errors.iter().any(|e| e.text.contains("A/one.xmp")));
+    assert_eq!(s.health().kind, HealthKind::Problem, "never 'up to date' while an edit waits and a problem is shown");
+    r.fake.0.lock().unwrap().inbox = vec![Ok(1)];
+    assert_eq!(r.advance(120), ["inbox"], "the same single edit is still there: the 15 minute sync retries it");
+    assert_eq!(r.advance(120), ["inbox"]);
+    r.fake.0.lock().unwrap().inbox = vec![Ok(2)];
+    assert_eq!(r.advance(120), ["inbox", "sync"], "a new edit does start one");
 }
 
 #[test]

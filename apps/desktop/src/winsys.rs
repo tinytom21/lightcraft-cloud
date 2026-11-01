@@ -133,3 +133,29 @@ pub fn registry_delete_key(subkey: &str) {
     // SAFETY: `sub` is NUL-terminated.
     unsafe { RegDeleteKeyW(HKEY_CURRENT_USER, sub.as_ptr()) };
 }
+
+/// Windows' own Pictures folder (it can be moved, to OneDrive for example, so it is not always `%USERPROFILE%\Pictures`). None if Windows
+/// cannot say.
+pub fn known_pictures_folder() -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::{FOLDERID_Pictures, SHGetKnownFolderPath};
+    let mut out: *mut u16 = std::ptr::null_mut();
+    // SAFETY: the call fills `out` with a NUL-terminated string that it allocates; it is read once and freed with CoTaskMemFree, as the
+    // documentation says (also when the call fails, where it may leave a null).
+    unsafe {
+        let hr = SHGetKnownFolderPath(&FOLDERID_Pictures, 0, std::ptr::null_mut(), &mut out);
+        if out.is_null() {
+            return None;
+        }
+        let path = (hr >= 0).then(|| {
+            let mut len = 0;
+            while *out.add(len) != 0 {
+                len += 1;
+            }
+            std::path::PathBuf::from(std::ffi::OsString::from_wide(std::slice::from_raw_parts(out, len)))
+        });
+        CoTaskMemFree(out.cast());
+        path
+    }
+}

@@ -74,8 +74,10 @@ pub struct SyncOutcome {
     pub downloaded: usize,
     /// Photos (shots, as the home PC counts them) that arrived in this sync: a raw and a JPEG are one.
     pub downloaded_photos: usize,
-    /// Things the user can act on, one line each (the other PC's role).
+    /// Things the user can act on, one line each (the other PC's role; on the home PC a sidecar or photo another program holds).
     pub problems: Vec<String>,
+    /// Phone edits the sync could not apply because a sidecar was held by another program: they wait in the cloud inbox.
+    pub inbox_left: usize,
     /// The other PC's role: new photos were not ready (still being copied, or not all hashed yet): look again after this long.
     pub recheck: Option<Duration>,
     /// Sidecars the sync wrote into the photo folder (phone edits applied or merged, the home PC's sidecars taken): LightCraft is asked
@@ -233,6 +235,9 @@ pub struct Service<W: Worker> {
     /// Imports the last sync left waiting: the 2-minute check starts a sync for imports beyond these, not for the same ones
     /// again (the 15-minute sync retries those).
     imports_stuck: usize,
+    /// Phone edits the last sync left waiting because a sidecar was in use (Windows): like the imports, the 2-minute check does not start
+    /// a sync for these again; the 15-minute sync retries them.
+    inbox_stuck: usize,
     /// No try to reach LightCraft has been made since the app started.
     bridge_first: bool,
     /// When the last sync wanted to be looked at again (new photos that were not ready yet).
@@ -280,6 +285,7 @@ impl<W: Worker> Service<W> {
             quit: false,
             announced: None,
             imports_stuck: 0,
+            inbox_stuck: 0,
             bridge_first: true,
             recheck: None,
             feed,
@@ -466,9 +472,10 @@ impl<W: Worker> Service<W> {
             Ok(o) => {
                 let n = o.applied + o.merged;
                 self.status.edits_applied += n;
-                self.status.inbox_pending = Some(0);
+                self.status.inbox_pending = Some(o.inbox_left);
                 self.status.imports_pending = Some(o.imports_left);
                 self.imports_stuck = o.imports_left;
+                self.inbox_stuck = o.inbox_left;
                 self.status.photos_imported += o.imported;
                 self.status.last_imported = o.imported;
                 for p in &o.import_problems {
@@ -646,10 +653,13 @@ impl<W: Worker> Service<W> {
         match self.worker.inbox_waiting() {
             Ok(n) => {
                 self.status.inbox_pending = Some(n);
-                if n > 0 {
+                // (edits the last sync could not write into a sidecar that was in use do not start a sync again; a new one does)
+                self.inbox_stuck = self.inbox_stuck.min(n);
+                let new = n - self.inbox_stuck;
+                if new > 0 {
                     self.say(format!("inbox: {n} pending, starting sync"));
                 }
-                waiting += n;
+                waiting += new;
             }
             // (a network error is logged and swallowed, like `inbox-check`)
             Err(e) => self.say(format!("inbox: check failed: {e}")),

@@ -30,9 +30,12 @@ pub type RemoteFactory = Box<dyn Fn(&Config) -> Result<Arc<dyn Remote>, String>>
 /// Makes the link to LightCraft's control port (the real one is loopback TCP; tests give a fake).
 pub type LinkFactory = Box<dyn Fn(u16) -> Box<dyn LightCraftLink>>;
 
-/// What the light build says when it is given a home PC's config.
-pub const LIGHT_BUILD_REFUSES_HOME: &str =
-    "This is the light build of LightCraft Cloud, which cannot publish photos. Use the full build on the home PC, or choose \"This is another PC\" in Settings.";
+/// What the light build says when it is given a home PC's config. It names the file to get, which differs by system.
+pub const LIGHT_BUILD_REFUSES_HOME: &str = if cfg!(windows) {
+    "This is the light build of LightCraft Cloud, which cannot publish photos. Install the full build on the home PC (lightcraft-cloud-<version>-windows-home-setup.exe from the Releases page; it installs over this one and keeps your settings), or choose \"This is another PC\" in Settings."
+} else {
+    "This is the light build of LightCraft Cloud, which cannot publish photos. Use the full build on the home PC (lightcraft-cloud-<version>-linux-home.tar.gz from the Releases page), or choose \"This is another PC\" in Settings."
+};
 
 /// The path the app writes its own log to.
 pub fn log_path(state_dir: &Path) -> PathBuf {

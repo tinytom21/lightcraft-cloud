@@ -214,6 +214,9 @@ pub struct Scan {
     pub unstable: BTreeSet<String>,
     /// Every file below the root, with its size and mtime (what the mirror compares).
     pub files: BTreeMap<String, FileInfo>,
+    /// Sidecars that could not be read now (another program holds them, or this user may not read them): their photos are left for the
+    /// next sync like a file still being written, not published as if the sidecar were gone. With the reason.
+    pub unreadable: Vec<(String, String)>,
 }
 
 /// `versions`: the sidecar version store to keep every stable sidecar's bytes in; `None` writes nothing.
@@ -229,7 +232,7 @@ pub fn scan_source_settled(root: &Path, now: SystemTime, exclude: &[String], ver
     let all: BTreeSet<String> = files.keys().cloned().collect();
     let (existing, target) = find_sidecars(&photos, &all);
     let now_s = secs_of(ns_of(now));
-    let (mut entries, mut unstable) = (BTreeMap::new(), BTreeSet::new());
+    let (mut entries, mut unstable, mut unreadable) = (BTreeMap::new(), BTreeSet::new(), Vec::new());
     for p in &photos {
         let f = &files[p];
         let mut e = Entry {
@@ -251,7 +254,11 @@ pub fn scan_source_settled(root: &Path, now: SystemTime, exclude: &[String], ver
                 unstable.insert(sc.clone());
             }
             match std::fs::read(&s.abs) {
-                Err(_) => e.sidecar = None,
+                Err(err) => {
+                    // (not "no sidecar": that would publish the photo as if its edits were gone)
+                    unstable.insert(sc.clone());
+                    unreadable.push((sc.clone(), err.to_string()));
+                }
                 Ok(data) => {
                     let h = sidecar_version(&data);
                     // (a file still being written may never be published)
@@ -264,7 +271,7 @@ pub fn scan_source_settled(root: &Path, now: SystemTime, exclude: &[String], ver
         }
         entries.insert(p.clone(), e);
     }
-    Scan { entries, unstable, files }
+    Scan { entries, unstable, files, unreadable }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]

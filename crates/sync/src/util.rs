@@ -118,9 +118,15 @@ pub fn temp_beside(dest: &Path) -> PathBuf {
 
 /// Write `bytes` to `dest` atomically (temporary file, fsync, rename).
 pub fn write_atomic(dest: &Path, bytes: &[u8]) -> Result<()> {
+    write_atomic_io(dest, bytes).map_err(|e| Error::io(dest.display(), e))
+}
+
+/// [`write_atomic`] with the I/O error as it is, so a caller can tell a file another program holds (see [`is_busy`]) from a real failure.
+/// Nothing is left behind when it fails.
+pub(crate) fn write_atomic_io(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     if let Some(dir) = dest.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| Error::io(dir.display(), e))?;
+        std::fs::create_dir_all(dir)?;
     }
     let tmp = temp_beside(dest);
     let r = (|| {
@@ -130,10 +136,10 @@ pub fn write_atomic(dest: &Path, bytes: &[u8]) -> Result<()> {
         drop(f);
         replace_file(&tmp, dest)
     })();
-    r.map_err(|e| {
+    if r.is_err() {
         let _ = std::fs::remove_file(&tmp);
-        Error::io(dest.display(), e)
-    })
+    }
+    r
 }
 
 /// Hard-link `tmp` to `dest`, failing with `AlreadyExists` if `dest` is there: unlike a rename it can never replace a file.
