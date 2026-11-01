@@ -553,14 +553,20 @@ impl Other {
             self.logln(format!("{rel}: the downloaded sidecar is not the version the manifest named; trying again next time"));
             return Ok(());
         }
-        if let Some(old) = old.filter(|o| *o != bytes.as_slice()) {
-            self.keep_history(rel, old)?;
-        }
+        let kept = match old.filter(|o| *o != bytes.as_slice()) {
+            Some(old) => Some(self.keep_history(rel, old)?),
+            None => None,
+        };
         if let Err(e) = replace_file(&tmp, dest) {
             let _ = std::fs::remove_file(&tmp);
             if is_busy(&e) {
-                // (LightCraft or another program has the sidecar open: leave it for the next pass, which looks again; the pass goes on)
-                self.logln(format!("{rel}: the sidecar is in use by another program; the home PC's version is taken next time"));
+                // (another program holds the sidecar, or this user may not replace it: the file is unchanged, so its history copy goes, and the
+                // next pass looks again. It is a problem Status shows, since a file that stays held would otherwise never update.)
+                if let Some(k) = kept {
+                    let _ = std::fs::remove_file(k);
+                }
+                self.logln(format!("{rel}: the sidecar cannot be replaced now ({e}); the home PC's version is taken next time"));
+                push_unique(&mut rep.problems, format!("The sidecar {rel} is in use or cannot be replaced; the home PC's version will be tried again next sync."));
                 return Ok(());
             }
             return Err(Error::io(dest.display(), e));
@@ -574,7 +580,7 @@ impl Other {
         Ok(())
     }
 
-    fn keep_history(&self, rel: &str, old: &[u8]) -> Result<()> {
+    fn keep_history(&self, rel: &str, old: &[u8]) -> Result<PathBuf> {
         let now = iso(self.now());
         let (date, time) = (&now[..10], now[11..19].replace(':', ""));
         let base = self.cfg.state_dir.join("history").join(date);
@@ -586,7 +592,8 @@ impl Other {
         }
         let mut p = base;
         p.extend(name.split('/'));
-        write_atomic(&p, old)
+        write_atomic(&p, old)?;
+        Ok(p)
     }
 
     /// A photo the cloud library no longer lists was deleted at home: move it (and its sidecar) aside, never delete it.

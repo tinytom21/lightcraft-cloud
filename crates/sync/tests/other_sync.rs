@@ -481,6 +481,32 @@ fn an_edit_that_could_not_be_sent_stays_waiting_and_goes_when_the_network_is_bac
 
 // ------------------------------------------------------------------------------------------------ 4: the home PC's version comes back
 
+/// Windows: a sidecar another program holds (readable, but not replaceable) is shown as a problem each pass, adds nothing to the history,
+/// and is taken once it is let go.
+#[cfg(windows)]
+#[test]
+fn a_held_sidecar_is_reported_keeps_no_extra_history_and_is_taken_when_released() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let mut fx = Fx::new("held-sidecar", &["A"]);
+    fx.publish(vec![ph("A/x.jpg").sc("A/x.xmp", xmp(1))]);
+    fx.sync();
+    fx.tick(3600);
+    fx.home_edits("A/x.jpg", xmp(2));
+    let held = std::fs::OpenOptions::new().read(true).share_mode(1).open(fx.src.join("A/x.xmp")).unwrap(); // (FILE_SHARE_READ only)
+    for _ in 0..2 {
+        fx.tick(3600);
+        let r = fx.sync();
+        assert!(r.sidecars_updated.is_empty() && r.problems.iter().any(|p| p.contains("A/x.xmp")), "{r:?}");
+        assert!(fx.state_tree("history").is_empty());
+    }
+    drop(held);
+    let r = fx.sync();
+    assert_eq!(r.sidecars_updated, ["A/x.xmp"]);
+    assert!(r.problems.is_empty(), "{r:?}");
+    assert_eq!(fx.local("A/x.xmp"), xmp(2));
+    assert_eq!(fx.state_tree("history").len(), 1);
+}
+
 #[test]
 fn a_newer_home_sidecar_replaces_an_unchanged_local_one_and_the_old_one_is_kept_in_history() {
     let mut fx = Fx::new("pull", &["A"]);
