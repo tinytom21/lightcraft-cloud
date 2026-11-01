@@ -55,6 +55,8 @@ pub struct Parsed {
     pub items: Vec<Item>,
     /// Same order as `items`.
     pub photos: Vec<Value>,
+    /// Same order as `items`: which shot (a photo of the manifest, with its alternates) each file belongs to.
+    pub shots: Vec<usize>,
 }
 
 pub fn parse(bytes: &[u8]) -> Result<Parsed> {
@@ -64,8 +66,8 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed> {
         return Err(Error::Format(format!("this library is format {format}; this app reads format {FORMAT}: update the app")));
     }
     let list = m.get("photos").and_then(Value::as_array).ok_or_else(|| Error::Format("manifest has no photos".into()))?;
-    let (mut items, mut photos) = (Vec::new(), Vec::new());
-    for p in list {
+    let (mut items, mut photos, mut shots) = (Vec::new(), Vec::new(), Vec::new());
+    for (shot, p) in list.iter().enumerate() {
         let main = item(p, false)?;
         let mut entry = json!({"id": main.id, "path": main.path});
         for k in ["size", "captured", "width", "height", "rating", "flag", "label", "camera", "lens"] {
@@ -75,6 +77,7 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed> {
         }
         items.push(main);
         photos.push(entry);
+        shots.push(shot);
         for alt in p.get("alternates").and_then(Value::as_array).into_iter().flatten() {
             let a = item(alt, true)?;
             let mut e = json!({"id": a.id, "path": a.path});
@@ -91,7 +94,8 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed> {
             }
             items.push(a);
             photos.push(e);
+            shots.push(shot);
         }
     }
-    Ok(Parsed { generated: text(&m, "generated").unwrap_or_default(), items, photos })
+    Ok(Parsed { generated: text(&m, "generated").unwrap_or_default(), items, photos, shots })
 }

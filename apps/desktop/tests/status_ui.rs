@@ -30,11 +30,14 @@ fn settled_other() -> AppStatus {
 }
 
 #[test]
-fn while_photos_download_the_rows_agree_with_the_progress_line() {
+fn while_files_download_the_progress_line_counts_files_and_the_rows_stay_photos() {
     use lightcraft_cloud_client::{Progress, Stage};
     let mut s = settled_other();
-    let before = s.other.as_ref().unwrap().photos;
-    s.other.as_mut().unwrap().waiting_to_download = 0; // (saved before this pass: the pass found 33 more)
+    {
+        let o = s.other.as_mut().unwrap();
+        o.photos = 321;
+        o.waiting_to_download = 30; // (saved when the last pass ended: photos, a raw and a JPEG of one shot count once)
+    }
     s.activity = Activity::Syncing {
         since: "2026-11-01T12:00:00Z".into(),
         reason: "timer".into(),
@@ -42,8 +45,25 @@ fn while_photos_download_the_rows_agree_with_the_progress_line() {
     };
     let mut h = status_harness(s);
     h.run();
-    h.get_by_label("33 photos");
-    h.get_by_label(&(before + 27).to_string());
+    h.get_by_label_contains("Downloading 27 of 60 files");
+    // (files done are not added to a count of photos: 27 files may be 14 photos)
+    h.get_by_label("321");
+    h.get_by_label("30 photos");
+    assert!(h.query_by_label("348").is_none());
+}
+
+#[test]
+fn photos_received_is_a_count_of_photos_and_hidden_until_the_app_has_one() {
+    let mut s = settled_other();
+    s.other.as_mut().unwrap().received = 130; // (a v0.2.0 status: files, and no photo count)
+    let mut h = status_harness(s.clone());
+    h.run();
+    assert!(h.query_by_label("Photos received").is_none());
+    s.other.as_mut().unwrap().received_photos = Some(66);
+    let mut h = status_harness(s);
+    h.run();
+    h.get_by_label("Photos received");
+    h.get_by_label("66 photos from the home PC since the app was set up");
 }
 
 #[test]
@@ -57,11 +77,11 @@ fn the_state_line_is_green_up_to_date_only_when_nothing_waits_and_nothing_is_wro
     // each other state, its own words and colour
     let cases: Vec<(&str, Box<dyn Fn(&mut AppStatus)>, &str, HealthKind)> = vec![
         ("waiting to download", Box::new(|s| s.other.as_mut().unwrap().waiting_to_download = 12), "12 photos waiting to download", HealthKind::Waiting),
-        ("uploads queued", Box::new(|s| { let o = s.other.as_mut().unwrap(); o.uploads_waiting = 12; o.uploads_bytes = 300 << 20; }), "12 photos waiting to upload", HealthKind::Waiting),
-        ("sent, not answered", Box::new(|s| s.other.as_mut().unwrap().awaiting_home = 3), "3 photos sent, waiting for the home PC", HealthKind::Waiting),
+        ("uploads queued", Box::new(|s| { let o = s.other.as_mut().unwrap(); o.uploads_waiting = 12; o.uploads_bytes = 300 << 20; }), "12 files waiting to upload", HealthKind::Waiting),
+        ("sent, not answered", Box::new(|s| s.other.as_mut().unwrap().awaiting_home = 3), "3 files sent, waiting for the home PC", HealthKind::Waiting),
         ("a problem", Box::new(|s| s.active_problems = vec!["IMG_1.jpg is already on this PC with different contents".into()]), "1 problem needs attention", HealthKind::Problem),
         ("offline", Box::new(|s| s.offline = true), "Offline: will try again", HealthKind::Offline),
-        ("uploading", Box::new(|s| s.activity = Activity::Uploading { since: "2026-11-01T12:00:00Z".into(), progress: None }), "Sending photos to the home PC", HealthKind::Uploading),
+        ("uploading", Box::new(|s| s.activity = Activity::Uploading { since: "2026-11-01T12:00:00Z".into(), progress: None }), "Sending files to the home PC", HealthKind::Uploading),
     ];
     let mut colours = std::collections::HashSet::new();
     for (what, change, text, kind) in cases {
@@ -86,8 +106,8 @@ fn the_state_line_is_green_up_to_date_only_when_nothing_waits_and_nothing_is_wro
     o.awaiting_home = 1;
     let mut h = status_harness(s);
     h.run();
-    h.get_by_label("Imported photos");
-    h.get_by_label("12 photos (300.0 MiB) waiting to upload; 1 photo sent, waiting for the home PC to add it");
+    h.get_by_label("Imported files");
+    h.get_by_label("12 files (300.0 MiB) waiting to upload; 1 file sent, waiting for the home PC to add it");
 }
 
 #[test]
@@ -106,14 +126,14 @@ fn the_home_pc_does_not_read_as_all_done_with_an_import_stuck_or_photos_waiting_
     s.imports_pending = Some(2);
     let mut h = status_harness(s);
     h.run();
-    h.get_by_label("2 photos from other PCs waiting to be added");
+    h.get_by_label("2 files from other PCs waiting to be added");
     assert!(h.query_by_label("Up to date").is_none());
     let mut s = home();
     s.lightcraft_port = 7980;
     s.lightcraft_waiting = 3;
     let mut h = status_harness(s);
     h.run();
-    h.get_by_label("3 photos waiting for LightCraft");
+    h.get_by_label("3 files waiting for LightCraft");
     assert!(h.query_by_label("Up to date").is_none());
     let mut s = home();
     s.lightcraft_port = 7980;
@@ -130,9 +150,9 @@ fn refused_photos_keep_the_state_off_green_show_their_reasons_and_offer_two_ways
     let mut s = settled_other();
     s.other.as_mut().unwrap().rejected = 2;
     assert_eq!(s.health().kind, HealthKind::Problem);
-    assert_eq!(s.health().text, "2 photos the home PC refused");
+    assert_eq!(s.health().text, "2 files the home PC refused");
     s.other.as_mut().unwrap().rejected = 1;
-    assert_eq!(s.health().text, "1 photo the home PC refused");
+    assert_eq!(s.health().text, "1 file the home PC refused");
     let refused = vec![("DSC1.ARW".to_string(), "the downloaded DSC1.ARW does not match its note".to_string())];
     let chosen = std::cell::Cell::new(None);
     let mut h = Harness::new_ui_state(
@@ -144,9 +164,9 @@ fn refused_photos_keep_the_state_off_green_show_their_reasons_and_offer_two_ways
         s.clone(),
     );
     h.run();
-    h.get_by_label("1 photo the home PC refused"); // the state line
+    h.get_by_label("1 file the home PC refused"); // the state line
     h.get_by_label("Refused by the home PC");
-    h.get_by_label("1 photo, still on this PC");
+    h.get_by_label("1 file, still on this PC");
     h.get_by_label_contains("DSC1.ARW: the downloaded DSC1.ARW does not match its note");
     assert!(h.query_by_label("Up to date").is_none());
     h.get_by_label("Try again").click();
@@ -179,7 +199,7 @@ fn photos_that_were_here_at_the_start_are_counted_with_a_button_to_send_them() {
         s.clone(),
     );
     h.run();
-    h.get_by_label("12 photos here aren't in the cloud library");
+    h.get_by_label("12 files here aren't in the cloud library");
     h.get_by_label_contains("not sent by themselves");
     h.get_by_label("Send them").click();
     h.run();
@@ -188,7 +208,7 @@ fn photos_that_were_here_at_the_start_are_counted_with_a_button_to_send_them() {
     s.other.as_mut().unwrap().held_unchecked = 30;
     let mut h = status_harness(s);
     h.run();
-    h.get_by_label("1 photo here isn't in the cloud library (still looking at 30 more)");
+    h.get_by_label("1 file here isn't in the cloud library (still looking at 30 more)");
     let mut h = status_harness(settled_other());
     h.run();
     assert!(h.query_by_label("Send them").is_none());
@@ -227,7 +247,7 @@ fn a_download_shows_its_line_with_counts_sizes_and_time_left_and_a_bar_at_the_ri
     let mut h = status_harness(syncing(Some(download(34, 261, gb + gb / 5, 8 * gb))));
     h.run();
     h.get_by_label("Syncing now (timer)"); // the state line is as it was
-    h.get_by_label("Downloading 34 of 261 photos · 1.2 of 8.0 GB · about 12 minutes left");
+    h.get_by_label("Downloading 34 of 261 files · 1.2 of 8.0 GB · about 12 minutes left");
     h.get_by_label("Progress 15%");
     assert!(h.query_by_label_contains("No progress for").is_none(), "moving: no note");
     // the same on the home PC (no other-PC rows), with an upload
@@ -270,8 +290,8 @@ fn a_stage_without_a_count_is_only_named_and_its_bar_says_it_is_busy() {
     };
     let mut h = status_harness(s);
     h.run();
-    h.get_by_label("Sending photos to the home PC"); // the state line
-    h.get_by_label("Sending 3 of 12 photos to the home PC");
+    h.get_by_label("Sending files to the home PC"); // the state line
+    h.get_by_label("Sending 3 of 12 files to the home PC");
     h.get_by_label("Progress 25%");
 }
 
@@ -284,7 +304,7 @@ fn two_minutes_without_anything_finishing_is_a_calm_note_and_not_an_error() {
     let mut h = status_harness(syncing(Some(p)));
     h.run();
     h.get_by_label("No progress for 3 minutes: still trying, the network may be slow or down");
-    h.get_by_label("Downloading 34 of 261 photos · 100 of 1000 bytes");
+    h.get_by_label("Downloading 34 of 261 files · 100 of 1000 bytes");
     // the state line is still the busy one; no problem is raised
     h.get_by_label("Syncing now (timer)");
     assert!(h.query_by_label_contains("problem").is_none());
@@ -333,13 +353,13 @@ fn the_bars_fill_is_exact_never_past_the_track_and_a_begun_job_shows_a_sliver() 
 #[test]
 fn the_tray_tooltip_is_the_same_line_and_fits_where_tooltips_are_short() {
     let s = syncing(Some(download(34, 261, 1 << 30, 8 << 30)));
-    assert_eq!(s.tooltip(now()), "LightCraft Cloud: Downloading 34 of 261 photos · 1.0 of 8.0 GB · about 12 minutes left");
+    assert_eq!(s.tooltip(now()), "LightCraft Cloud: Downloading 34 of 261 files · 1.0 of 8.0 GB · about 12 minutes left");
     assert_eq!(settled_other().tooltip(now()), "LightCraft Cloud: up to date");
     let mut p = download(34, 261, 1 << 30, 8 << 30);
     p.last_item_ms = now_ms() - 10 * 60_000;
     let long = syncing(Some(p)).tooltip(now());
     assert!(long.chars().count() <= lightcraft_cloud_desktop::appstate::TOOLTIP_MAX, "{long}");
-    assert!(long.starts_with("LightCraft Cloud: Downloading 34 of 261 photos") && long.ends_with('…'), "{long}");
+    assert!(long.starts_with("LightCraft Cloud: Downloading 34 of 261 files") && long.ends_with('…'), "{long}");
 }
 
 // ------------------------------------------------------------------ a newer version of the app

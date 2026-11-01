@@ -7,7 +7,7 @@ use std::time::Duration;
 use super::import::{ImportQueue, OutEntry, OutResult};
 use super::state::{Rec, State};
 use super::{Other, OtherReport, OtherStatus, fetch_manifest, folder_of};
-use crate::home::{RunLock, content_hash_file, find_sidecars, stem};
+use crate::home::{RunLock, content_hash_file, count_shots, find_sidecars, stem};
 use crate::manifest::Item;
 use crate::progress::Stage;
 use crate::util::{free_space, is_busy, iso, link_no_replace, parse_iso, parse_stamp, sha256_hex, sidecar_version, replace_file, sync_dir, temp_beside, utc_stamp, write_atomic};
@@ -163,22 +163,25 @@ impl Other {
         let st = State::open(&self.cfg.state_dir)?;
         let queue = ImportQueue::new(&self.cfg.state_dir);
         let mut s = OtherStatus { waiting_to_download: st.waiting, last_pass: st.last_pass.clone(), queue: queue.status(), ..OtherStatus::default() };
+        // (the records are per file; the photos shown are shots, the way the home PC counts its manifest: a raw and a JPEG of one shot are one)
+        let mut here: Vec<String> = Vec::new();
         for e in queue.list().iter().filter(|e| !st.photos.contains_key(&e.id) && !e.result.as_ref().is_some_and(OutResult::is_rejected)) {
             if self.target(&e.path()).is_some_and(|p| p.is_file()) {
-                s.photos += 1;
+                here.push(e.path());
                 if self.ledger_edit_waiting(e) {
                     s.edits_waiting += 1;
                 }
             }
         }
         for r in st.photos.values().filter(|r| !r.gone) {
-            s.photos += 1;
+            here.push(r.path.clone());
             let Some(bytes) = r.sidecar.as_deref().and_then(|rel| self.target(rel)).and_then(|p| std::fs::read(p).ok()) else { continue };
             let sha = sha256_hex(&bytes);
             if r.synced.as_deref() != Some(&sha) && r.manifest.as_deref() != Some(&sha[..16]) {
                 s.edits_waiting += 1;
             }
         }
+        s.photos = count_shots(here.iter().map(String::as_str));
         Ok(s)
     }
 
@@ -261,6 +264,8 @@ impl Other {
             })
             .collect();
         let by_id: HashMap<&str, &Item> = items.iter().map(|i| (i.id.as_str(), *i)).collect();
+        // (which shot of the manifest each file belongs to: the counts shown are shots, as on the home PC)
+        let shot_of: HashMap<&str, usize> = parsed.items.iter().zip(&parsed.shots).map(|(i, s)| (i.id.as_str(), *s)).collect();
         self.remove_vanished(st, &by_id, rep);
 
         let mut siblings: Siblings = HashMap::new();
@@ -366,9 +371,28 @@ impl Other {
             }
         }
         rep.queue = ImportQueue::new(&self.cfg.state_dir).status();
+        let has_file = |st: &State| -> HashSet<usize> {
+            items.iter().filter(|i| st.photos.get(&i.id).is_some_and(|r| !r.gone)).filter_map(|i| shot_of.get(i.id.as_str()).copied()).collect()
+        };
+        let before = has_file(st);
+        let todo_ids: Vec<(&str, &str)> = todo.iter().map(|i| (i.id.as_str(), i.path.as_str())).collect();
         let download = self.rp.watch(&*self.remote, || self.download(st, todo, rep));
-        rep.photos = items.iter().filter(|i| st.photos.get(&i.id).is_some_and(|r| !r.gone)).count();
-        rep.waiting_to_download = items.iter().filter(|i| !st.photos.contains_key(&i.id)).count();
+        // photos = shots with a file here; waiting = shots with no file here yet; arrived = shots that had none before this pass
+        rep.photos = count_shots(items.iter().filter_map(|i| st.photos.get(&i.id).filter(|r| !r.gone).map(|r| r.path.as_str())));
+        let now_here = has_file(st);
+        let all: HashSet<usize> = items.iter().filter_map(|i| shot_of.get(i.id.as_str()).copied()).collect();
+        let started_here: HashSet<usize> =
+            items.iter().filter(|i| st.photos.contains_key(&i.id)).filter_map(|i| shot_of.get(i.id.as_str()).copied()).collect();
+        rep.waiting_to_download = all.difference(&started_here).count();
+        rep.downloaded_photos = todo_ids
+            .iter()
+            .filter(|(_, path)| rep.downloaded.iter().any(|d| d == path))
+            .filter_map(|(id, _)| shot_of.get(id).copied())
+            .filter(|s| !before.contains(s) && now_here.contains(s))
+            .collect::<HashSet<_>>()
+            .len();
+        // the shots this PC holds that came from the home PC (not imported here), for the "received" count's start
+        rep.from_home_photos = count_shots(st.photos.values().filter(|r| !r.imported).map(|r| r.path.as_str()));
         st.waiting = rep.waiting_to_download;
         download
     }
@@ -693,7 +717,7 @@ impl Other {
                     format!(
                         "Not enough free disk space for {} more {} ({} needed, {} free, and {} is kept free). Free some space, or choose fewer folders.",
                         rest.len(),
-                        if rest.len() == 1 { "photo" } else { "photos" },
+                        if rest.len() == 1 { "file" } else { "files" },
                         human(total),
                         human(free),
                         human(self.cfg.free_margin)

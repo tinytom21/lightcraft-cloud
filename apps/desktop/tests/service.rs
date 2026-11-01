@@ -445,11 +445,11 @@ fn photos_added_from_other_pcs_are_announced_once_per_sync_and_counted() {
     let mut r = rig("imp4");
     r.fake.0.lock().unwrap().syncs = vec![imported(&[("laptop", 3)], 0), imported(&[("laptop", 1), ("tablet", 2)], 0), imported(&[], 0)];
     r.advance(20);
-    assert_eq!(r.spy.texts(), ["3 photos added from laptop"]);
+    assert_eq!(r.spy.texts(), ["3 files added from laptop"]);
     assert_eq!(r.svc.status().photos_imported, 3);
     r.svc.handle(Command::SyncNow);
     r.advance(0);
-    assert_eq!(r.spy.texts(), ["3 photos added from laptop and tablet"]);
+    assert_eq!(r.spy.texts(), ["3 files added from laptop and tablet"]);
     assert_eq!((r.svc.status().photos_imported, r.svc.status().last_imported), (6, 3));
     r.svc.handle(Command::SyncNow);
     r.advance(0);
@@ -459,7 +459,7 @@ fn photos_added_from_other_pcs_are_announced_once_per_sync_and_counted() {
     r.fake.0.lock().unwrap().syncs = vec![imported(&[("laptop", 1)], 0)];
     r.svc.handle(Command::SyncNow);
     r.advance(0);
-    assert_eq!(r.spy.texts(), ["1 photo added from laptop"]);
+    assert_eq!(r.spy.texts(), ["1 file added from laptop"]);
     // notifications off: still counted
     let fake = Fake::default();
     fake.0.lock().unwrap().info = Some(WorkerInfo { configured: true, notify: false, purge: false });
@@ -644,24 +644,29 @@ fn another_pcs_numbers_reach_the_status_and_new_photos_are_announced_once() {
     use lightcraft_cloud_desktop::appstate::OtherView;
     let mut r = rig("other-numbers");
     r.fake.0.lock().unwrap().other = true;
-    let out = |downloaded, waiting| {
+    // (files and photos differ: a raw and a JPEG are two files and one photo; the first pass starts the photo count from the worker's seed)
+    let out = |downloaded, arrived, waiting, seed| {
         Ok(SyncOutcome {
             photos: 12,
             downloaded,
-            other: Some(OtherView { photos: 12, waiting_to_download: waiting, edits_waiting: 1, held_back: 0, received: 0, ..OtherView::default() }),
-            problems: vec!["Not enough free disk space for 3 more photos".into()],
+            downloaded_photos: arrived,
+            other: Some(OtherView { photos: 12, waiting_to_download: waiting, edits_waiting: 1, held_back: 0, received: 0, received_photos: seed, ..OtherView::default() }),
+            problems: vec!["Not enough free disk space for 3 more files".into()],
             ..SyncOutcome::default()
         })
     };
-    r.fake.0.lock().unwrap().syncs = vec![out(4, 3), out(2, 1), out(0, 0)];
+    r.fake.0.lock().unwrap().syncs = vec![out(4, 3, 3, Some(9)), out(2, 2, 1, Some(9)), out(1, 0, 0, Some(9)), out(0, 0, 0, Some(9))];
     r.advance(20);
-    assert_eq!(r.spy.texts(), ["4 new photos from the home PC"]);
+    assert_eq!(r.spy.texts(), ["3 new photos from the home PC"], "photos, not files");
     let o = r.svc.status().other.clone().unwrap();
-    assert_eq!((o.photos, o.waiting_to_download, o.edits_waiting, o.received), (12, 3, 1, 4));
+    assert_eq!((o.photos, o.waiting_to_download, o.edits_waiting, o.received, o.received_photos), (12, 3, 1, 4, Some(9)), "the first pass starts from the seed");
     r.advance(15 * 60);
     assert_eq!(r.spy.texts(), ["2 new photos from the home PC"]);
     r.advance(15 * 60);
+    assert!(r.spy.texts().is_empty(), "a file of a photo that was already here is no new photo");
+    r.advance(15 * 60);
     assert!(r.spy.texts().is_empty());
-    assert_eq!(r.svc.status().other.as_ref().map(|o| (o.received, o.waiting_to_download)), Some((6, 0)));
+    let o = r.svc.status().other.clone().unwrap();
+    assert_eq!((o.received, o.received_photos, o.waiting_to_download), (7, Some(11), 0));
     assert_eq!(r.svc.status().errors.len(), 1, "the same problem is listed once");
 }

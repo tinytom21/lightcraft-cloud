@@ -3,7 +3,7 @@
 use std::time::SystemTime;
 
 use egui::{Color32, CornerRadius, Label, Margin, Rect, RichText, Role, Sense, Stroke, Ui, WidgetInfo, pos2, vec2};
-use lightcraft_cloud_client::{Progress, Stage, Summary, describe, to_ms};
+use lightcraft_cloud_client::{Progress, Summary, describe, to_ms};
 
 use crate::appstate::{Activity, AppStatus, Notice, OtherView, Tone, relative, upcoming};
 use crate::update::{Phase, UpdateView};
@@ -166,13 +166,13 @@ pub fn tone_color(tone: Tone) -> Color32 {
 
 /// The imported-photos row of another PC: what is on its way to the home PC. None when nothing is.
 pub fn queue_row(o: &OtherView) -> String {
-    let photos = |n: usize| if n == 1 { "1 photo".to_string() } else { format!("{n} photos") };
+    let files = |n: usize| if n == 1 { "1 file".to_string() } else { format!("{n} files") };
     let mut parts = Vec::new();
     if o.uploads_waiting > 0 {
-        parts.push(format!("{} ({}) waiting to upload", photos(o.uploads_waiting), human_size(o.uploads_bytes)));
+        parts.push(format!("{} ({}) waiting to upload", files(o.uploads_waiting), human_size(o.uploads_bytes)));
     }
     if o.awaiting_home > 0 {
-        parts.push(format!("{} sent, waiting for the home PC to add {}", photos(o.awaiting_home), if o.awaiting_home == 1 { "it" } else { "them" }));
+        parts.push(format!("{} sent, waiting for the home PC to add {}", files(o.awaiting_home), if o.awaiting_home == 1 { "it" } else { "them" }));
     }
     if parts.is_empty() { "nothing waiting".to_string() } else { parts.join("; ") }
 }
@@ -185,7 +185,7 @@ pub fn lightcraft_row(s: &AppStatus) -> Option<(String, Option<String>)> {
         return None;
     }
     let n = s.lightcraft_waiting;
-    let mut text = if n == 0 { "Waiting for LightCraft".to_string() } else { format!("Waiting for LightCraft: {n} {}", if n == 1 { "photo" } else { "photos" }) };
+    let mut text = if n == 0 { "Waiting for LightCraft".to_string() } else { format!("Waiting for LightCraft: {n} {}", if n == 1 { "file" } else { "files" }) };
     if folders > 0 {
         let f = format!("{folders} {} to read the new edits of", if folders == 1 { "folder" } else { "folders" });
         text += &if n == 0 { format!(": {f}") } else { format!("; {f}") };
@@ -206,11 +206,9 @@ fn other_rows(ui: &mut Ui, s: &AppStatus, o: &OtherView, now: SystemTime) {
         Some(l) => row(ui, "Last sync", format!("{} ({})", relative(&l.when, now), l.result)),
         None => row(ui, "Last sync", "never"),
     }
-    // (the counts are saved when a pass ends; while it downloads, the running count is the true one)
-    let (here, waiting) = match s.activity.progress().filter(|p| p.stage == Stage::Downloading && p.total_items > 0) {
-        Some(p) => (o.photos + p.done_items as usize, p.total_items.saturating_sub(p.done_items) as usize),
-        None => (o.photos, o.waiting_to_download),
-    };
+    // (the counts are photos, shots the way the home PC counts them, saved when a pass ends. While a pass downloads, the progress line
+    // above counts files, so the two are not added together: a raw and a JPEG are two files and one photo)
+    let (here, waiting) = (o.photos, o.waiting_to_download);
     row(ui, "Photos on this PC", here.to_string());
     row(ui, "Waiting to download", if waiting == 0 { "nothing".to_string() } else { photos(waiting) });
     row(
@@ -225,8 +223,10 @@ fn other_rows(ui: &mut Ui, s: &AppStatus, o: &OtherView, now: SystemTime) {
     if o.held_back > 0 {
         row(ui, "At the home PC", format!("{} sent, not merged there yet", if o.held_back == 1 { "1 edit".to_string() } else { format!("{} edits", o.held_back) }));
     }
-    row(ui, "Imported photos", queue_row(o));
-    row(ui, "Photos received", format!("{} from the home PC since the app was set up", photos(o.received)));
+    row(ui, "Imported files", queue_row(o));
+    if let Some(n) = o.received_photos {
+        row(ui, "Photos received", format!("{} from the home PC since the app was set up", photos(n)));
+    }
     if let Some((text, hint)) = lightcraft_row(s) {
         row(ui, "LightCraft", text);
         if let Some(h) = hint {
@@ -345,13 +345,13 @@ pub fn show_with_actions(ui: &mut Ui, v: &StatusView, refused: &[(String, String
             ui,
             "Imports",
             match s.imports_pending {
-                Some(0) => "no photos from other PCs waiting".to_string(),
-                Some(1) => "1 photo from other PCs waiting".to_string(),
-                Some(n) => format!("{n} photos from other PCs waiting"),
+                Some(0) => "no files from other PCs waiting".to_string(),
+                Some(1) => "1 file from other PCs waiting".to_string(),
+                Some(n) => format!("{n} files from other PCs waiting"),
                 None => "not checked yet".to_string(),
             },
         );
-        row(ui, "Photos from other PCs", format!("{} in the last sync; {} in all", s.last_imported, s.photos_imported));
+        row(ui, "Files from other PCs", format!("{} in the last sync; {} in all", s.last_imported, s.photos_imported));
         if let Some((text, hint)) = lightcraft_row(s) {
             row(ui, "LightCraft", text);
             if let Some(h) = hint {
@@ -430,7 +430,7 @@ pub fn update_block(ui: &mut Ui, u: &UpdateView) -> Option<StatusAction> {
 
 /// The row for the photos that were in the folder when this PC first looked and are not in the library: not sent by themselves.
 pub fn held_text(held: usize, unchecked: usize) -> String {
-    let n = if held == 1 { "1 photo here isn't".to_string() } else { format!("{held} photos here aren't") };
+    let n = if held == 1 { "1 file here isn't".to_string() } else { format!("{held} files here aren't") };
     if unchecked > 0 { format!("{n} in the cloud library (still looking at {unchecked} more)") } else { format!("{n} in the cloud library") }
 }
 
@@ -447,7 +447,7 @@ fn held_row(ui: &mut Ui, held: usize, unchecked: usize) -> Option<StatusAction> 
 /// The row for photos the home PC refused, with the reasons and the two ways to deal with them.
 fn refused_row(ui: &mut Ui, n: usize, refused: &[(String, String)]) -> Option<StatusAction> {
     let t = theme::CHARCOAL;
-    row(ui, "Refused by the home PC", if n == 1 { "1 photo, still on this PC".to_string() } else { format!("{n} photos, still on this PC") });
+    row(ui, "Refused by the home PC", if n == 1 { "1 file, still on this PC".to_string() } else { format!("{n} files, still on this PC") });
     for (name, why) in refused.iter().take(5) {
         ui.add(Label::new(RichText::new(format!("{name}: {why}")).size(11.5).color(t.reject)).wrap());
     }
@@ -476,10 +476,10 @@ mod tests {
         let mut s = AppStatus { lightcraft_port: 7980, ..AppStatus::default() };
         assert_eq!(lightcraft_row(&s), None);
         s.lightcraft_waiting = 1;
-        assert_eq!(lightcraft_row(&s), Some(("Waiting for LightCraft: 1 photo".into(), None)));
+        assert_eq!(lightcraft_row(&s), Some(("Waiting for LightCraft: 1 file".into(), None)));
         s.lightcraft_waiting = 3;
         s.lightcraft_reachable = Some(true);
-        assert_eq!(lightcraft_row(&s).unwrap().0, "Waiting for LightCraft: 3 photos");
+        assert_eq!(lightcraft_row(&s).unwrap().0, "Waiting for LightCraft: 3 files");
         assert!(lightcraft_row(&s).unwrap().1.is_none());
         s.lightcraft_reachable = Some(false);
         assert!(lightcraft_row(&s).unwrap().1.unwrap().contains("7980"));
@@ -491,7 +491,7 @@ mod tests {
         assert_eq!(lightcraft_row(&s).unwrap().0, "Waiting for LightCraft: 2 folders to read the new edits of");
         s.lightcraft_waiting = 1;
         s.lightcraft_refresh_waiting = 1;
-        assert_eq!(lightcraft_row(&s).unwrap().0, "Waiting for LightCraft: 1 photo; 1 folder to read the new edits of");
+        assert_eq!(lightcraft_row(&s).unwrap().0, "Waiting for LightCraft: 1 file; 1 folder to read the new edits of");
         s.lightcraft_port = 0;
         assert_eq!(lightcraft_row(&s), None, "off");
     }

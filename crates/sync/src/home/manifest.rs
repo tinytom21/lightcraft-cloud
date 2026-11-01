@@ -93,6 +93,21 @@ fn pair_up(items: &[(&String, ManifestPhoto)], primary: PairPrimary) -> HashMap<
     pairs
 }
 
+/// How many shots these file paths are, counted the way the home PC counts the manifest's photos: a raw and a JPEG with the same
+/// stem in the same folder are one shot (only when exactly one raw and exactly one JPEG share the stem), every other file is a shot of
+/// its own. Paths are relative and `/`-separated. Used by the other PC, whose records are per file.
+pub(crate) fn count_shots<'a>(paths: impl IntoIterator<Item = &'a str>) -> usize {
+    let mut groups: BTreeMap<(&str, String), (usize, usize, usize)> = BTreeMap::new();
+    for p in paths {
+        let dir = p.rsplit_once('/').map_or("", |(d, _)| d);
+        let g = groups.entry((dir, stem(p).to_lowercase())).or_default();
+        g.0 += 1;
+        g.1 += usize::from(is_raw(p));
+        g.2 += usize::from(is_jpeg(p));
+    }
+    groups.values().map(|&(n, raws, jpgs)| if raws == 1 && jpgs == 1 { n - 1 } else { n }).sum()
+}
+
 /// Photos sharing an id (identical content) are listed once (first path). A raw+JPEG pair (same folder and stem) is
 /// listed once, as the primary, with the other file under `alternates`. `preview_sizes`: staged smart previews by id.
 pub fn build_manifest_photos(rows: &BTreeMap<String, Row>, preview_sizes: &HashMap<String, u64>, primary: PairPrimary) -> Vec<ManifestPhoto> {
@@ -156,4 +171,20 @@ pub fn manifest_ids(photos: &[ManifestPhoto]) -> BTreeSet<String> {
         ids.extend(p.alternates.iter().flatten().map(|a| a.id.clone()));
     }
     ids
+}
+
+#[cfg(test)]
+mod tests {
+    use super::count_shots;
+
+    #[test]
+    fn a_raw_and_a_jpeg_with_one_stem_in_one_folder_are_one_shot_and_nothing_else_pairs() {
+        assert_eq!(count_shots(["A/x.ARW", "A/x.JPG"]), 1);
+        assert_eq!(count_shots(["A/x.ARW", "A/X.jpeg"]), 1, "stems compare ignoring case");
+        assert_eq!(count_shots(["A/x.ARW", "B/x.JPG"]), 2, "different folders");
+        assert_eq!(count_shots(["A/x.ARW", "A/x.DNG", "A/x.JPG"]), 3, "two raws: ambiguous, so no pair");
+        assert_eq!(count_shots(["A/x.ARW", "A/x.JPG", "A/x.jpeg"]), 3);
+        assert_eq!(count_shots(["x.png", "x.jpg"]), 2, "a PNG is not a raw");
+        assert_eq!(count_shots(std::iter::empty()), 0);
+    }
 }

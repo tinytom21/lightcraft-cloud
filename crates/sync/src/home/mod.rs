@@ -28,6 +28,7 @@ pub use hash::{ContentHasher, content_hash_bytes, content_hash_file, content_has
 pub(crate) use import::rel_join;
 pub use import::{DEFAULT_IMPORT_FREE_MARGIN, IMPORT_INCOMPLETE_LIMIT_HOURS, ImportNote, ImportSummary, ImportedPhoto, check_import_note, check_import_target};
 pub use inbox::{InboxName, InboxSummary, decide, notify_message, parse_inbox_name, phone_is_newer};
+pub(crate) use manifest::count_shots;
 pub use manifest::{Alternate, ManifestPhoto, build_manifest_photos, manifest_ids};
 pub use publish::{MirrorStats, StatusReport, SyncReport};
 pub use purge::{MAX_BACKUP_AGE_HOURS, PurgeReport};

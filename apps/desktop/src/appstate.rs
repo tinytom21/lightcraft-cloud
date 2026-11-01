@@ -124,8 +124,11 @@ pub struct OtherView {
     pub edits_waiting: usize,
     /// Edits sent that the home PC has not merged yet.
     pub held_back: usize,
-    /// Photos this PC received from the home PC since the app was first started.
+    /// Files this PC received from the home PC since the app was first started (what v0.2.0 showed as photos; kept up to date for it).
     pub received: usize,
+    /// Photos (shots, the way the home PC counts) this PC received from the home PC. None: written by a version that did not count
+    /// them; the next pass starts the count from the photos here that came from the home PC.
+    pub received_photos: Option<usize>,
     /// Photos imported on this PC that are not at the home PC yet (not sent).
     pub uploads_waiting: usize,
     /// Their size in bytes.
@@ -239,7 +242,9 @@ impl AppStatus {
 
     /// Everything that is waiting, in the words the state line uses (empty: nothing is).
     pub fn waiting_items(&self) -> Vec<String> {
+        // (photos are shots, as the home PC counts them; the import queue and LightCraft's list are per file)
         let photos = |n: usize| if n == 1 { "1 photo".to_string() } else { format!("{n} photos") };
+        let files = |n: usize| if n == 1 { "1 file".to_string() } else { format!("{n} files") };
         let edits = |n: usize| if n == 1 { "1 edit".to_string() } else { format!("{n} edits") };
         let mut v = Vec::new();
         if let Some(o) = &self.other {
@@ -247,10 +252,10 @@ impl AppStatus {
                 v.push(format!("{} waiting to download", photos(o.waiting_to_download)));
             }
             if o.uploads_waiting > 0 {
-                v.push(format!("{} waiting to upload", photos(o.uploads_waiting)));
+                v.push(format!("{} waiting to upload", files(o.uploads_waiting)));
             }
             if o.awaiting_home > 0 {
-                v.push(format!("{} sent, waiting for the home PC", photos(o.awaiting_home)));
+                v.push(format!("{} sent, waiting for the home PC", files(o.awaiting_home)));
             }
             if o.edits_waiting > 0 {
                 v.push(format!("{} waiting to send", edits(o.edits_waiting)));
@@ -263,11 +268,11 @@ impl AppStatus {
                 v.push(format!("{} waiting", if n == 1 { "1 phone edit".to_string() } else { format!("{n} phone edits") }));
             }
             if let Some(n) = self.imports_pending.filter(|n| *n > 0) {
-                v.push(format!("{} from other PCs waiting to be added", photos(n)));
+                v.push(format!("{} from other PCs waiting to be added", files(n)));
             }
         }
         if self.lightcraft_port != 0 && self.lightcraft_waiting > 0 {
-            v.push(format!("{} waiting for LightCraft", photos(self.lightcraft_waiting)));
+            v.push(format!("{} waiting for LightCraft", files(self.lightcraft_waiting)));
         }
         v
     }
@@ -294,7 +299,7 @@ impl AppStatus {
         let h = |kind, tone, text: String| Health { kind, tone, text };
         match &self.activity {
             Activity::Syncing { reason, .. } => return h(HealthKind::Syncing, Tone::Busy, format!("Syncing now ({reason})")),
-            Activity::Uploading { .. } => return h(HealthKind::Uploading, Tone::Busy, "Sending photos to the home PC".to_string()),
+            Activity::Uploading { .. } => return h(HealthKind::Uploading, Tone::Busy, "Sending files to the home PC".to_string()),
             Activity::Idle => {}
         }
         if self.last_error.is_some() {
@@ -313,7 +318,7 @@ impl AppStatus {
         if problems > 0 {
             let only_refused = self.refused() > 0 && problems == 1;
             let text = if only_refused {
-                if self.refused() == 1 { "1 photo the home PC refused".to_string() } else { format!("{} photos the home PC refused", self.refused()) }
+                if self.refused() == 1 { "1 file the home PC refused".to_string() } else { format!("{} files the home PC refused", self.refused()) }
             } else if problems == 1 { "1 problem needs attention".to_string() } else { format!("{problems} problems need attention") };
             return h(HealthKind::Problem, Tone::Bad, text);
         }
@@ -436,7 +441,7 @@ impl TrayState {
         match self {
             TrayState::Idle => "LightCraft Cloud: up to date",
             TrayState::Syncing => "LightCraft Cloud: syncing",
-            TrayState::Uploading => "LightCraft Cloud: sending photos to the home PC",
+            TrayState::Uploading => "LightCraft Cloud: sending files to the home PC",
             TrayState::PhoneEdits => "LightCraft Cloud: phone edits are waiting",
             TrayState::Waiting => "LightCraft Cloud: something is waiting (see Status)",
             TrayState::Paused => "LightCraft Cloud: paused",
@@ -492,6 +497,12 @@ mod tests {
         std::fs::write(d.join("app.json"), b"{ not json").unwrap();
         assert_eq!(Persisted::load(&d), Persisted::default());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_v020_status_has_no_photo_count_for_received_and_still_loads() {
+        let v: OtherView = serde_json::from_str(r#"{"photos":130,"waiting_to_download":0,"received":130}"#).unwrap();
+        assert_eq!((v.photos, v.received, v.received_photos), (130, 130, None));
     }
 
     #[test]
@@ -559,12 +570,12 @@ mod tests {
         // every way of not being settled, one by one, on both roles
         let waiting: Vec<(&str, Box<dyn Fn(&mut AppStatus)>, &str)> = vec![
             ("download", Box::new(|s| s.other.as_mut().unwrap().waiting_to_download = 12), "12 photos waiting to download"),
-            ("upload", Box::new(|s| s.other.as_mut().unwrap().uploads_waiting = 12), "12 photos waiting to upload"),
-            ("one upload", Box::new(|s| s.other.as_mut().unwrap().uploads_waiting = 1), "1 photo waiting to upload"),
-            ("home answer", Box::new(|s| s.other.as_mut().unwrap().awaiting_home = 3), "3 photos sent, waiting for the home PC"),
+            ("upload", Box::new(|s| s.other.as_mut().unwrap().uploads_waiting = 12), "12 files waiting to upload"),
+            ("one upload", Box::new(|s| s.other.as_mut().unwrap().uploads_waiting = 1), "1 file waiting to upload"),
+            ("home answer", Box::new(|s| s.other.as_mut().unwrap().awaiting_home = 3), "3 files sent, waiting for the home PC"),
             ("edits", Box::new(|s| s.other.as_mut().unwrap().edits_waiting = 2), "2 edits waiting to send"),
             ("merge", Box::new(|s| s.other.as_mut().unwrap().held_back = 1), "1 edit waiting to be merged at the home PC"),
-            ("lightcraft", Box::new(|s| { s.lightcraft_port = 7980; s.lightcraft_waiting = 4; }), "4 photos waiting for LightCraft"),
+            ("lightcraft", Box::new(|s| { s.lightcraft_port = 7980; s.lightcraft_waiting = 4; }), "4 files waiting for LightCraft"),
         ];
         for (what, change, text) in &waiting {
             let mut s = other_settled();
@@ -576,8 +587,8 @@ mod tests {
         // the home PC
         let home: Vec<(&str, Box<dyn Fn(&mut AppStatus)>, &str)> = vec![
             ("phone edits", Box::new(|s| s.inbox_pending = Some(2)), "2 phone edits waiting"),
-            ("an import stuck waiting", Box::new(|s| s.imports_pending = Some(1)), "1 photo from other PCs waiting to be added"),
-            ("photos for lightcraft", Box::new(|s| { s.lightcraft_port = 7980; s.lightcraft_waiting = 1; }), "1 photo waiting for LightCraft"),
+            ("an import stuck waiting", Box::new(|s| s.imports_pending = Some(1)), "1 file from other PCs waiting to be added"),
+            ("photos for lightcraft", Box::new(|s| { s.lightcraft_port = 7980; s.lightcraft_waiting = 1; }), "1 file waiting for LightCraft"),
         ];
         for (what, change, text) in &home {
             let mut s = settled();
@@ -593,7 +604,7 @@ mod tests {
         let mut s = other_settled();
         s.other.as_mut().unwrap().waiting_to_download = 2;
         s.other.as_mut().unwrap().uploads_waiting = 1;
-        assert_eq!(s.health().text, "2 photos waiting to download; 1 photo waiting to upload");
+        assert_eq!(s.health().text, "2 photos waiting to download; 1 file waiting to upload");
     }
 
     #[test]

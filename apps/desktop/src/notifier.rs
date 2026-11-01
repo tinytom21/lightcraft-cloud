@@ -43,10 +43,10 @@ pub fn edits_kept(kept: usize) -> String {
     format!("{edits} not applied: the PC's sidecar was newer (the phone's version is kept in history)")
 }
 
-/// "3 photos added from laptop" (one notification per sync: several devices read "added from laptop and tablet").
+/// "3 files added from laptop" (one notification per sync: several devices read "added from laptop and tablet").
 pub fn photos_added(devices: &[(String, usize)]) -> String {
     let n: usize = devices.iter().map(|d| d.1).sum();
-    let photos = if n == 1 { "1 photo".to_string() } else { format!("{n} photos") };
+    let photos = if n == 1 { "1 file".to_string() } else { format!("{n} files") };
     let names: Vec<&str> = devices.iter().map(|d| d.0.as_str()).collect();
     let from = match names.as_slice() {
         [] => "other PCs".to_string(),
@@ -86,8 +86,8 @@ mod tests {
         assert!(edits_kept(1).starts_with("1 phone edit was not applied") && edits_kept(2).starts_with("2 phone edits were not applied"));
         assert!(publisher_failed().starts_with("Publisher failed"));
         let d = |v: &[(&str, usize)]| v.iter().map(|(a, b)| (a.to_string(), *b)).collect::<Vec<_>>();
-        assert_eq!(photos_added(&d(&[("laptop", 1)])), "1 photo added from laptop");
-        assert_eq!(photos_added(&d(&[("laptop", 3)])), "3 photos added from laptop");
-        assert_eq!(photos_added(&d(&[("a", 1), ("b", 1), ("c", 2)])), "4 photos added from a, b and c");
+        assert_eq!(photos_added(&d(&[("laptop", 1)])), "1 file added from laptop");
+        assert_eq!(photos_added(&d(&[("laptop", 3)])), "3 files added from laptop");
+        assert_eq!(photos_added(&d(&[("a", 1), ("b", 1), ("c", 2)])), "4 files added from a, b and c");
     }
 }

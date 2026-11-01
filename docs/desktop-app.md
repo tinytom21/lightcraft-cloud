@@ -165,6 +165,15 @@ The tray and the pause rules are the same. Being offline is a calm state: one li
 next pass. The app never looks at other devices' edits in the inbox. The device name must not be a phone's: the first pass refuses a
 name that already has files in `inbox/`.
 
+**What the numbers count.** *Photos* are shots, the way the home PC counts its library: a raw file and a JPEG of the same shot (same folder
+and name, one of each) are one photo, as in the manifest's `alternates`. "Photos on this PC", "Waiting to download", "Photos received" and the
+notification "N new photos from the home PC" count photos, so the totals on the home PC and on this PC agree when every folder is kept. A
+photo counts as here as soon as one of its files is. Everything that moves one file at a time says **files**: the progress line ("Downloading
+27 of 60 files", "Sending 3 of 12 files to the home PC"), the imported files waiting to go up or to be answered, and the list of files waiting
+for LightCraft. While files download, the Status rows keep the photo counts of the last finished pass (they are not mixed with a count of
+files). Updating from v0.2.0 needs no re-download: nothing on disk changed, and "Photos received" starts again from the photos here that
+came from the home PC.
+
 Limits for now: a folder means the photos directly in it (tick each subfolder you want); a photo moved by the home PC stays where
 this PC has it; if the home PC keeps its own sidecar instead of applying yours, your edit stays here until its sidecar changes
 again; the free-disk-space check is Linux only so far.
@@ -221,7 +230,7 @@ What the app does with it, and nothing else:
 * a photo leaves the list only when LightCraft's reply says it has it (added, or already in the library). One it refuses is
   retried and logged; after ten tries it is left alone, **Problems** in the Status window says so once, and it is tried once
   more the next time the app starts;
-* LightCraft closed, or the channel off: the list is kept and the Status window shows "Waiting for LightCraft: N photos" with a
+* LightCraft closed, or the channel off: the list is kept and the Status window shows "Waiting for LightCraft: N files" with a
   hint that the port has not answered. The photos go in the next time LightCraft opens with the channel on;
 * the app never starts LightCraft, never passes `--library`, never opens or names your library: LightCraft adds the photos to
   whichever library it has open. The Flatpak can only see some folders (`xdg-pictures` by default): a photo folder it cannot see

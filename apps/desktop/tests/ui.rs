@@ -58,13 +58,13 @@ fn the_status_panel_shows_the_last_sync_the_inbox_and_the_next_run() {
     h.get_by_label("1234");
     h.get_by_label_contains("3 in the last sync (1 merged with PC changes), 1 kept off by a newer PC sidecar; 7 in all");
     h.get_by_label("2 phone edits waiting");
-    h.get_by_label("3 photos from other PCs waiting");
+    h.get_by_label("3 files from other PCs waiting");
     h.get_by_label("4 in the last sync; 12 in all");
     h.get_by_label("in 12 min");
     h.get_by_label_contains("Newest wins: the PC's newer sidecar was kept");
     h.get_by_label_contains("remote: quota exceeded");
     // (phone edits and imports are waiting: not "Up to date")
-    h.get_by_label("2 phone edits waiting; 3 photos from other PCs waiting to be added");
+    h.get_by_label("2 phone edits waiting; 3 files from other PCs waiting to be added");
     assert!(h.query_by_label("Up to date").is_none());
     assert!(h.query_by_label_contains("not running").is_none());
 }
@@ -113,12 +113,12 @@ fn the_status_panel_shows_the_lightcraft_row_only_while_photos_wait() {
     s.lightcraft_reachable = Some(false);
     let mut h = status_harness(Some(s.clone()), true);
     h.run();
-    h.get_by_label("Waiting for LightCraft: 2 photos");
+    h.get_by_label("Waiting for LightCraft: 2 files");
     h.get_by_label_contains("not answering on port 7980");
     s.lightcraft_reachable = Some(true);
     let mut h = status_harness(Some(s), true);
     h.run();
-    h.get_by_label("Waiting for LightCraft: 2 photos");
+    h.get_by_label("Waiting for LightCraft: 2 files");
     assert!(h.query_by_label_contains("not answering").is_none());
 }
 

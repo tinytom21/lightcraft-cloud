@@ -98,10 +98,15 @@ pub struct OtherReport {
     pub removed: Vec<String>,
     /// Photos deleted on this PC, which are not downloaded again.
     pub left_out: usize,
-    /// Photos of the chosen folders that are on this PC.
+    /// Photos of the chosen folders that are on this PC, counted as shots the way the home PC counts: a raw and a JPEG of one shot are
+    /// one photo (`downloaded` and the progress lines count files).
     pub photos: usize,
-    /// Photos of the chosen folders that are not here yet.
+    /// Photos (shots) of the chosen folders with no file here yet.
     pub waiting_to_download: usize,
+    /// Photos (shots) that arrived in this pass: none of their files was here before, one is now. `downloaded` counts files.
+    pub downloaded_photos: usize,
+    /// Photos (shots) here that came from the home PC (not imported on this PC), whatever the pass did.
+    pub from_home_photos: usize,
     /// Edits that could not be sent (too large, ...); a network failure is an `Err` instead.
     pub edits_waiting: usize,
     /// Things the user can act on, one line each.
@@ -123,7 +128,9 @@ pub struct OtherReport {
 /// The numbers the Status window shows, from the state alone (no network).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct OtherStatus {
+    /// Photos (shots, as the home PC counts them) on this PC.
     pub photos: usize,
+    /// Photos (shots) with no file here yet, as of the last pass.
     pub waiting_to_download: usize,
     /// Local sidecar changes not sent yet, as the files are now.
     pub edits_waiting: usize,

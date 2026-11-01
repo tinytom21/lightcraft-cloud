@@ -271,8 +271,9 @@ fn run_other(a: Args, cfg: Config) -> std::result::Result<(), Failure> {
             }
             let r = other.sync()?;
             println!(
-                "{} photos downloaded, {} sidecars updated from the home PC, {} edits sent ({} waiting for the home PC to merge), {} moved aside, {} left out",
+                "{} files downloaded ({} new photos), {} sidecars updated from the home PC, {} edits sent ({} waiting for the home PC to merge), {} moved aside, {} left out",
                 r.downloaded.len(),
+                r.downloaded_photos,
                 r.sidecars_updated.len(),
                 r.edits_sent,
                 r.held_back,

@@ -289,7 +289,8 @@ fn only_the_chosen_folders_are_downloaded_with_their_sidecars_and_alternates() {
     assert_eq!(fx.local("Lisbon/A.jpg"), photo_bytes("Lisbon/A.jpg"));
     assert_eq!(fx.local("Lisbon/B.JPG.xmp"), xmp(3));
     assert_eq!(r.downloaded.len(), 3, "{r:?}");
-    assert_eq!((r.photos, r.waiting_to_download, r.edits_waiting), (3, 0, 0));
+    assert_eq!((r.photos, r.waiting_to_download, r.edits_waiting), (2, 0, 0), "two photos: A, and B with its raw/JPEG partner");
+    assert_eq!(r.downloaded_photos, 2);
     assert!(fx.hidden().is_empty(), "no temporary file is left: {:?}", fx.hidden());
     // LightCraft is told about each new photo, by its absolute path
     let mut told = fx.hooked.lock().unwrap().clone();
@@ -376,7 +377,7 @@ fn too_little_free_disk_space_is_a_clear_error_and_nothing_is_downloaded() {
     let r = fx.sync();
     assert!(fx.tree().is_empty() && fx.hidden().is_empty());
     let msg = r.problems.join(" | ");
-    assert!(msg.contains("free disk space") && msg.contains("2 more photos"), "{msg}");
+    assert!(msg.contains("free disk space") && msg.contains("2 more files"), "{msg}");
     assert_eq!(r.waiting_to_download, 2);
 }
 
@@ -948,4 +949,66 @@ fn bytes_moving_inside_a_big_file_are_reported_and_count_as_activity() {
     assert!(during.iter().all(|p| p.last_item_ms >= p.started_ms && p.last_item_ms > 0), "moving bytes are activity");
     let fraction = during.iter().filter_map(|p| p.fraction()).fold(0.0f32, f32::max);
     assert!(fraction > 0.0, "the bar moves inside the file");
+}
+
+// ------------------------------------------------------------------------------------------------ counts: photos are shots
+
+/// What the home PC would call the number of photos: the manifest's top-level entries.
+fn home_count(photos: &[Ph]) -> usize {
+    photos.len()
+}
+
+#[test]
+fn photos_are_counted_the_way_the_home_pc_counts_them_a_raw_and_a_jpeg_of_one_shot_are_one() {
+    let mut fx = Fx::new("shots", &["L"]);
+    let lib = vec![
+        ph("L/A.jpg"),
+        ph("L/B.ARW").alt(ph("L/B.JPG")),
+        ph("L/D.ARW").alt(ph("L/D.JPG")),
+        // (a stem with two raws and a JPEG is not a pair: three photos on the home PC too, and here)
+        ph("L/C.CR3"),
+        ph("L/C.DNG"),
+        ph("L/C.jpg"),
+    ];
+    fx.publish(lib.clone());
+    let r = fx.sync();
+    assert_eq!(r.downloaded.len(), 8, "files: {r:?}");
+    assert_eq!((r.photos, r.waiting_to_download, r.downloaded_photos), (home_count(&lib), 0, home_count(&lib)), "{r:?}");
+    assert_eq!(r.from_home_photos, home_count(&lib));
+    // the status window's numbers (from the state alone) agree with the pass
+    let st = fx.other.status().unwrap();
+    assert_eq!((st.photos, st.waiting_to_download), (home_count(&lib), 0));
+    // nothing new: nothing arrived
+    let r2 = fx.sync();
+    assert_eq!((r2.photos, r2.downloaded.len(), r2.downloaded_photos), (home_count(&lib), 0, 0));
+}
+
+#[cfg(unix)]
+#[test]
+fn photos_waiting_to_download_are_shots_too_and_the_problem_line_counts_files() {
+    let mut fx = Fx::with("shots-wait", &["L"], |c| c.free_margin = u64::MAX / 4);
+    fx.publish(vec![ph("L/A.jpg"), ph("L/B.ARW").alt(ph("L/B.JPG"))]);
+    let r = fx.sync();
+    assert!(r.downloaded.is_empty(), "{r:?}");
+    assert_eq!((r.photos, r.waiting_to_download), (0, 2), "three files, two photos: {r:?}");
+    assert!(r.problems.iter().any(|p| p.contains("3 more files")), "{:?}", r.problems);
+}
+
+#[test]
+fn a_pair_whose_second_file_arrives_in_a_later_pass_is_one_photo_received_once() {
+    let mut fx = Fx::new("shots-split", &["L"]);
+    let pair = ph("L/B.ARW").alt(ph("L/B.JPG"));
+    fx.publish(vec![pair.clone()]);
+    fx.net.fail_from.store(3, Ordering::SeqCst); // the manifest is get #1, the raw arrives, the connection drops on the JPEG
+    assert!(matches!(fx.other.sync(), Err(Error::Remote(_))));
+    assert_eq!(fx.tree(), ["L/B.ARW"]);
+    let st = fx.other.status().unwrap();
+    assert_eq!(st.photos, 1, "the shot has a file here");
+    fx.net.fail_from.store(0, Ordering::SeqCst);
+    let r = fx.sync();
+    assert_eq!((r.downloaded.len(), r.downloaded_photos, r.photos, r.waiting_to_download), (1, 0, 1, 0), "arrived with its first file: {r:?}");
+    // a different pair that arrives whole is one photo of two files
+    fx.publish(vec![pair, ph("L/E.ARW").alt(ph("L/E.JPG"))]);
+    let r = fx.sync();
+    assert_eq!((r.downloaded.len(), r.downloaded_photos, r.photos), (2, 1, 2));
 }

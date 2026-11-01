@@ -70,8 +70,10 @@ pub struct SyncOutcome {
     pub import_problems: Vec<String>,
     /// The other PC's role: the numbers of the pass (None on the home PC).
     pub other: Option<OtherView>,
-    /// Photos an other PC downloaded in this sync.
+    /// Files an other PC downloaded in this sync.
     pub downloaded: usize,
+    /// Photos (shots, as the home PC counts them) that arrived in this sync: a raw and a JPEG are one.
+    pub downloaded_photos: usize,
     /// Things the user can act on, one line each (the other PC's role).
     pub problems: Vec<String>,
     /// The other PC's role: new photos were not ready (still being copied, or not all hashed yet): look again after this long.
@@ -481,7 +483,14 @@ impl<W: Worker> Service<W> {
                 }
                 self.status.active_problems = o.problems.iter().chain(&o.import_problems).cloned().collect();
                 if let Some(mut view) = o.other.clone() {
-                    view.received = self.status.other.as_ref().map_or(0, |v| v.received) + o.downloaded;
+                    let prev = self.status.other.as_ref();
+                    view.received = prev.map_or(0, |v| v.received) + o.downloaded;
+                    // (photos, not files; a status written by v0.2.0 has no such count, so it starts from the photos here that came from the home PC,
+                    // which the worker put in `view.received_photos`)
+                    view.received_photos = match prev.and_then(|v| v.received_photos) {
+                        Some(p) => Some(p + o.downloaded_photos),
+                        None => view.received_photos,
+                    };
                     self.status.other = Some(view);
                 }
                 self.recheck = o.recheck.map(|d| self.clock.now() + d);
@@ -503,8 +512,8 @@ impl<W: Worker> Service<W> {
                 if o.kept > 0 && self.info.notify {
                     self.notifier.notify(notifier::TITLE, &notifier::edits_kept(o.kept));
                 }
-                if o.downloaded > 0 && self.info.notify {
-                    self.notifier.notify(notifier::TITLE, &notifier::photos_downloaded(o.downloaded));
+                if o.downloaded_photos > 0 && self.info.notify {
+                    self.notifier.notify(notifier::TITLE, &notifier::photos_downloaded(o.downloaded_photos));
                 }
                 if o.imported > 0 || o.downloaded > 0 || o.sidecars > 0 || n > 0 {
                     self.run_bridge();

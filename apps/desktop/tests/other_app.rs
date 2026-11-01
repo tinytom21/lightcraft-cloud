@@ -379,7 +379,7 @@ fn imported_photos_go_up_in_bounded_jobs_and_the_state_never_says_up_to_date_whi
     let o = svc.status().other.clone().unwrap();
     assert_eq!(o.uploads_waiting, 60);
     let h = svc.status().health();
-    assert_eq!((h.kind, h.text.as_str()), (HealthKind::Waiting, "60 photos waiting to upload"));
+    assert_eq!((h.kind, h.text.as_str()), (HealthKind::Waiting, "60 files waiting to upload"));
     // one bounded job at a time, a second apart
     let mut counts = Vec::new();
     for _ in 0..4 {
@@ -392,7 +392,7 @@ fn imported_photos_go_up_in_bounded_jobs_and_the_state_never_says_up_to_date_whi
     let o = svc.status().other.clone().unwrap();
     assert_eq!((o.uploads_waiting, o.awaiting_home), (0, 60));
     let h = svc.status().health();
-    assert_eq!((h.kind, h.text.as_str()), (HealthKind::Waiting, "60 photos sent, waiting for the home PC"));
+    assert_eq!((h.kind, h.text.as_str()), (HealthKind::Waiting, "60 files sent, waiting for the home PC"));
     // the home PC answers: added (and one rejected); the answers are picked up at the next look
     let ids: Vec<String> = ImportQueue::new(&e.state).list().into_iter().map(|x| x.id).collect();
     for (i, id) in ids.iter().enumerate() {
@@ -681,4 +681,40 @@ fn demo_a_long_download_for_the_status_window() {
     svc.handle(Command::SyncNow);
     assert!(svc.step());
     eprintln!("demo finished: {:?}", svc.status().last_sync);
+}
+
+/// The user's case: a raw and a JPEG of one shot count once, in every number another PC shows, as on the home PC; a status file
+/// written by v0.2.0 (which counted files, 130 for 66 photos) is carried on without a re-download.
+#[test]
+fn a_raw_and_jpeg_pair_is_one_photo_in_every_count_and_a_v020_status_is_carried_on() {
+    let e = env("pair", "other");
+    let mut list: Vec<serde_json::Value> = serde_json::from_slice::<serde_json::Value>(&std::fs::read(e.cloud.join("mobile/manifest.json")).unwrap()).unwrap()["photos"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let (raw, jpg) = (photo("D-raw"), photo("D-jpg"));
+    put(&e.cloud, "originals/Lisbon/D.ARW", &raw);
+    put(&e.cloud, "originals/Lisbon/D.JPG", &jpg);
+    list.push(json!({"id": content_hash_bytes(&jpg), "path": "Lisbon/D.JPG", "size": jpg.len(), "mtime": MTIME, "sidecar": null, "sidecarVersion": null,
+        "alternates": [{"id": content_hash_bytes(&raw), "path": "Lisbon/D.ARW", "size": raw.len(), "mtime": MTIME, "sidecar": null, "sidecarVersion": null}]}));
+    put(&e.cloud, "mobile/manifest.json", json!({"format": 1, "generated": "2026-11-01T09:00:00Z", "photos": list}).to_string().as_bytes());
+    // what the home PC calls its photos in the folders this PC keeps: A, B and the pair D
+    let home_count = list.iter().filter(|p| p["path"].as_str().unwrap().starts_with("Lisbon/")).count();
+    assert_eq!(home_count, 3);
+    // v0.2.0 left a status that counts files
+    std::fs::create_dir_all(&e.state).unwrap();
+    std::fs::write(e.state.join("status.json"), r#"{"configured":true,"other":{"photos":130,"received":130}}"#).unwrap();
+    let spy = Spy::default();
+    let mut svc = service(&e, &spy, false);
+    run_due(&mut svc, &e, 20);
+    let o = svc.status().other.clone().unwrap();
+    assert_eq!((o.photos, o.waiting_to_download, o.received_photos), (home_count, 0, Some(home_count)), "{o:?}");
+    assert_eq!(o.received, 130 + 4, "the old count of files goes on for a version that still reads it");
+    assert_eq!(spy.0.lock().unwrap().clone(), ["3 new photos from the home PC"]);
+    // the files are all there, and a second pass downloads nothing again
+    assert!(e.photos.join("Lisbon/D.ARW").exists() && e.photos.join("Lisbon/D.JPG").exists());
+    run_due(&mut svc, &e, 15 * 60);
+    let o2 = svc.status().other.clone().unwrap();
+    assert_eq!((o2.photos, o2.received_photos, o2.received), (home_count, Some(home_count), 134));
+    assert_eq!(spy.0.lock().unwrap().len(), 1);
 }

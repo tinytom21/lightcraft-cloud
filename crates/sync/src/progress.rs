@@ -4,7 +4,7 @@
 //!   when something last finished or moved). `Home` and `Other` hand one to the hook set with `set_progress_hook` after every
 //!   change; with no hook nothing is measured or sent, and the sync is exactly what it was.
 //! * [`Estimator`]: the time left, from the speed of this stage so far. Pure: the clock is a parameter.
-//! * [`describe`]: the words ("Downloading 34 of 261 photos · 1.2 of 8.0 GB · about 12 minutes left") and the bar's fill. Pure too.
+//! * [`describe`]: the words ("Downloading 34 of 261 files · 1.2 of 8.0 GB · about 12 minutes left") and the bar's fill. Pure too.
 //!
 //! Times are milliseconds since the Unix epoch, so a snapshot can be written to a file and read by another process.
 
@@ -48,15 +48,15 @@ impl Stage {
         match self {
             Stage::Working => ("Working", "", "Working…"),
             Stage::LookingAtLibrary => ("Looking at the cloud library", "", "Looking at the cloud library…"),
-            Stage::CheckingEdits => ("Checking edits of", "photos", "Checking edits…"),
-            Stage::Downloading => ("Downloading", "photos", "Downloading photos…"),
-            Stage::LookingForNewPhotos => ("Looking at", "new photos", "Looking for new photos on this PC…"),
-            Stage::Sending => ("Sending", "photos to the home PC", "Sending photos to the home PC…"),
-            Stage::AskingHome => ("Asking the home PC about", "photos", "Asking the home PC about the photos sent…"),
+            Stage::CheckingEdits => ("Checking edits of", "files", "Checking edits…"),
+            Stage::Downloading => ("Downloading", "files", "Downloading files…"),
+            Stage::LookingForNewPhotos => ("Looking at", "new files", "Looking for new photos on this PC…"),
+            Stage::Sending => ("Sending", "files to the home PC", "Sending files to the home PC…"),
+            Stage::AskingHome => ("Asking the home PC about", "files", "Asking the home PC about the files sent…"),
             Stage::Inbox => ("Applying edits from other devices:", "edits", "Applying edits from other devices…"),
-            Stage::Importing => ("Adding", "photos from other PCs", "Adding photos from other PCs…"),
-            Stage::Checking => ("Checking", "photos", "Checking photos…"),
-            Stage::Reading => ("Reading new photos", "", "Reading new photos…"),
+            Stage::Importing => ("Adding", "files from other PCs", "Adding files from other PCs…"),
+            Stage::Checking => ("Checking", "files", "Checking files…"),
+            Stage::Reading => ("Reading new photo files", "", "Reading new photo files…"),
             Stage::Previews => ("Making previews", "", "Making previews…"),
             Stage::Thumbnails => ("Making thumbnails", "", "Making thumbnails…"),
             Stage::UploadingOriginals => ("Uploading originals", "", "Uploading originals…"),
@@ -323,7 +323,7 @@ pub const STALL_MS: u64 = 120_000;
 /// What to show for a snapshot.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Summary {
-    /// "Downloading 34 of 261 photos · 1.2 of 8.0 GB · about 12 minutes left".
+    /// "Downloading 34 of 261 files · 1.2 of 8.0 GB · about 12 minutes left".
     pub line: String,
     /// A calm note when nothing has moved for a while; the line stays.
     pub note: Option<String>,
@@ -465,18 +465,18 @@ mod tests {
         let at = |pr: &Progress, now| describe(pr, now).line;
         let mut d = p(Stage::Downloading, 34, 261, 1_288_490_189, 8_589_934_592, 0, 100 * SEC);
         d.finish_ms = Some(MIN * 12 + 100 * SEC);
-        assert_eq!(at(&d, 100 * SEC), "Downloading 34 of 261 photos · 1.2 of 8.0 GB · about 12 minutes left");
+        assert_eq!(at(&d, 100 * SEC), "Downloading 34 of 261 files · 1.2 of 8.0 GB · about 12 minutes left");
         let s = p(Stage::Sending, 3, 12, 0, 0, 0, 5 * SEC);
-        assert_eq!(at(&s, 6 * SEC), "Sending 3 of 12 photos to the home PC · working out time left");
-        assert_eq!(at(&s, 2 * SEC), "Sending 3 of 12 photos to the home PC", "a short job does not flash a guess");
+        assert_eq!(at(&s, 6 * SEC), "Sending 3 of 12 files to the home PC · working out time left");
+        assert_eq!(at(&s, 2 * SEC), "Sending 3 of 12 files to the home PC", "a short job does not flash a guess");
         assert_eq!(at(&p(Stage::LookingAtLibrary, 0, 0, 0, 0, 0, 0), 30 * SEC), "Looking at the cloud library…");
-        assert_eq!(at(&p(Stage::Checking, 0, 0, 0, 0, 0, 0), 5 * SEC), "Checking photos…");
+        assert_eq!(at(&p(Stage::Checking, 0, 0, 0, 0, 0, 0), 5 * SEC), "Checking files…");
         assert_eq!(at(&p(Stage::Previews, 12, 30, 0, 0, 0, 0), SEC), "Making previews 12 of 30");
         let mut u = p(Stage::UploadingOriginals, 5, 30, 200 << 20, 1_181_116_006, 0, 0);
         u.finish_ms = Some(3 * MIN);
         assert_eq!(at(&u, 0), "Uploading originals 5 of 30 · 200.0 MB of 1.1 GB · about 3 minutes left");
         // unknown sizes: no byte part; a count that overran its total is clamped
-        assert_eq!(at(&p(Stage::Downloading, 9, 5, 0, 0, 0, 0), SEC), "Downloading 5 of 5 photos");
+        assert_eq!(at(&p(Stage::Downloading, 9, 5, 0, 0, 0, 0), SEC), "Downloading 5 of 5 files");
         // nothing known at all
         assert_eq!(at(&Progress::default(), 0), "Working…");
     }
@@ -485,7 +485,7 @@ mod tests {
     fn a_finished_stage_has_no_time_left_to_show() {
         let mut d = p(Stage::Downloading, 5, 5, 10, 10, 0, SEC);
         d.finish_ms = Some(5 * MIN);
-        assert_eq!(describe(&d, 20 * SEC).line, "Downloading 5 of 5 photos · 10 of 10 bytes");
+        assert_eq!(describe(&d, 20 * SEC).line, "Downloading 5 of 5 files · 10 of 10 bytes");
         assert_eq!(describe(&d, 20 * SEC).fraction, Some(1.0));
     }
 
@@ -497,7 +497,7 @@ mod tests {
         let n = at(10 * SEC + STALL_MS).note.unwrap();
         assert_eq!(n, "No progress for 2 minutes: still trying, the network may be slow or down");
         assert_eq!(at(10 * SEC + 3 * MIN + 59 * SEC).note.unwrap(), "No progress for 3 minutes: still trying, the network may be slow or down");
-        assert!(at(10 * SEC + STALL_MS).one_line().starts_with("Downloading 3 of 10 photos"));
+        assert!(at(10 * SEC + STALL_MS).one_line().starts_with("Downloading 3 of 10 files"));
         // a stall hides the time left, which would be a guess on nothing
         let mut with_eta = d;
         with_eta.finish_ms = Some(10 * MIN);

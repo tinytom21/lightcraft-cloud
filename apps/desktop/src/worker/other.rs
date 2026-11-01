@@ -120,6 +120,7 @@ pub(crate) fn outcome_of(r: &OtherReport) -> SyncOutcome {
     SyncOutcome {
         photos: r.photos,
         downloaded: r.downloaded.len(),
+        downloaded_photos: r.downloaded_photos,
         problems: r.problems.clone(),
         other: Some(OtherView {
             photos: r.photos,
@@ -127,6 +128,7 @@ pub(crate) fn outcome_of(r: &OtherReport) -> SyncOutcome {
             edits_waiting: r.edits_waiting,
             held_back: r.held_back,
             received: 0,
+            received_photos: Some(r.from_home_photos),
             uploads_waiting: r.queue.to_upload,
             uploads_bytes: r.queue.bytes,
             awaiting_home: r.queue.awaiting_home,
