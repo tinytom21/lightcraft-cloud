@@ -1,0 +1,217 @@
+name: release
+
+# Builds everything a release has: the Windows installer, the two Linux archives and SHA256SUMS.
+#   * a tag `v*`: builds, checks, and creates a DRAFT GitHub release with the files and generated notes. Nothing is ever published by
+#     this workflow: the draft is published by hand (the in-app updater only sees published releases);
+#   * `workflow_dispatch` and a push to the branch `installer`: the same build and the same checks, no release at all.
+# The only secret used is the automatic GITHUB_TOKEN, and only in the last job, only on a tag.
+on:
+  push:
+    tags: ["v*"]
+    branches: [installer]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  librclone:
+    uses: ./.github/workflows/librclone.yml
+
+  windows:
+    name: Windows installer
+    needs: librclone
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Version (and, on a tag, that the tag is it)
+        id: ver
+        shell: bash
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "version $version"
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "v$version" ]; then
+            echo "the tag ${GITHUB_REF_NAME} is not v$version (the version in Cargo.toml)"; exit 1
+          fi
+      - name: Rust toolchain (the version rust-toolchain.toml pins)
+        shell: bash
+        run: |
+          rustup toolchain install "$(grep -oP 'channel = "\K[^"]+' rust-toolchain.toml)" --profile minimal
+          rustc --version
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: windows-release
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: librclone-windows
+          path: out
+      - name: Build (release, the light build)
+        run: cargo build --release --locked -p lightcraft-cloud-desktop --no-default-features
+      - name: Smoke test of the exe
+        shell: pwsh
+        run: |
+          $v = & .\target\release\lightcraft-cloud-desktop.exe --version | Out-String
+          Write-Output $v
+          if ($v -notmatch "lightcraft-cloud-desktop ${{ steps.ver.outputs.version }}") { throw "wrong version output" }
+      - name: Inno Setup (pinned version)
+        shell: pwsh
+        run: |
+          choco install innosetup --version 6.6.1 -y --no-progress
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+          & $iscc /? | Select-Object -First 2
+          "ISCC=$iscc" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $d = "stage"
+          New-Item -ItemType Directory $d | Out-Null
+          Copy-Item target\release\lightcraft-cloud-desktop.exe, out\librclone.dll, out\LICENSE-rclone.txt $d
+          Copy-Item LICENSE-MIT "$d\LICENSE-MIT.txt"
+          Copy-Item LICENSE-APACHE "$d\LICENSE-APACHE.txt"
+          Copy-Item apps\desktop\assets\fonts\OFL-Inter.txt "$d\LICENSE-Inter-OFL.txt"
+          Copy-Item packaging\windows\README.txt $d
+          New-Item -ItemType Directory dist | Out-Null
+          & $env:ISCC "/DAppVersion=${{ steps.ver.outputs.version }}" "/DStage=$((Resolve-Path $d).Path)" "/DOutDir=$((Resolve-Path dist).Path)" packaging\windows\lightcraft-cloud.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed: $LASTEXITCODE" }
+          Get-ChildItem dist | Format-Table Name, Length
+          $exe = Get-Item target\release\lightcraft-cloud-desktop.exe
+          "exe: $($exe.Length) bytes"
+      - name: Test the installer on Windows (install, run, update over a running copy, uninstall)
+        shell: pwsh
+        run: ./packaging/windows/test-installer.ps1 -Setup (Resolve-Path "dist\lightcraft-cloud-${{ steps.ver.outputs.version }}-windows-setup.exe").Path -Version "${{ steps.ver.outputs.version }}"
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: installer-logs
+          path: ci-logs/
+          if-no-files-found: ignore
+          retention-days: 7
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-windows
+          path: dist/lightcraft-cloud-${{ steps.ver.outputs.version }}-windows-setup.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  linux:
+    # the oldest Ubuntu runner, so that the programs run on older systems (the minimum glibc is printed below and in the release notes)
+    name: Linux ${{ matrix.variant }}
+    needs: librclone
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { variant: light, cargo_flags: "--no-default-features" }
+          - { variant: home, cargo_flags: "" }
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Version
+        id: ver
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "v$version" ]; then
+            echo "the tag ${GITHUB_REF_NAME} is not v$version (the version in Cargo.toml)"; exit 1
+          fi
+      - name: Rust toolchain (the version rust-toolchain.toml pins)
+        run: |
+          rustup toolchain install "$(grep -oP 'channel = "\K[^"]+' rust-toolchain.toml)" --profile minimal
+          rustc --version
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: linux-release-${{ matrix.variant }}
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: librclone-linux
+          path: out
+      - name: Build (release)
+        run: cargo build --release --locked -p lightcraft-cloud-desktop ${{ matrix.cargo_flags }}
+      - name: The oldest glibc each file needs
+        run: |
+          for f in target/release/lightcraft-cloud-desktop out/librclone.so; do
+            need=$(objdump -T "$f" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+            echo "$f needs $need"
+            # (built on Ubuntu 22.04, glibc 2.35: nothing newer can be needed)
+            [ "$(printf '%s\nGLIBC_2.35\n' "$need" | sort -V | tail -1)" = GLIBC_2.35 ]
+          done
+          ldd target/release/lightcraft-cloud-desktop
+      - name: Package
+        run: |
+          name=lightcraft-cloud-${{ steps.ver.outputs.version }}-linux-${{ matrix.variant }}
+          mkdir -p "$name" dist
+          cp target/release/lightcraft-cloud-desktop out/librclone.so "$name/"
+          cp out/LICENSE-rclone.txt "$name/"
+          cp LICENSE-MIT "$name/LICENSE-MIT.txt"
+          cp LICENSE-APACHE "$name/LICENSE-APACHE.txt"
+          cp apps/desktop/assets/fonts/OFL-Inter.txt "$name/LICENSE-Inter-OFL.txt"
+          cp packaging/linux/install.sh "$name/install.sh"
+          chmod 755 "$name/install.sh" "$name/lightcraft-cloud-desktop"
+          tar --owner=0 --group=0 --numeric-owner -czf "dist/$name.tar.gz" "$name"
+          ls -l dist; tar -tzvf "dist/$name.tar.gz"
+      - name: Test install.sh (in a throwaway home folder) and the installed program
+        run: |
+          name=lightcraft-cloud-${{ steps.ver.outputs.version }}-linux-${{ matrix.variant }}
+          t=$(mktemp -d); mkdir "$t/home" "$t/unpacked"
+          tar -xzf "dist/$name.tar.gz" -C "$t/unpacked"
+          HOME="$t/home" sh "$t/unpacked/$name/install.sh"
+          test -x "$t/home/.local/bin/lightcraft-cloud-desktop"
+          test -f "$t/home/.local/lib/lightcraft-cloud/librclone.so"
+          test -f "$t/home/.local/lib/lightcraft-cloud/licenses/LICENSE-rclone.txt"
+          test -f "$t/home/.local/lib/lightcraft-cloud/licenses/LICENSE-Inter-OFL.txt"
+          HOME="$t/home" "$t/home/.local/bin/lightcraft-cloud-desktop" --version | grep -q "lightcraft-cloud-desktop ${{ steps.ver.outputs.version }}"
+          "$t/home/.local/bin/lightcraft-cloud-desktop" --help | head -3
+          # once more over the top: replaced, not an error
+          HOME="$t/home" sh "$t/unpacked/$name/install.sh" >/dev/null
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-linux-${{ matrix.variant }}
+          path: dist/lightcraft-cloud-${{ steps.ver.outputs.version }}-linux-${{ matrix.variant }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  checksums:
+    name: SHA256SUMS and the draft release
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      # write only to create the draft release, and only on a tag (the steps below)
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: SHA256SUMS
+        working-directory: dist
+        run: |
+          ls -l
+          sha256sum lightcraft-cloud-* > SHA256SUMS
+          cat SHA256SUMS
+          test "$(wc -l < SHA256SUMS)" = 3
+          sha256sum -c SHA256SUMS
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-files
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Draft release (a tag only; never published from here)
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre=""
+          case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --draft --verify-tag --generate-notes --title "LightCraft Cloud ${GITHUB_REF_NAME#v}" $pre

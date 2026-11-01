@@ -1,0 +1,56 @@
+name: librclone
+
+# rclone's librclone (Go, cgo, c-shared) for Windows and Linux, as the artifacts `librclone-windows` (librclone.dll + LICENSE-rclone.txt)
+# and `librclone-linux` (librclone.so + LICENSE-rclone.txt). Called by desktop.yml and release.yml. Linux is built on the oldest runner
+# (Ubuntu 22.04) so that the library runs on older systems as well as new ones.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  librclone:
+    name: librclone (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows, os: windows-latest, file: librclone.dll }
+          - { name: linux, os: ubuntu-22.04, file: librclone.so }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Go version
+        id: go
+        shell: bash
+        run: echo "version=$(tr -d '[:space:]' < tools/librclone/GO_VERSION)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: ${{ steps.go.outputs.version }}
+          cache-dependency-path: tools/librclone/go.sum
+      - name: Build ${{ matrix.file }} (rclone's librclone, cgo, c-shared)
+        shell: bash
+        working-directory: tools/librclone
+        env:
+          CGO_ENABLED: "1"
+          GOTOOLCHAIN: local
+          GOFLAGS: -mod=readonly
+        run: |
+          go version
+          gcc --version | head -1
+          go build -p 2 -buildmode=c-shared -trimpath -buildvcs=false -ldflags "-s -w -buildid=" -o "${{ matrix.file }}" .
+          rm -f librclone.h
+          ls -l "${{ matrix.file }}"
+          mkdir -p ../../out
+          cp "${{ matrix.file }}" ../../out/
+          # rclone's licence, for the zip
+          cp "$(go list -m -f '{{.Dir}}' github.com/rclone/rclone)/COPYING" ../../out/LICENSE-rclone.txt
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: librclone-${{ matrix.name }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 7

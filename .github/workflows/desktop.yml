@@ -1,10 +1,10 @@
 name: desktop
 
 # The light build of the desktop app (--no-default-features: no LightCraft engine, role "another PC") on Windows and Linux.
-# No secrets are used; the only output is a zip artifact.
+# No secrets are used. What users download is built by release.yml (the installer and the Linux archives).
 on:
   push:
-    branches: [main]
+    branches: [main, installer]
   pull_request:
 
 permissions:
@@ -16,49 +16,7 @@ env:
 
 jobs:
   librclone:
-    name: librclone (${{ matrix.name }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { name: windows, os: windows-latest, file: librclone.dll }
-          - { name: linux, os: ubuntu-latest, file: librclone.so }
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-      - name: Go version
-        id: go
-        shell: bash
-        run: echo "version=$(tr -d '[:space:]' < tools/librclone/GO_VERSION)" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-go@v7.0.0
-        with:
-          go-version: ${{ steps.go.outputs.version }}
-          cache-dependency-path: tools/librclone/go.sum
-      - name: Build ${{ matrix.file }} (rclone's librclone, cgo, c-shared)
-        shell: bash
-        working-directory: tools/librclone
-        env:
-          CGO_ENABLED: "1"
-          GOTOOLCHAIN: local
-          GOFLAGS: -mod=readonly
-        run: |
-          go version
-          gcc --version | head -1
-          go build -p 2 -buildmode=c-shared -trimpath -buildvcs=false -ldflags "-s -w -buildid=" -o "${{ matrix.file }}" .
-          rm -f librclone.h
-          ls -l "${{ matrix.file }}"
-          mkdir -p ../../out
-          cp "${{ matrix.file }}" ../../out/
-          # rclone's licence, for the zip
-          cp "$(go list -m -f '{{.Dir}}' github.com/rclone/rclone)/COPYING" ../../out/LICENSE-rclone.txt
-      - uses: actions/upload-artifact@v7.0.2
-        with:
-          name: librclone-${{ matrix.name }}
-          path: out/
-          if-no-files-found: error
-          retention-days: 7
+    uses: ./.github/workflows/librclone.yml
 
   light:
     name: light build (${{ matrix.name }})
@@ -120,24 +78,3 @@ jobs:
           $sub = [BitConverter]::ToUInt16($bytes, $pe + 24 + 68)
           Write-Output "PE subsystem: $sub"
           if ($sub -ne 2) { throw "the exe is not a windows-subsystem program" }
-      - name: Package (zip)
-        if: matrix.name == 'windows'
-        shell: pwsh
-        run: |
-          $d = "lightcraft-cloud-windows-light"
-          New-Item -ItemType Directory $d | Out-Null
-          Copy-Item target\release\lightcraft-cloud-desktop.exe, out\librclone.dll $d
-          Copy-Item out\LICENSE-rclone.txt, LICENSE-MIT, LICENSE-APACHE $d
-          Rename-Item "$d\LICENSE-MIT" LICENSE-MIT.txt
-          Rename-Item "$d\LICENSE-APACHE" LICENSE-APACHE.txt
-          Copy-Item apps\desktop\assets\fonts\OFL-Inter.txt "$d\LICENSE-Inter-OFL.txt"
-          Copy-Item packaging\windows\README.txt $d
-          Compress-Archive -Path "$d\*" -DestinationPath "$d.zip"
-          Get-ChildItem $d, "$d.zip" | Format-Table Name, Length
-      - uses: actions/upload-artifact@v7.0.2
-        if: matrix.name == 'windows'
-        with:
-          path: lightcraft-cloud-windows-light.zip
-          archive: false
-          if-no-files-found: error
-          retention-days: 14
