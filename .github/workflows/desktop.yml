@@ -4,7 +4,7 @@ name: desktop
 # No secrets are used. What users download is built by release.yml (the installer and the Linux archives).
 on:
   push:
-    branches: [main, installer]
+    branches: [main]
   pull_request:
 
 permissions:
