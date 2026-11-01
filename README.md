@@ -1,12 +1,12 @@
 # LightCraft Cloud
 
-Lightroom-style sync for [LightCraft](https://github.com/storytold/lightcraft), using your own cloud storage. Your photos stay on your PC. The cloud is only a go-between.
+Lightroom-style sync for [LightCraft](https://github.com/storytold/lightcraft), using your own cloud storage. Your home PC stays the master copy, and there is no server of ours in between.
 
 What you get:
 
 * Browse your library on your phone and edit photos there. The edits come back to LightCraft on your PC.
 * Keep a full copy of chosen folders on a second PC, edit there too, and import new photos there.
-* Use any cloud storage that [rclone](https://rclone.org) supports: Google Drive, OneDrive, S3, WebDAV, SFTP and more. There is no server of ours.
+* Use any cloud storage that [rclone](https://rclone.org) supports: Google Drive, OneDrive, S3, WebDAV, SFTP and more.
 
 ## How the parts fit
 
@@ -31,7 +31,7 @@ flowchart LR
     APP -->|"originals, one way"| ORIG
     APP --> PREV
     APP --> LIST
-    ORIG -->|"chosen folders"| OAPP
+    ORIG -->|"chosen folders and latest edits"| OAPP
     PREV --> PHONE
     PHONE -->|"edits"| INBOX
     OAPP -->|"edits"| INBOX
@@ -43,7 +43,7 @@ flowchart LR
 
 Three rules hold everywhere:
 
-* Originals only travel one way: from the home PC out to the cloud and your other PCs. Photo files are never changed.
+* The home PC is the master. Originals go out from it to the cloud and your other PCs, and photo files are never changed. A new photo imported on another PC goes to the home PC first, then out like any other.
 * Edits travel back as small XMP sidecar files through the inbox. The home PC merges them into its own sidecars.
 * Deletions spread only from the home PC. Deleting on another PC only affects that PC.
 
@@ -61,7 +61,7 @@ The PC apps are one program, `lightcraft-cloud-desktop`, built two ways. The pho
 
 * **Edits.** Edit a photo in LightCraft on any PC, or on the phone. The edit is saved as an XMP sidecar next to the photo, travels through the cloud and ends up on every device. If two devices changed the same photo, the settings are merged and the newer edit wins any clash.
 * **Imports.** On another PC, import photos in LightCraft into the synced folder, in any folder structure you like. The app keeps your folder structure, sends the photos to the home PC, and they appear in LightCraft there.
-* **Live progress.** The tray icon changes colour while it works, and the Status window shows what is happening and what is waiting.
+* **Live progress.** While it works, the Status window and the tray tooltip show what it is doing, how far along it is and about how long is left, and say so if nothing has moved for a while.
 * **Refresh of LightCraft.** The app tells your running LightCraft about new photos and new edits, so you do not have to run Synchronize Folder. This needs LightCraft to be running and its control port to be on (see Quick start).
 
 ## Quick start
