@@ -23,7 +23,7 @@ Backup-dir files get a `.HHMMSS` suffix before the extension (`photo.153012.jpg`
 `directory_name_encryption = true`). The layout, names and files in this document are what rclone shows *through* the crypt
 remote: a client must open the crypt remote (e.g. `lccrypt:`), never the underlying folder, which holds only encrypted names
 and contents. Nothing in the format changes. Names are longer underneath (a 12-byte name is 26 characters, a 143-byte one is
-231); see "Encrypting the remote" in the README for name and path limits.
+231); see "Encrypting the remote" in [docs/legacy-lc-cloud.md](docs/legacy-lc-cloud.md) for name and path limits.
 
 ## manifest.json
 ```json
