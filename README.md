@@ -132,6 +132,10 @@ A second PC (a laptop, say) keeps a full copy of the folders you choose, in a ph
 home PC. The home PC stays the master: it publishes, merges and deletes; the other PC never writes the cloud library's `originals/` or
 `mobile/` (its edits travel through `inbox/<device>/`, like a phone's, see [FORMAT.md](FORMAT.md)).
 
+In LightCraft on that PC, open Settings, then the Import tab, and under **XMP sidecars** tick **Automatically write changes into XMP
+sidecars** and set **Sidecar names** to `IMG_1.CR3.xmp`. It is off in a fresh LightCraft, and without it edits stay in LightCraft's
+catalog, where this app cannot see them, so they are never sent. Only edits made after it is on are written.
+
 Set it up in Setup: **This is another PC**, pick where the cloud library is, the folder on this PC for the photos, and tick the
 folders to keep (the list is read from the cloud library, with each folder's photos and size). In the config:
 

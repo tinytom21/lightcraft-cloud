@@ -31,6 +31,11 @@ Command line (the output appears in the terminal; the prompt may come back first
   lightcraft-cloud-desktop.exe sync --once
   lightcraft-cloud-desktop.exe run --headless
 
+Edits only travel if LightCraft saves them as sidecar files. In LightCraft open
+Settings, then the Import tab, and under XMP sidecars tick "Automatically write
+changes into XMP sidecars" and set Sidecar names to IMG_1.CR3.xmp. It is off in a
+fresh LightCraft, and only edits made after it is on are written.
+
 Photos downloaded from the home PC are added to LightCraft through its control
 port. Start LightCraft with the port on, once: either a shortcut with
   "...\lightcraft.exe" --control 7980
