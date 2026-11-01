@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/sync", "apps/desktop"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
@@ -46,6 +46,9 @@ eframe = { version = "0.37", default-features = false, features = ["default_font
 raw-window-handle = "0.6"
 egui_kittest = "0.37"
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+
+# The update check and download (GitHub, over TLS): ureq with rustls, in the desktop app only (the sync crate, which the phone app uses, has no HTTP client).
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 # Windows: a handful of Win32 calls (free disk space, a rename that cannot replace, the tray's message pump, the per-user Run key).
 windows-sys = "0.61"

@@ -9,6 +9,7 @@
 //! * [`lightcraft`], [`pending`], [`refresh`]: telling a running LightCraft to add the photos that were adopted, and to read the
 //!   sidecars that were written (its control channel, and the durable lists);
 //! * [`appstate`], [`config`], [`settings`], [`autostart`], [`instance`], [`backup`], [`notifier`]: what it keeps and uses;
+//! * [`update`]: the check for a newer version on GitHub and, on Windows, the one-click update;
 //! * [`ui`], [`tray`], [`app`]: the windows (egui, in a process of their own), the tray icon, and what ties them together.
 
 pub mod app;
@@ -30,6 +31,7 @@ pub mod service;
 pub mod settings;
 pub mod tray;
 pub mod ui;
+pub mod update;
 pub mod watcher;
 #[cfg(windows)]
 pub mod winsys;

@@ -60,6 +60,7 @@ pub struct Form {
     pub storage: Storage,
     pub previews_only: bool,
     pub notifications: bool,
+    pub check_for_updates: bool,
     pub start_at_login: bool,
     /// The settings the form does not show stay as they were (thumbnail size, `max_delete`, extra keys...).
     base: File,
@@ -81,6 +82,7 @@ impl Form {
             },
             previews_only: file.previews_only,
             notifications: file.notify,
+            check_for_updates: file.check_for_updates,
             start_at_login,
             base: file.clone(),
             login_before: start_at_login,
@@ -137,6 +139,7 @@ impl Form {
         f.remote = Some(self.storage.spec());
         f.previews_only = self.previews_only;
         f.notify = self.notifications;
+        f.check_for_updates = self.check_for_updates;
         f
     }
 
@@ -298,6 +301,26 @@ mod tests {
         f2.save(&e, None).unwrap();
         let c = Config::load(Some(&e.config_path)).unwrap();
         assert_eq!((c.file.thumb_px, c.file.max_delete, c.file.notify), (256, 7, false));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn checking_for_updates_is_on_by_default_and_the_checkbox_is_saved_and_other_keys_are_kept() {
+        assert!(File::default().check_for_updates);
+        let none: File = toml::from_str("").unwrap();
+        assert!(none.check_for_updates, "a config from before the key existed checks");
+        let d = temp("upd");
+        let e = env(&d);
+        let mut f = Form::first_run(false);
+        assert!(f.check_for_updates);
+        f.check_for_updates = false;
+        assert!(!f.to_file().check_for_updates);
+        f.to_file().save(&e.config_path).unwrap();
+        let text = std::fs::read_to_string(&e.config_path).unwrap();
+        assert!(text.contains("check_for_updates = false"), "{text}");
+        let back: File = toml::from_str(&text).unwrap();
+        assert!(!back.check_for_updates);
+        assert!(!Form::from_file(&back, false).check_for_updates);
         let _ = std::fs::remove_dir_all(&d);
     }
 

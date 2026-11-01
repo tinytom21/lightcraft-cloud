@@ -76,6 +76,9 @@ pub struct File {
     /// LightCraft writes its edits into sidecars itself. Needs the control port (`lightcraft_control_port`). Off: nothing is queued
     /// or sent for this; the warning that LightCraft is not saving sidecars still shows.
     pub lightcraft_refresh_edits: bool,
+    /// Look on GitHub, shortly after the start and then once a day, for a newer release of this app (see [`crate::update`]). Only
+    /// a note in the tray and Status; nothing is installed unless the user clicks.
+    pub check_for_updates: bool,
 }
 
 impl Default for File {
@@ -100,6 +103,7 @@ impl Default for File {
             photo_backup: "restic".into(),
             lightcraft_control_port: crate::lightcraft::DEFAULT_PORT,
             lightcraft_refresh_edits: true,
+            check_for_updates: true,
         }
     }
 }
@@ -125,6 +129,7 @@ const KNOWN_KEYS: &[&str] = &[
     "photo_backup",
     "lightcraft_control_port",
     "lightcraft_refresh_edits",
+    "check_for_updates",
 ];
 
 impl File {

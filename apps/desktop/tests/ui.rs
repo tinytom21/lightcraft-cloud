@@ -22,7 +22,7 @@ fn now() -> SystemTime {
 }
 
 fn status_harness<'a>(s: Option<AppStatus>, running: bool) -> Harness<'a, Option<AppStatus>> {
-    Harness::new_ui_state(move |ui, s: &mut Option<AppStatus>| status::show(ui, &StatusView { status: s.as_ref(), running, now: now() }), s)
+    Harness::new_ui_state(move |ui, s: &mut Option<AppStatus>| status::show(ui, &StatusView { status: s.as_ref(), running, now: now(), update: None }), s)
 }
 
 fn busy_status() -> AppStatus {

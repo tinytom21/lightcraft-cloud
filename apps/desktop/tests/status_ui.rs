@@ -16,7 +16,7 @@ fn now() -> SystemTime {
 }
 
 fn status_harness<'a>(s: AppStatus) -> Harness<'a, AppStatus> {
-    Harness::new_ui_state(move |ui, s: &mut AppStatus| status::show(ui, &StatusView { status: Some(s), running: true, now: now() }), s)
+    Harness::new_ui_state(move |ui, s: &mut AppStatus| status::show(ui, &StatusView { status: Some(s), running: true, now: now(), update: None }), s)
 }
 
 fn settled_other() -> AppStatus {
@@ -137,7 +137,7 @@ fn refused_photos_keep_the_state_off_green_show_their_reasons_and_offer_two_ways
     let chosen = std::cell::Cell::new(None);
     let mut h = Harness::new_ui_state(
         |ui, s: &mut AppStatus| {
-            if let Some(a) = show_with_actions(ui, &StatusView { status: Some(s), running: true, now: now() }, &refused) {
+            if let Some(a) = show_with_actions(ui, &StatusView { status: Some(s), running: true, now: now(), update: None }, &refused) {
                 chosen.set(Some(a));
             }
         },
@@ -172,7 +172,7 @@ fn photos_that_were_here_at_the_start_are_counted_with_a_button_to_send_them() {
     let chosen = std::cell::Cell::new(None);
     let mut h = Harness::new_ui_state(
         |ui, s: &mut AppStatus| {
-            if let Some(a) = show_with_actions(ui, &StatusView { status: Some(s), running: true, now: now() }, &[]) {
+            if let Some(a) = show_with_actions(ui, &StatusView { status: Some(s), running: true, now: now(), update: None }, &[]) {
                 chosen.set(Some(a));
             }
         },
@@ -307,7 +307,7 @@ fn nothing_about_progress_shows_when_idle_or_when_the_app_is_not_running() {
     assert!(h.query_by_label_contains("Progress").is_none() && h.query_by_label_contains("Getting started").is_none());
     // a status left behind by an app that was stopped mid-job must not claim a time
     let s = syncing(Some(download(34, 261, 1, 2)));
-    let mut h = Harness::new_ui_state(|ui, s: &mut AppStatus| status::show(ui, &StatusView { status: Some(s), running: false, now: now() }), s);
+    let mut h = Harness::new_ui_state(|ui, s: &mut AppStatus| status::show(ui, &StatusView { status: Some(s), running: false, now: now(), update: None }), s);
     h.run();
     assert!(h.query_by_label_contains("Downloading 34").is_none() && h.query_by_label("Progress 50%").is_none());
     h.get_by_label_contains("not running");
@@ -340,4 +340,109 @@ fn the_tray_tooltip_is_the_same_line_and_fits_where_tooltips_are_short() {
     let long = syncing(Some(p)).tooltip(now());
     assert!(long.chars().count() <= lightcraft_cloud_desktop::appstate::TOOLTIP_MAX, "{long}");
     assert!(long.starts_with("LightCraft Cloud: Downloading 34 of 261 photos") && long.ends_with('…'), "{long}");
+}
+
+// ------------------------------------------------------------------ a newer version of the app
+
+mod update_row {
+    use super::*;
+    use lightcraft_cloud_desktop::ui::status::{StatusAction, show_with_actions};
+    use lightcraft_cloud_desktop::update::{Phase, UpdateView};
+
+    fn view(phase: Phase, can_install: bool) -> UpdateView {
+        UpdateView { version: "0.3.0".into(), page: "https://github.com/tinytom21/lightcraft-cloud/releases/tag/v0.3.0".into(), can_install, phase }
+    }
+
+    fn harness<'a>(u: &'a UpdateView, running: bool, chosen: &'a std::cell::Cell<Option<StatusAction>>) -> Harness<'a, AppStatus> {
+        Harness::new_ui_state(
+            move |ui, s: &mut AppStatus| {
+                if let Some(a) = show_with_actions(ui, &StatusView { status: Some(s), running, now: now(), update: Some(u) }, &[]) {
+                    chosen.set(Some(a));
+                }
+            },
+            settled_other(),
+        )
+    }
+
+    #[test]
+    fn a_newer_version_shows_a_row_with_an_update_button_and_the_release_notes_and_the_click_is_reported() {
+        let u = view(Phase::Idle, true);
+        let chosen = std::cell::Cell::new(None);
+        let mut h = harness(&u, true, &chosen);
+        h.run();
+        h.get_by_label("New version");
+        h.get_by_label("LightCraft Cloud 0.3.0 is available");
+        h.get_by_label("What's new");
+        h.get_by_label("Up to date"); // (an update waiting says nothing about the sync's health)
+        assert_eq!(chosen.take(), None);
+        h.get_by_label("Update now").click();
+        h.run();
+        assert_eq!(chosen.take(), Some(StatusAction::UpdateNow));
+    }
+
+    #[test]
+    fn where_the_app_cannot_install_there_is_a_link_and_no_button() {
+        let u = view(Phase::Idle, false);
+        let chosen = std::cell::Cell::new(None);
+        let mut h = harness(&u, true, &chosen);
+        h.run();
+        h.get_by_label("LightCraft Cloud 0.3.0 is available");
+        h.get_by_label("What's new");
+        assert!(h.query_by_label("Update now").is_none());
+        h.get_by_label_contains("install it yourself");
+    }
+
+    #[test]
+    fn while_it_downloads_the_bar_and_the_size_show_and_the_button_is_gone() {
+        let u = view(Phase::Downloading { done: 3 << 20, total: Some(6 << 20) }, true);
+        let chosen = std::cell::Cell::new(None);
+        let mut h = harness(&u, true, &chosen);
+        h.run();
+        h.get_by_label("Downloading version 0.3.0…");
+        h.get_by_label("Progress 50%");
+        h.get_by_label_contains("3.0 MiB of 6.0 MiB");
+        assert!(h.query_by_label("Update now").is_none());
+        // a size the server did not say: the bar only moves
+        let u = view(Phase::Downloading { done: 1 << 20, total: None }, true);
+        let mut h = harness(&u, true, &chosen);
+        h.run();
+        h.get_by_label("Progress, working");
+    }
+
+    #[test]
+    fn waiting_for_a_sync_checking_installing_and_a_failure_each_say_so_in_plain_words() {
+        let chosen = std::cell::Cell::new(None);
+        let u = view(Phase::Waiting, true);
+        let mut h = harness(&u, true, &chosen);
+        h.run();
+        h.get_by_label("Updating when this sync finishes");
+        let u = view(Phase::Verifying, true);
+        let mut h = harness(&u, true, &chosen);
+        h.run();
+        h.get_by_label("Checking the download of version 0.3.0…");
+        let u = view(Phase::Installing, true);
+        let mut h = harness(&u, true, &chosen);
+        h.run();
+        h.get_by_label("Installing version 0.3.0…");
+        // a failure is said, with the way to try again
+        let u = view(Phase::Failed { message: "The downloaded installer did not match its checksum, so it was not run. Nothing was changed; the current version keeps working.".into() }, true);
+        let mut h = harness(&u, true, &chosen);
+        h.run();
+        h.get_by_label_contains("did not match its checksum");
+        h.get_by_label("Update now").click();
+        h.run();
+        assert_eq!(chosen.take(), Some(StatusAction::UpdateNow));
+    }
+
+    #[test]
+    fn nothing_is_shown_when_the_app_is_not_running_or_there_is_no_newer_version() {
+        let u = view(Phase::Idle, true);
+        let chosen = std::cell::Cell::new(None);
+        let mut h = harness(&u, false, &chosen);
+        h.run();
+        assert!(h.query_by_label("Update now").is_none() && h.query_by_label("New version").is_none());
+        let mut h = status_harness(settled_other()); // (update: None)
+        h.run();
+        assert!(h.query_by_label("Update now").is_none() && h.query_by_label("New version").is_none());
+    }
 }

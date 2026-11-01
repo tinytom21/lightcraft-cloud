@@ -16,6 +16,7 @@ use crate::ui::settings_panel::SettingsPanel;
 use crate::ui::status::{self, StatusAction, StatusView};
 use lightcraft_cloud_client::other::ImportQueue;
 use crate::ui::theme;
+use crate::update::{self, UpdateState, UpdateView};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -57,6 +58,8 @@ struct Window {
     state_dir: PathBuf,
     status: Option<AppStatus>,
     running: bool,
+    /// A newer version of the app, as `update.json` says (see [`crate::update`]).
+    update: Option<UpdateView>,
     /// Without a config only Setup is offered.
     setup_only: bool,
 }
@@ -65,6 +68,7 @@ impl Window {
     fn refresh(&mut self) {
         self.status = AppStatus::load(&self.state_dir);
         self.running = InstanceLock::is_held(&self.state_dir);
+        self.update = UpdateState::load(&self.state_dir).view(&update::current_version());
     }
 }
 
@@ -89,7 +93,7 @@ impl eframe::App for Window {
             Tab::Status if !self.setup_only => {
                 let queue = ImportQueue::new(&self.state_dir);
                 let refused = status::refused_lines(&queue.refused());
-                match status::show_with_actions(ui, &StatusView { status: self.status.as_ref(), running: self.running, now: SystemTime::now() }, &refused) {
+                match status::show_with_actions(ui, &StatusView { status: self.status.as_ref(), running: self.running, now: SystemTime::now(), update: self.update.as_ref() }, &refused) {
                     // (the app picks the change up from the queue folder; the photos stay where they are)
                     Some(StatusAction::TryAgain) => {
                         queue.retry_refused();
@@ -98,6 +102,14 @@ impl eframe::App for Window {
                         queue.keep_refused();
                     }
                     Some(StatusAction::SendHeld) => queue.request_send_held(),
+                    // (the app does the work: it downloads, waits for a quiet moment and runs the installer)
+                    Some(StatusAction::UpdateNow) => {
+                        if let Some(u) = &self.update
+                            && let Err(e) = update::request_install(&self.state_dir, &u.version)
+                        {
+                            log::warn!("cannot ask for the update: {e}");
+                        }
+                    }
                     None => {}
                 }
             }
@@ -143,6 +155,7 @@ pub fn run_window(tab: Tab, config_path: Option<PathBuf>) -> Result<(), String> 
         state_dir,
         status: None,
         running: false,
+        update: None,
         setup_only,
     };
     win.refresh();

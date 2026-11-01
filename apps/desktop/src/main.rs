@@ -47,6 +47,9 @@ USAGE:
   lightcraft-cloud-desktop purge-history [--days N] [--config FILE]
       Delete cloud history/inbox-done day folders older than N days (default device_history_days = 30), only if the
       newest backup (photo_backup, restic) is at most 48 hours old.
+  lightcraft-cloud-desktop quit [--wait SECONDS] [--config FILE]
+      Ask the running app to stop, and wait for it (60 seconds by default). A sync that is running ends first. The installer uses this.
+      Exit code 0: the app has stopped; 10: no app was running; 11: it is still running; 12: it did not answer (an older version).
   lightcraft-cloud-desktop --version | --help
 
 On another PC (config: role = other; the light build is always one) `sync --once` makes one pass: it downloads the chosen
@@ -64,11 +67,12 @@ struct Args {
     dry: bool,
     headless: bool,
     days: Option<u32>,
+    wait: Option<u64>,
     config: Option<PathBuf>,
 }
 
 fn parse(args: &[String]) -> std::result::Result<Args, String> {
-    let mut a = Args { cmd: String::new(), sub: None, once: false, dry: false, headless: false, days: None, config: None };
+    let mut a = Args { cmd: String::new(), sub: None, once: false, dry: false, headless: false, days: None, wait: None, config: None };
     let mut it = args.iter();
     while let Some(x) = it.next() {
         match x.as_str() {
@@ -76,6 +80,7 @@ fn parse(args: &[String]) -> std::result::Result<Args, String> {
             "--dry-run" => a.dry = true,
             "--headless" => a.headless = true,
             "--days" => a.days = Some(it.next().and_then(|d| d.parse().ok()).ok_or("--days needs a number")?),
+            "--wait" => a.wait = Some(it.next().and_then(|d| d.parse().ok()).ok_or("--wait needs a number of seconds")?),
             "--config" => a.config = Some(PathBuf::from(it.next().ok_or("--config needs a file")?)),
             s if s.starts_with("--config=") => a.config = Some(PathBuf::from(&s["--config=".len()..])),
             s if s.starts_with('-') => return Err(format!("unknown option {s}")),
@@ -115,6 +120,9 @@ fn main() -> ExitCode {
             return ExitCode::from(64);
         }
     };
+    if a.cmd == "quit" {
+        return quit(&a);
+    }
     match run(a) {
         Ok(()) => ExitCode::SUCCESS,
         Err(Failure::Refused(m)) => {
@@ -123,6 +131,42 @@ fn main() -> ExitCode {
         }
         Err(Failure::Error(m)) => {
             println!("{} ERROR: {m}", utc_iso(SystemTime::now()));
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// `quit`: stop the running app (see `app::request_quit`). Its own exit codes, which the installer reads.
+fn quit(a: &Args) -> ExitCode {
+    use lightcraft_cloud_desktop::app::{QuitOutcome, request_quit, state_dir_for};
+    let state = Config::resolve_path(a.config.as_deref()).and_then(|c| state_dir_for(&c));
+    let state = match state {
+        Ok(s) => s,
+        Err(e) => {
+            println!("{} ERROR: {e}", utc_iso(SystemTime::now()));
+            return ExitCode::from(1);
+        }
+    };
+    let wait = std::time::Duration::from_secs(a.wait.unwrap_or(60));
+    match request_quit(&state, std::time::Duration::from_secs(8), wait) {
+        Ok(QuitOutcome::Stopped) => {
+            println!("LightCraft Cloud has stopped.");
+            ExitCode::SUCCESS
+        }
+        Ok(QuitOutcome::NotRunning) => {
+            println!("LightCraft Cloud is not running.");
+            ExitCode::from(10)
+        }
+        Ok(QuitOutcome::StillRunning) => {
+            println!("LightCraft Cloud is still running (it ends when its current job does).");
+            ExitCode::from(11)
+        }
+        Ok(QuitOutcome::NotAnswered) => {
+            println!("LightCraft Cloud is running but did not answer (an older version).");
+            ExitCode::from(12)
+        }
+        Err(e) => {
+            println!("{} ERROR: {e}", utc_iso(SystemTime::now()));
             ExitCode::from(1)
         }
     }

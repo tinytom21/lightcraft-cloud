@@ -12,6 +12,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, SystemTime};
 
@@ -24,6 +25,7 @@ use crate::instance::InstanceLock;
 use crate::notifier::{DesktopNotifier, NoNotifier, Notifier};
 use crate::scheduler::Timing;
 use crate::service::{Command, Service, run_loop};
+use crate::update::{self, UpdateState, Updater};
 use crate::watcher::FolderWatcher;
 use crate::worker::{OtherWorker, RoleWorker, log_path};
 
@@ -42,6 +44,8 @@ pub enum Ended {
 
 enum Msg {
     Status(Box<AppStatus>),
+    /// The update state changed (see [`crate::update`]).
+    Update(Box<UpdateState>),
     #[cfg(any(target_os = "linux", windows))]
     Menu(tray_icon::menu::MenuId),
     EngineStopped,
@@ -54,6 +58,58 @@ pub fn state_dir_for(config_path: &Path) -> Result<PathBuf, String> {
         Some(d) => config::expand(&d),
         None => config::default_state_dir(),
     }
+}
+
+/// `<state>/quit-request`: how `lightcraft-cloud-desktop quit` asks the running app to stop (the installer uses it). The app checks for it
+/// every two seconds, deletes it, and stops after the job it is running (see [`request_quit`]).
+pub fn quit_request_path(state_dir: &Path) -> PathBuf {
+    state_dir.join("quit-request")
+}
+
+/// What asking the app to quit came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuitOutcome {
+    /// No app was running.
+    NotRunning,
+    /// It was running and has ended.
+    Stopped,
+    /// It took the request but is still running after the wait (a long sync: it ends when the sync does).
+    StillRunning,
+    /// An app is running that did not take the request: a version from before `quit` existed.
+    NotAnswered,
+}
+
+/// Ask the app running on `state_dir` to quit, and wait for it. It takes the request within a few seconds (`ack_wait`) unless it is too
+/// old to know the request; then it finishes the job it is running, if any (a sync cannot be interrupted politely), and ends within
+/// `exit_wait` or not. Nothing is touched when no app runs.
+pub fn request_quit(state_dir: &Path, ack_wait: Duration, exit_wait: Duration) -> Result<QuitOutcome, String> {
+    let file = quit_request_path(state_dir);
+    if !InstanceLock::is_held(state_dir) {
+        let _ = std::fs::remove_file(&file);
+        return Ok(QuitOutcome::NotRunning);
+    }
+    std::fs::write(&file, b"quit\n").map_err(|e| format!("{}: {e}", file.display()))?;
+    let poll = Duration::from_millis(100);
+    let start = std::time::Instant::now();
+    while file.exists() {
+        if !InstanceLock::is_held(state_dir) {
+            let _ = std::fs::remove_file(&file);
+            return Ok(QuitOutcome::Stopped);
+        }
+        if start.elapsed() >= ack_wait {
+            let _ = std::fs::remove_file(&file); // (an old app never reads it; a new one must not find it later)
+            return Ok(QuitOutcome::NotAnswered);
+        }
+        std::thread::sleep(poll);
+    }
+    let start = std::time::Instant::now();
+    while InstanceLock::is_held(state_dir) {
+        if start.elapsed() >= exit_wait {
+            return Ok(QuitOutcome::StillRunning);
+        }
+        std::thread::sleep(poll);
+    }
+    Ok(QuitOutcome::Stopped)
 }
 
 fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
@@ -79,9 +135,16 @@ fn spawn_config_thread(config_path: PathBuf, cmd: Sender<Command>, stop: Receive
         let mut first = true;
         // (the Status window changes the queue from another process: its queue folder changing wakes the upload job)
         let queue_dir = state_dir_for(&config_path).ok().map(|d| d.join(lightcraft_cloud_client::other::OUT_DIR));
+        let quit_file = state_dir_for(&config_path).ok().map(|d| quit_request_path(&d));
         let queue_mtime = || queue_dir.as_deref().and_then(|d| std::fs::metadata(d).ok()).and_then(|m| m.modified().ok());
         let mut queue_stamp = queue_mtime();
         loop {
+            if let Some(q) = quit_file.as_deref()
+                && q.exists()
+                && std::fs::remove_file(q).is_ok()
+            {
+                let _ = cmd.send(Command::Quit);
+            }
             let now = queue_mtime();
             if now != queue_stamp {
                 queue_stamp = now;
@@ -113,6 +176,27 @@ fn spawn_config_thread(config_path: PathBuf, cmd: Sender<Command>, stop: Receive
             }
         }
     })
+}
+
+/// The check for a newer version, and the update itself after a click, on a thread of its own: a download must not hold up anything else.
+/// It never joins at the end (an update that is downloading when the app quits is simply abandoned; its half file is cleaned up at the next start).
+fn spawn_update_thread(config_path: PathBuf, state_dir: PathBuf, busy: Arc<AtomicBool>, msg_tx: Sender<Msg>, headless: bool, stop: Arc<AtomicBool>) {
+    std::thread::spawn(move || {
+        let notifier: Box<dyn Notifier> = if headless { Box::new(NoNotifier) } else { Box::new(DesktopNotifier) };
+        let log_dir = state_dir.clone();
+        let mut updater = Updater::new(&state_dir, SystemTime::now(), Box::new(move || !busy.load(Ordering::SeqCst)), notifier, Box::new(move |m| append_log(&log_dir, m)));
+        let mut sent: Option<UpdateState> = None;
+        while !stop.load(Ordering::SeqCst) {
+            // (a config that cannot be read is the defaults: checking on)
+            let file: File = std::fs::read_to_string(&config_path).ok().and_then(|t| toml::from_str(&t).ok()).unwrap_or_default();
+            updater.tick(SystemTime::now(), update::Options { enabled: file.check_for_updates, notify: file.notify });
+            if sent.as_ref() != Some(updater.state()) {
+                sent = Some(updater.state().clone());
+                let _ = msg_tx.send(Msg::Update(Box::new(updater.state().clone())));
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    });
 }
 
 /// The one window the tray opens (it has a Status and a Settings tab). A click while it is open writes the tab's name to its
@@ -190,15 +274,19 @@ pub fn run(opts: RunOptions) -> Result<Ended, String> {
     let state_dir = state_dir_for(&config_path)?;
     let Some(_instance) = InstanceLock::acquire(&state_dir)? else { return Ok(Ended::AlreadyRunning) };
     append_log(&state_dir, "app started");
+    let _ = std::fs::remove_file(quit_request_path(&state_dir)); // (a request from before this start is not for this run)
 
     let (cmd_tx, cmd_rx) = channel::<Command>();
     let (msg_tx, msg_rx) = channel::<Msg>();
     let (stop_tx, stop_rx) = channel::<()>();
 
     let config_thread = spawn_config_thread(config_path.clone(), cmd_tx.clone(), stop_rx);
+    let busy = Arc::new(AtomicBool::new(false));
+    let stop_updates = Arc::new(AtomicBool::new(false));
+    spawn_update_thread(config_path.clone(), state_dir.clone(), busy.clone(), msg_tx.clone(), opts.headless, stop_updates.clone());
 
     let engine = {
-        let (config_path, state_dir, msg_tx, headless) = (config_path.clone(), state_dir.clone(), msg_tx.clone(), opts.headless);
+        let (config_path, state_dir, msg_tx, headless, busy) = (config_path.clone(), state_dir.clone(), msg_tx.clone(), opts.headless, busy.clone());
         std::thread::spawn(move || {
             let clock: Arc<dyn crate::clock::Clock> = Arc::new(SystemClock);
             let worker = make_worker(config_path, clock.clone());
@@ -212,6 +300,7 @@ pub fn run(opts: RunOptions) -> Result<Ended, String> {
                 state_dir,
                 Timing::default(),
                 Box::new(move |s| {
+                    busy.store(s.activity.is_busy(), Ordering::SeqCst);
                     let _ = sink_tx.send(Msg::Status(Box::new(s.clone())));
                 }),
                 Box::new(move |m| append_log(&log_dir, m)),
@@ -224,6 +313,7 @@ pub fn run(opts: RunOptions) -> Result<Ended, String> {
     let result = if opts.headless { main_loop_headless(&msg_rx) } else { main_loop_tray(&opts, &config_path, &state_dir, &cmd_tx, &msg_tx, &msg_rx) };
 
     let _ = cmd_tx.send(Command::Quit);
+    stop_updates.store(true, Ordering::SeqCst);
     let _ = stop_tx.send(());
     let _ = engine.join();
     let _ = config_thread.join();
@@ -290,8 +380,15 @@ fn main_loop_tray(
         windows.open("settings"); // first run: Setup instead of syncing
     }
     let mut paused = initial.paused;
+    let mut update = UpdateState::default();
     while let Some(m) = next_msg(msg_rx) {
         match m {
+            Msg::Update(u) => {
+                update = *u;
+                if let Some(t) = tray.as_mut() {
+                    t.set_update(update_menu_label(&update).as_deref());
+                }
+            }
             Msg::Status(s) => {
                 paused = s.paused;
                 if let Some(t) = tray.as_mut() {
@@ -307,6 +404,17 @@ fn main_loop_tray(
                 }
                 Some(MenuAction::Status) => windows.open("status"),
                 Some(MenuAction::Settings) => windows.open("settings"),
+                Some(MenuAction::Update) => {
+                    if let Some(view) = update.view(&update::current_version()) {
+                        if view.can_install {
+                            if let Err(e) = update::request_install(state_dir, &view.version) {
+                                append_log(state_dir, &format!("update: {e}"));
+                            }
+                        } else {
+                            open_page(&view.page);
+                        }
+                    }
+                }
                 Some(MenuAction::Quit) => break,
                 None => {}
             },
@@ -315,6 +423,28 @@ fn main_loop_tray(
     }
     windows.close_all();
     Ok(())
+}
+
+/// The tray menu's entry about a newer version: None when there is none.
+fn update_menu_label(state: &UpdateState) -> Option<String> {
+    use crate::update::Phase;
+    let v = state.view(&update::current_version())?;
+    Some(match (&v.phase, v.can_install) {
+        (Phase::Idle | Phase::Failed { .. }, true) => format!("Update to v{}", v.version),
+        (Phase::Waiting, _) => format!("Updating to v{} when the sync ends", v.version),
+        (_, true) => format!("Updating to v{}…", v.version),
+        (_, false) => format!("Version {} is available: open the page", v.version),
+    })
+}
+
+/// Open a web page in the user's browser (Linux; Windows updates itself and has no use for it).
+fn open_page(url: &str) {
+    #[cfg(not(windows))]
+    if let Err(e) = std::process::Command::new("xdg-open").arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+        log::warn!("cannot open {url}: {e}");
+    }
+    #[cfg(windows)]
+    let _ = url;
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
@@ -365,6 +495,57 @@ mod tests {
             std::thread::sleep(Duration::from_millis(25));
         }
         std::fs::read_to_string(log).unwrap_or_default().replace("\r\n", "\n")
+    }
+
+    /// A stand-in for the running app: holds the instance lock, takes a quit request (or not), and ends after `linger`.
+    fn fake_app(dir: &Path, answers: bool, linger: Duration) -> std::thread::JoinHandle<()> {
+        let lock = InstanceLock::acquire(dir).unwrap().expect("the lock is free");
+        let file = quit_request_path(dir);
+        std::thread::spawn(move || {
+            let _lock = lock;
+            let start = std::time::Instant::now();
+            loop {
+                if answers && file.exists() {
+                    let _ = std::fs::remove_file(&file);
+                    std::thread::sleep(linger);
+                    return;
+                }
+                if start.elapsed() > Duration::from_secs(20) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        })
+    }
+
+    #[test]
+    fn quit_asks_the_running_app_and_waits_for_it_and_says_what_happened() {
+        let _g = crate::instance::SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let d = std::env::temp_dir().join(format!("lc-quit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let (ack, exit) = (Duration::from_secs(2), Duration::from_secs(5));
+        // no app: nothing happens, and no request is left behind for the next one
+        std::fs::write(quit_request_path(&d), "old").unwrap();
+        assert_eq!(request_quit(&d, ack, exit), Ok(QuitOutcome::NotRunning));
+        assert!(!quit_request_path(&d).exists());
+        // an app that takes the request and ends
+        let app = fake_app(&d, true, Duration::from_millis(300));
+        assert_eq!(request_quit(&d, ack, exit), Ok(QuitOutcome::Stopped));
+        assert!(!InstanceLock::is_held(&d));
+        app.join().unwrap();
+        // an app in the middle of a long job: it took the request, and ends later than we wait
+        let app = fake_app(&d, true, Duration::from_millis(1500));
+        assert_eq!(request_quit(&d, ack, Duration::from_millis(300)), Ok(QuitOutcome::StillRunning));
+        assert!(!quit_request_path(&d).exists());
+        app.join().unwrap(); // (it ends)
+        assert!(!InstanceLock::is_held(&d));
+        // an older app that never reads the request: not answered, and the request is withdrawn
+        let app = fake_app(&d, false, Duration::ZERO);
+        assert_eq!(request_quit(&d, Duration::from_millis(400), exit), Ok(QuitOutcome::NotAnswered));
+        assert!(!quit_request_path(&d).exists(), "an app started later must not find it");
+        drop(app); // (the stand-in ends on its own after twenty seconds; the folder goes now)
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

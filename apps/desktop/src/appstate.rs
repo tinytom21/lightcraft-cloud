@@ -16,7 +16,7 @@ use lightcraft_cloud_client::{Progress, describe, to_ms};
 
 use crate::clock::parse_rfc3339;
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }

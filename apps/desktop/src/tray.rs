@@ -1,5 +1,5 @@
 //! The tray icon. Five pictures: idle (green), syncing (blue), amber (phone edits or anything else waiting, offline), paused (grey), red
-//! (a failure or a problem); uploading shares the syncing picture. Idle only when truly settled. Menu: Sync now, Pause/Resume, Status…,
+//! (a failure or a problem); uploading shares the syncing picture. Idle only when truly settled. Menu: [Update to vX, while a newer version exists,] Sync now, Pause/Resume, Status…,
 //! Settings…, Quit. The icons are generated here (a disc with a lens ring), so there are no image files.
 //!
 //! On Linux the icon is a StatusNotifierItem over D-Bus (`tray-icon`'s `ksni` backend: no GTK and no libappindicator to
@@ -17,6 +17,8 @@ pub enum MenuAction {
     PauseResume,
     Status,
     Settings,
+    /// Install the newer version (Windows) or open its page.
+    Update,
     Quit,
 }
 
@@ -121,6 +123,9 @@ mod native {
 
     pub struct Tray {
         icon: TrayIcon,
+        menu: Menu,
+        /// The entry about a newer version, while there is one.
+        update: Option<MenuItem>,
         pause: MenuItem,
         ids: Vec<(MenuId, MenuAction)>,
         /// What the icon and the menu show now: the state, Paused, and the tooltip (it carries the running job's line).
@@ -149,7 +154,7 @@ mod native {
             menu.append(&PredefinedMenuItem::separator()).map_err(e)?;
             menu.append(&quit).map_err(e)?;
             let icon = TrayIconBuilder::new()
-                .with_menu(Box::new(menu))
+                .with_menu(Box::new(menu.clone()))
                 .with_icon(icon_of(state)?)
                 .with_tooltip(status.tooltip(std::time::SystemTime::now()))
                 .with_title("LightCraft Cloud")
@@ -162,10 +167,31 @@ mod native {
                 (se.id().clone(), MenuAction::Settings),
                 (quit.id().clone(), MenuAction::Quit),
             ];
-            Ok(Tray { icon, pause, ids, shown: Some((state, status.paused, status.tooltip(std::time::SystemTime::now()))) })
+            Ok(Tray { icon, menu, update: None, pause, ids, shown: Some((state, status.paused, status.tooltip(std::time::SystemTime::now()))) })
+        }
+
+        /// Show (or change, or remove) the menu entry about a newer version; `None` removes it.
+        pub fn set_update(&mut self, label: Option<&str>) {
+            match (label, &self.update) {
+                (Some(l), Some(item)) => item.set_text(l),
+                (Some(l), None) => {
+                    let item = MenuItem::new(l, true, None);
+                    if self.menu.insert(&item, 0).is_ok() {
+                        self.update = Some(item);
+                    }
+                }
+                (None, Some(item)) => {
+                    let _ = self.menu.remove(item);
+                    self.update = None;
+                }
+                (None, None) => {}
+            }
         }
 
         pub fn action(&self, id: &MenuId) -> Option<MenuAction> {
+            if self.update.as_ref().is_some_and(|i| i.id() == id) {
+                return Some(MenuAction::Update);
+            }
             self.ids.iter().find(|(i, _)| i == id).map(|(_, a)| *a)
         }
 

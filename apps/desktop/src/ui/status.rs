@@ -6,6 +6,7 @@ use egui::{Color32, CornerRadius, Label, Margin, Rect, RichText, Role, Sense, St
 use lightcraft_cloud_client::{Progress, Stage, Summary, describe, to_ms};
 
 use crate::appstate::{Activity, AppStatus, Notice, OtherView, Tone, relative, upcoming};
+use crate::update::{Phase, UpdateView};
 use crate::ui::settings_panel::human_size;
 use crate::ui::theme;
 
@@ -16,6 +17,9 @@ pub struct StatusView<'a> {
     /// Whether the app is running (its instance lock is held).
     pub running: bool,
     pub now: SystemTime,
+    /// A newer version of the app exists (None: none, or looking is switched off). Shown only while the app runs: it is the app that
+    /// downloads.
+    pub update: Option<&'a UpdateView>,
 }
 
 const LABEL_W: f32 = 150.0;
@@ -188,7 +192,7 @@ pub fn lightcraft_row(s: &AppStatus) -> Option<(String, Option<String>)> {
     }
     let hint = (s.lightcraft_reachable == Some(false)).then(|| {
         format!(
-            "LightCraft is not answering on port {}. Open LightCraft with its control port on (see the README); what waits is sent when it answers.",
+            "LightCraft is not answering on port {}. Open LightCraft with its control port on (see README.txt in the app's folder, or Quick start in the README on GitHub); what waits is sent when it answers.",
             s.lightcraft_port
         )
     });
@@ -251,6 +255,8 @@ pub enum StatusAction {
     KeepHere,
     /// Queue the photos that were in the folder at the start and are not in the cloud library.
     SendHeld,
+    /// Download and install the newer version of the app (the version in [`StatusView::update`]).
+    UpdateNow,
 }
 
 pub fn show(ui: &mut Ui, v: &StatusView) {
@@ -290,6 +296,10 @@ pub fn show_with_actions(ui: &mut Ui, v: &StatusView, refused: &[(String, String
     if v.running && s.activity.is_busy() {
         progress_block(ui, s.activity.progress(), v.now);
     }
+    let update_action = match v.update {
+        Some(u) if v.running => update_block(ui, u),
+        _ => None,
+    };
     theme::gap(ui);
     theme::panel(ui, None, |ui| {
         if let Some(o) = &s.other {
@@ -367,6 +377,54 @@ pub fn show_with_actions(ui: &mut Ui, v: &StatusView, refused: &[(String, String
         list(ui, "Newest wins", "No conflicts between phone and PC edits.", &s.notices, v.now, None);
     }
     list(ui, "Problems", "None.", &s.errors, v.now, Some(theme::CHARCOAL.reject));
+    action.or(update_action)
+}
+
+/// The row about a newer version of the app: the version, a button that updates (Windows) and a link to the release notes; while it
+/// updates, how far it is.
+pub fn update_block(ui: &mut Ui, u: &UpdateView) -> Option<StatusAction> {
+    let t = theme::CHARCOAL;
+    let mut action = None;
+    theme::gap(ui);
+    theme::panel(ui, None, |ui| match &u.phase {
+        Phase::Idle | Phase::Failed { .. } => {
+            if let Phase::Failed { message } = &u.phase {
+                ui.add(Label::new(RichText::new(message).color(t.reject)).wrap());
+                ui.add_space(6.0);
+            }
+            row(ui, "New version", format!("LightCraft Cloud {} is available", u.version));
+            ui.horizontal(|ui| {
+                if u.can_install && theme::button(ui, "Update now", theme::Kind::Primary).clicked() {
+                    action = Some(StatusAction::UpdateNow);
+                }
+                ui.hyperlink_to("What's new", &u.page);
+            });
+            if u.can_install {
+                theme::hint(ui, "The app downloads it, checks it, and restarts itself. It waits if a sync is running.");
+            } else {
+                theme::hint(ui, "Download the new version from that page and install it yourself.");
+            }
+        }
+        Phase::Downloading { done, total } => {
+            ui.add(Label::new(RichText::new(format!("Downloading version {}…", u.version)).color(t.text)).wrap());
+            progress_bar(ui, total.filter(|t| *t > 0).map(|t| (*done as f32 / t as f32).clamp(0.0, 1.0)));
+            theme::hint(ui, &match total {
+                Some(total) => format!("{} of {}", human_size(*done), human_size(*total)),
+                None => human_size(*done),
+            });
+        }
+        Phase::Verifying => {
+            ui.add(Label::new(RichText::new(format!("Checking the download of version {}…", u.version)).color(t.text)).wrap());
+        }
+        Phase::Waiting => {
+            ui.add(Label::new(RichText::new("Updating when this sync finishes").color(t.text)).wrap());
+            theme::hint(ui, "The new version is downloaded and checked. Nothing is interrupted.");
+        }
+        Phase::Installing => {
+            ui.add(Label::new(RichText::new(format!("Installing version {}…", u.version)).color(t.text)).wrap());
+            theme::hint(ui, "The app closes and starts again by itself in a moment.");
+        }
+    });
     action
 }
 

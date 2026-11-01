@@ -293,6 +293,7 @@ impl SettingsPanel {
         theme::panel(ui, None, |ui| {
             ui.checkbox(&mut self.form.notifications, "Show desktop notifications");
             ui.checkbox(&mut self.form.start_at_login, "Start when I log in");
+            ui.checkbox(&mut self.form.check_for_updates, "Check for new versions");
         });
 
         ui.add_space(14.0);
