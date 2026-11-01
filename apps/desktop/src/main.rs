@@ -13,6 +13,10 @@
 //! the sidecars, like the Python tool `lc-cloud`, with the same remote layout (FORMAT.md). It keeps its own config and
 //! state (`~/.config/lightcraft-cloud-desktop/`, `~/.local/state/lightcraft-cloud-desktop/`).
 
+// On Windows a release build is a program of the windows subsystem: starting the tray app (or a window) opens no console. The
+// command-line commands join the terminal they were typed in (`winsys::attach_parent_console`). Debug builds keep their console.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -48,8 +52,8 @@ USAGE:
 On another PC (config: role = other; the light build is always one) `sync --once` makes one pass: it downloads the chosen
 folders, sends this PC's sidecar edits to the home PC and takes back its newer ones; `status` shows the counts.
 
-Config: --config FILE, else ~/.config/lightcraft-cloud-desktop/config.toml (TOML; see the README).
-State:  ~/.local/state/lightcraft-cloud-desktop/ (or `state_dir` in the config).
+Config: --config FILE, else ~/.config/lightcraft-cloud-desktop/config.toml (Windows: %APPDATA%\\lightcraft-cloud-desktop\\config.toml).
+State:  ~/.local/state/lightcraft-cloud-desktop/ (Windows: %LOCALAPPDATA%\\lightcraft-cloud-desktop\\), or `state_dir` in the config.
 ";
 
 struct Args {
@@ -85,6 +89,14 @@ fn parse(args: &[String]) -> std::result::Result<Args, String> {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    #[cfg(windows)]
+    {
+        // (the tray app and the windows have no use for a console; everything else prints)
+        let gui = matches!(args.first().map(String::as_str), None | Some("run" | "ui")) && !args.iter().any(|a| a == "--headless");
+        if !gui {
+            lightcraft_cloud_desktop::winsys::attach_parent_console();
+        }
+    }
     match args.first().map(String::as_str) {
         Some("--version" | "-V") => {
             println!("lightcraft-cloud-desktop {}", env!("CARGO_PKG_VERSION"));

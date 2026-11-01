@@ -29,4 +29,6 @@ pub mod settings;
 pub mod tray;
 pub mod ui;
 pub mod watcher;
+#[cfg(windows)]
+pub mod winsys;
 pub mod worker;

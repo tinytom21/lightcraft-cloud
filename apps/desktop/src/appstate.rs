@@ -20,7 +20,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     }
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+    lightcraft_cloud_client::replace_file(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Settings of the app's running that do not belong in the config file.

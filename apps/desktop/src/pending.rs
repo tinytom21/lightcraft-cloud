@@ -69,7 +69,7 @@ impl PendingList {
             let mut f = std::fs::File::create(&tmp)?;
             std::io::Write::write_all(&mut f, &bytes)?;
             f.sync_all()?;
-            std::fs::rename(&tmp, &dest)
+            lightcraft_cloud_client::replace_file(&tmp, &dest)
         };
         write().map_err(|err| {
             let _ = std::fs::remove_file(&tmp);

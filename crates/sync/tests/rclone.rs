@@ -69,7 +69,8 @@ fn a_missing_library_is_a_clear_error() {
         return;
     }
     let e = RcloneRemote::open(Some(Path::new("/nonexistent/librclone.so")), Path::new("/x"), "x:", None).err().unwrap();
-    assert!(e.to_string().contains("librclone.so not found"), "{e}");
+    let name = if cfg!(windows) { "librclone.dll" } else { "librclone.so" };
+    assert!(e.to_string().contains(&format!("{name} not found")), "{e}");
 }
 
 #[test]
@@ -190,5 +191,86 @@ fn a_second_config_with_the_same_remote_name_wins_in_the_same_process() {
     std::fs::write(base.join("one.conf"), format!("[lightcraft]\ntype = alias\nremote = {}/\n", base.join("two").display())).unwrap();
     let again = RcloneRemote::open(Some(&so), &base.join("one.conf"), "lightcraft:", None).unwrap();
     assert_eq!(names(&again), vec!["from-two.txt"]);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A Google Drive remote whose OAuth token has expired is refreshed by the library itself (Go's own HTTP stack, in the DLL on
+/// Windows) and the new token is saved back to the config file. The "Google" here is a local server that answers the token request,
+/// so nothing real is involved: no account, no secret. (After the refresh rclone goes on to ask the real Drive API with the new fake
+/// token, which fails or is refused; that call's result is not looked at.)
+#[test]
+fn an_expired_oauth_token_is_refreshed_through_the_library_and_saved_to_the_config() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let _turn = LIBRCLONE_TURN.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(so) = so() else {
+        eprintln!("skipped: set LIBRCLONE to a librclone.so");
+        return;
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let server = {
+        let (seen, stop) = (seen.clone(), stop.clone());
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(mut c) = conn else { continue };
+                if stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                c.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                // (the head, then as much body as Content-Length says)
+                loop {
+                    let n = c.read(&mut chunk).unwrap_or(0);
+                    buf.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&buf).into_owned();
+                    let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                        if n == 0 {
+                            break;
+                        }
+                        continue;
+                    };
+                    let want = head
+                        .lines()
+                        .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").and_then(|v| v.trim().parse::<usize>().ok()))
+                        .unwrap_or(0);
+                    if body.len() >= want || n == 0 {
+                        seen.lock().unwrap().push(format!("{}\n{body}", head.lines().next().unwrap_or("")));
+                        break;
+                    }
+                }
+                let reply = r#"{"access_token":"fresh-access-token-from-the-test-server","token_type":"Bearer","refresh_token":"the-refresh-token","expires_in":3600}"#;
+                let _ = write!(c, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len());
+            }
+        })
+    };
+    let base = std::env::temp_dir().join(format!("lc-cloud-rclone-oauth-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let conf = base.join("rclone.conf");
+    let token = r#"{"access_token":"stale-access-token","token_type":"Bearer","refresh_token":"the-refresh-token","expiry":"2001-01-01T00:00:00Z"}"#;
+    std::fs::write(
+        &conf,
+        format!(
+            "[gd]\ntype = drive\nclient_id = test-client-id\nclient_secret = test-client-secret\nscope = drive\ntoken = {token}\nauth_url = http://127.0.0.1:{port}/auth\ntoken_url = http://127.0.0.1:{port}/token\n"
+        ),
+    )
+    .unwrap();
+    let r = RcloneRemote::open(Some(&so), &conf, "gd:", None).unwrap();
+    let _ = r.list("", false); // (fails: there is no Drive behind the fake token; what matters is what the library did first)
+    stop.store(true, Ordering::SeqCst);
+    let _ = std::net::TcpStream::connect(("127.0.0.1", port));
+    server.join().unwrap();
+
+    let seen = seen.lock().unwrap().clone();
+    let req = seen.iter().find(|r| r.starts_with("POST /token")).unwrap_or_else(|| panic!("the library never asked the token server: {seen:?}"));
+    assert!(req.contains("grant_type=refresh_token") && req.contains("refresh_token=the-refresh-token"), "{req}");
+    let saved = std::fs::read_to_string(&conf).unwrap();
+    assert!(saved.contains("fresh-access-token-from-the-test-server"), "the refreshed token was not saved to the config file");
+    assert!(!saved.contains("stale-access-token"), "the stale token is still in the config file");
     let _ = std::fs::remove_dir_all(&base);
 }

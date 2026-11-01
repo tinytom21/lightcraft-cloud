@@ -47,6 +47,9 @@ raw-window-handle = "0.6"
 egui_kittest = "0.37"
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 
+# Windows: a handful of Win32 calls (free disk space, a rename that cannot replace, the tray's message pump, the per-user Run key).
+windows-sys = "0.61"
+
 [workspace.lints.rust]
 unsafe_code = "deny"
 

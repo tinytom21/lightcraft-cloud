@@ -47,7 +47,7 @@ static LOAD: Mutex<()> = Mutex::new(());
 const LIBRCLONE: &str = if cfg!(windows) { "librclone.dll" } else { "librclone.so" };
 
 /// Load `librclone.so` (from `path`, else by name: Android finds it among the app's libraries) once.
-/// `work_dir` becomes the Go runtime's `TMPDIR` (and `HOME` when it has none, as on Android): set before the
+/// `work_dir` becomes the Go runtime's `TMPDIR` (`TMP` on Windows; and `HOME` when it has none, as on Android): set before the
 /// library is loaded, because the Go runtime reads the environment once, when it starts.
 fn lib(path: Option<&Path>, work_dir: Option<&Path>) -> Result<&'static Lib> {
     if let Some(l) = LIB.get() {
@@ -61,15 +61,21 @@ fn lib(path: Option<&Path>, work_dir: Option<&Path>) -> Result<&'static Lib> {
         let _ = std::fs::create_dir_all(dir);
         // (nothing else in this process reads the environment concurrently while the library is first loaded)
         unsafe {
-            std::env::set_var("TMPDIR", dir);
-            if std::env::var_os("HOME").is_none_or(|h| h.is_empty()) {
-                std::env::set_var("HOME", dir);
+            if cfg!(windows) {
+                // (Go's temporary folder on Windows is %TMP%; %HOME% is left alone there: rclone would take it for the user's home)
+                std::env::set_var("TMP", dir);
+                std::env::set_var("TEMP", dir);
+            } else {
+                std::env::set_var("TMPDIR", dir);
+                if std::env::var_os("HOME").is_none_or(|h| h.is_empty()) {
+                    std::env::set_var("HOME", dir);
+                }
             }
         }
     }
     let name: PathBuf = path.map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(LIBRCLONE));
     let loaded = unsafe {
-        let lib = libloading::Library::new(&name).map_err(|e| Error::Remote(format!("librclone.so not found ({}): {e}", name.display())))?;
+        let lib = libloading::Library::new(&name).map_err(|e| Error::Remote(format!("{LIBRCLONE} not found ({}): {e}", name.display())))?;
         let missing = |what: &str, e: libloading::Error| Error::Remote(format!("{} has no {what}: {e}", name.display()));
         let init: libloading::Symbol<unsafe extern "C" fn()> = lib.get(b"RcloneInitialize\0").map_err(|e| missing("RcloneInitialize", e))?;
         let rpc: libloading::Symbol<RpcFn> = lib.get(b"RcloneRPC\0").map_err(|e| missing("RcloneRPC", e))?;

@@ -42,7 +42,7 @@ pub enum Ended {
 
 enum Msg {
     Status(Box<AppStatus>),
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     Menu(tray_icon::menu::MenuId),
     EngineStopped,
 }
@@ -134,6 +134,8 @@ impl Windows {
         self.close_all(); // (gone, or not listening: start over)
         let mut cmd = std::process::Command::new(&self.exe);
         cmd.arg("ui").arg(kind).stdin(Stdio::piped());
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000); // (CREATE_NO_WINDOW: no console flashes up)
         if let Some(c) = &self.config {
             cmd.arg("--config").arg(c);
         }
@@ -239,7 +241,27 @@ fn main_loop_headless(msg_rx: &Receiver<Msg>) -> Result<(), String> {
     Ok(())
 }
 
+/// The next message for the tray's loop. On Linux the tray icon lives on its own thread, so this just waits. On Windows the icon's
+/// window belongs to this thread, which must handle the window messages (the clicks, the menu) between looks at the channel.
 #[cfg(target_os = "linux")]
+fn next_msg(msg_rx: &Receiver<Msg>) -> Option<Msg> {
+    msg_rx.recv().ok()
+}
+
+#[cfg(windows)]
+fn next_msg(msg_rx: &Receiver<Msg>) -> Option<Msg> {
+    use std::sync::mpsc::RecvTimeoutError;
+    loop {
+        crate::winsys::pump_messages();
+        match msg_rx.recv_timeout(Duration::from_millis(40)) {
+            Ok(m) => return Some(m),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return None,
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", windows))]
 fn main_loop_tray(
     opts: &RunOptions,
     config_path: &Path,
@@ -268,7 +290,7 @@ fn main_loop_tray(
         windows.open("settings"); // first run: Setup instead of syncing
     }
     let mut paused = initial.paused;
-    while let Ok(m) = msg_rx.recv() {
+    while let Some(m) = next_msg(msg_rx) {
         match m {
             Msg::Status(s) => {
                 paused = s.paused;
@@ -295,7 +317,7 @@ fn main_loop_tray(
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 fn main_loop_tray(
     _opts: &RunOptions,
     _config_path: &Path,
@@ -304,14 +326,15 @@ fn main_loop_tray(
     _msg_tx: &Sender<Msg>,
     _msg_rx: &Receiver<Msg>,
 ) -> Result<(), String> {
-    Err("the tray icon is only built for Linux so far; use `run --headless`".into())
+    Err("the tray icon is only built for Linux and Windows so far; use `run --headless`".into())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
     /// A stand-in for the window: logs that it started, then every line it is sent.
+    #[cfg(unix)]
     fn fake_exe(dir: &Path, log: &Path) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let exe = dir.join("fake-window");
@@ -320,15 +343,27 @@ mod tests {
         exe
     }
 
+    /// The same as a batch file (`ui <tab>` arrives as %1 %2).
+    #[cfg(windows)]
+    fn fake_exe(dir: &Path, log: &Path) -> PathBuf {
+        let exe = dir.join("fake-window.bat");
+        let body = format!(
+            "@echo off\r\necho start %2>>\"{0}\"\r\n:loop\r\nset \"l=\"\r\nset /p l=\r\nif not defined l goto done\r\necho got %l%>>\"{0}\"\r\ngoto loop\r\n:done\r\n",
+            log.display()
+        );
+        std::fs::write(&exe, body).unwrap();
+        exe
+    }
+
     fn wait_for(log: &Path, want: &str) -> String {
         for _ in 0..200 {
-            let t = std::fs::read_to_string(log).unwrap_or_default();
+            let t = std::fs::read_to_string(log).unwrap_or_default().replace("\r\n", "\n");
             if t == want {
                 return t;
             }
             std::thread::sleep(Duration::from_millis(25));
         }
-        std::fs::read_to_string(log).unwrap_or_default()
+        std::fs::read_to_string(log).unwrap_or_default().replace("\r\n", "\n")
     }
 
     #[test]

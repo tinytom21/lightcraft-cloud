@@ -4,6 +4,9 @@
 //!
 //! On Linux the icon is a StatusNotifierItem over D-Bus (`tray-icon`'s `ksni` backend: no GTK and no libappindicator to
 //! install). The desktop needs a tray host: KDE has one, GNOME needs its AppIndicator extension (Ubuntu ships it).
+//!
+//! On Windows it is a notification-area icon (`tray-icon`'s own backend). Its window belongs to the main thread, which pumps the
+//! Win32 messages (see `app::main_loop_tray`). The same icons are the exe's icon (`assets/icon.ico`, see [`ico_bytes`]).
 
 use crate::appstate::TrayState;
 
@@ -60,16 +63,56 @@ pub fn icon_rgba(state: TrayState, size: u32) -> Vec<u8> {
     px
 }
 
+/// A Windows icon file (`.ico`) of the idle picture at each of `sizes` (at most 256 each): 32-bit BMP images, the form every Windows
+/// version reads. `assets/icon.ico` is this with [`ICO_SIZES`]; a test keeps the two equal, and `examples/make_icon.rs` writes it.
+pub fn ico_bytes(sizes: &[u32]) -> Vec<u8> {
+    let mut images: Vec<Vec<u8>> = Vec::new();
+    for &size in sizes {
+        let rgba = icon_rgba(TrayState::Idle, size);
+        let mut img = Vec::new();
+        // BITMAPINFOHEADER: the height counts the AND mask too, so it is doubled
+        for v in [40u32, size, size * 2, 1 | (32 << 16), 0, 0, 0, 0, 0, 0] {
+            img.extend_from_slice(&v.to_le_bytes());
+        }
+        for y in (0..size).rev() {
+            for x in 0..size {
+                let i = ((y * size + x) * 4) as usize;
+                img.extend_from_slice(&[rgba[i + 2], rgba[i + 1], rgba[i], rgba[i + 3]]); // (BGRA, bottom row first)
+            }
+        }
+        img.extend(std::iter::repeat_n(0u8, (size.div_ceil(32) * 4 * size) as usize)); // (AND mask: all opaque, the alpha channel rules)
+        images.push(img);
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(&[0, 0, 1, 0]);
+    out.extend_from_slice(&(sizes.len() as u16).to_le_bytes());
+    let mut offset = 6 + 16 * sizes.len() as u32;
+    for (&size, img) in sizes.iter().zip(&images) {
+        let dim = if size >= 256 { 0 } else { size as u8 };
+        out.extend_from_slice(&[dim, dim, 0, 0, 1, 0, 32, 0]);
+        out.extend_from_slice(&(img.len() as u32).to_le_bytes());
+        out.extend_from_slice(&offset.to_le_bytes());
+        offset += img.len() as u32;
+    }
+    for img in images {
+        out.extend_from_slice(&img);
+    }
+    out
+}
+
+/// The sizes in the exe's icon.
+pub const ICO_SIZES: [u32; 6] = [16, 24, 32, 48, 64, 256];
+
 /// The label of the Pause/Resume entry.
 pub fn pause_label(paused: bool) -> &'static str {
     if paused { "Resume" } else { "Pause" }
 }
 
-#[cfg(target_os = "linux")]
-pub use linux::Tray;
+#[cfg(any(target_os = "linux", windows))]
+pub use native::Tray;
 
-#[cfg(target_os = "linux")]
-mod linux {
+#[cfg(any(target_os = "linux", windows))]
+mod native {
     use tray_icon::menu::{Menu, MenuId, MenuItem, PredefinedMenuItem};
     use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
@@ -142,7 +185,7 @@ mod linux {
 }
 
 /// Whether a tray exists on this platform in this build.
-pub const AVAILABLE: bool = cfg!(target_os = "linux");
+pub const AVAILABLE: bool = cfg!(any(target_os = "linux", windows));
 
 #[cfg(test)]
 mod tests {
@@ -169,6 +212,22 @@ mod tests {
         for s in TrayState::ALL {
             assert_eq!(icon_rgba(s, ICON_SIZE), icon_rgba(s.icon(), ICON_SIZE), "{s:?} is drawn with its shared picture");
         }
+    }
+
+    #[test]
+    fn the_exe_icon_file_is_the_idle_picture_at_its_sizes() {
+        let ico = ico_bytes(&ICO_SIZES);
+        assert_eq!(&ico[..6], &[0, 0, 1, 0, ICO_SIZES.len() as u8, 0]);
+        // every entry points at an image inside the file whose header says the size the entry does
+        for (n, size) in ICO_SIZES.iter().enumerate() {
+            let e = &ico[6 + 16 * n..6 + 16 * (n + 1)];
+            let (len, off) = (u32::from_le_bytes(e[8..12].try_into().unwrap()) as usize, u32::from_le_bytes(e[12..16].try_into().unwrap()) as usize);
+            assert!(off + len <= ico.len());
+            assert_eq!(u32::from_le_bytes(ico[off + 4..off + 8].try_into().unwrap()), *size);
+            assert_eq!(len, 40 + (size * size * 4) as usize + (size.div_ceil(32) * 4 * size) as usize);
+        }
+        // the file in the repository is what this makes (`cargo run -p lightcraft-cloud-desktop --example make_icon` rewrites it)
+        assert!(include_bytes!("../assets/icon.ico").as_slice() == ico.as_slice(), "assets/icon.ico is out of date: run the make_icon example");
     }
 
     #[test]

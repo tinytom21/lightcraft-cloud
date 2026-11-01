@@ -169,10 +169,7 @@ pub fn run_window(tab: Tab, config_path: Option<PathBuf>) -> Result<(), String> 
 fn list_remotes(file: &File) -> Result<Vec<String>, String> {
     let conf = match &file.rclone_config {
         Some(c) => config::expand(c)?,
-        None => match std::env::var_os("RCLONE_CONFIG").filter(|v| !v.is_empty()) {
-            Some(c) => PathBuf::from(c),
-            None => config::home_dir()?.join(".config/rclone/rclone.conf"),
-        },
+        None => config::default_rclone_config()?,
     };
     let lib = config::find_librclone(file.librclone.as_deref())?;
     lightcraft_cloud_client::list_remotes(lib.as_deref(), &conf).map_err(|e| e.to_string())

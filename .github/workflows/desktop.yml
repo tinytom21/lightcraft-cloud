@@ -1,0 +1,141 @@
+name: desktop
+
+# The light build of the desktop app (--no-default-features: no LightCraft engine, role "another PC") on Windows and Linux.
+# No secrets are used; the only output is a zip artifact.
+on:
+  push:
+    branches: [step6-windows, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  librclone:
+    name: librclone (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows, os: windows-latest, file: librclone.dll }
+          - { name: linux, os: ubuntu-latest, file: librclone.so }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Go version
+        id: go
+        shell: bash
+        run: echo "version=$(tr -d '[:space:]' < tools/librclone/GO_VERSION)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: ${{ steps.go.outputs.version }}
+          cache-dependency-path: tools/librclone/go.sum
+      - name: Build ${{ matrix.file }} (rclone's librclone, cgo, c-shared)
+        shell: bash
+        working-directory: tools/librclone
+        env:
+          CGO_ENABLED: "1"
+          GOTOOLCHAIN: local
+          GOFLAGS: -mod=readonly
+        run: |
+          go version
+          gcc --version | head -1
+          go build -p 2 -buildmode=c-shared -trimpath -buildvcs=false -ldflags "-s -w -buildid=" -o "${{ matrix.file }}" .
+          rm -f librclone.h
+          ls -l "${{ matrix.file }}"
+          mkdir -p ../../out
+          cp "${{ matrix.file }}" ../../out/
+          # rclone's licence, for the zip
+          cp "$(go list -m -f '{{.Dir}}' github.com/rclone/rclone)/COPYING" ../../out/LICENSE-rclone.txt
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: librclone-${{ matrix.name }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+
+  light:
+    name: light build (${{ matrix.name }})
+    needs: librclone
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows, os: windows-latest, lib: librclone.dll }
+          - { name: linux, os: ubuntu-latest, lib: librclone.so }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (the version rust-toolchain.toml pins)
+        shell: bash
+        run: |
+          rustup toolchain install "$(grep -oP 'channel = "\K[^"]+' rust-toolchain.toml)" --profile minimal --component clippy
+          rustc --version
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: ${{ matrix.name }}-light
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: librclone-${{ matrix.name }}
+          path: out
+      - name: Build (release)
+        run: cargo build --release --locked -p lightcraft-cloud-desktop --no-default-features
+      - name: Clippy (light build, all targets)
+        run: cargo clippy --locked -p lightcraft-cloud-desktop --no-default-features --all-targets -- -D warnings
+      - name: Tests, desktop (light build)
+        run: cargo test --locked -p lightcraft-cloud-desktop --no-default-features
+      - name: Tests, sync crate (with the real librclone)
+        shell: bash
+        env:
+          RUST_BACKTRACE: "1"
+        run: |
+          export LIBRCLONE="$PWD/out/${{ matrix.lib }}"
+          cargo test --locked -p lightcraft-cloud-client -- --nocapture 2>&1 | tee sync-tests.log
+          # the rclone tests must have run against the library, never skipped
+          if grep -q 'skipped: set LIBRCLONE' sync-tests.log; then echo "a librclone test was skipped"; exit 1; fi
+      - name: Smoke test of the exe
+        if: matrix.name == 'windows'
+        shell: pwsh
+        run: |
+          $exe = ".\target\release\lightcraft-cloud-desktop.exe"
+          # (a windowed program: its output reaches a pipe, which is how a script reads it)
+          $v = & $exe --version | Out-String
+          Write-Output $v
+          if ($v -notmatch 'lightcraft-cloud-desktop') { throw "no version output" }
+          $h = & $exe --help | Out-String
+          if ($h -notmatch 'USAGE') { throw "no help output" }
+          # the subsystem must be GUI (2), so the tray app opens no console window
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $exe))
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $sub = [BitConverter]::ToUInt16($bytes, $pe + 24 + 68)
+          Write-Output "PE subsystem: $sub"
+          if ($sub -ne 2) { throw "the exe is not a windows-subsystem program" }
+      - name: Package (zip)
+        if: matrix.name == 'windows'
+        shell: pwsh
+        run: |
+          $d = "lightcraft-cloud-windows-light"
+          New-Item -ItemType Directory $d | Out-Null
+          Copy-Item target\release\lightcraft-cloud-desktop.exe, out\librclone.dll $d
+          Copy-Item out\LICENSE-rclone.txt, LICENSE-MIT, LICENSE-APACHE $d
+          Rename-Item "$d\LICENSE-MIT" LICENSE-MIT.txt
+          Rename-Item "$d\LICENSE-APACHE" LICENSE-APACHE.txt
+          Copy-Item apps\desktop\assets\fonts\OFL-Inter.txt "$d\LICENSE-Inter-OFL.txt"
+          Copy-Item packaging\windows\README.txt $d
+          Compress-Archive -Path "$d\*" -DestinationPath "$d.zip"
+          Get-ChildItem $d, "$d.zip" | Format-Table Name, Length
+      - uses: actions/upload-artifact@v7.0.2
+        if: matrix.name == 'windows'
+        with:
+          path: lightcraft-cloud-windows-light.zip
+          archive: false
+          if-no-files-found: error
+          retention-days: 14

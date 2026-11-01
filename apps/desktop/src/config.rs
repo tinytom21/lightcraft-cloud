@@ -141,7 +141,7 @@ impl File {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let tmp = path.with_extension("toml.tmp");
         std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
-        std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+        lightcraft_cloud_client::replace_file(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
     }
 }
 
@@ -223,6 +223,17 @@ pub fn default_state_dir() -> Result<PathBuf, String> {
             Some(a) => a.join(APP_DIR),
             None => home_dir()?.join(".local/state").join(APP_DIR),
         },
+    })
+}
+
+/// rclone's own config file: `$RCLONE_CONFIG`, else `%APPDATA%\\rclone\\rclone.conf` on Windows, else `~/.config/rclone/rclone.conf`.
+pub fn default_rclone_config() -> Result<PathBuf, String> {
+    if let Some(c) = std::env::var_os("RCLONE_CONFIG").filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(c));
+    }
+    Ok(match windows_dir("APPDATA") {
+        Some(a) => a.join("rclone").join("rclone.conf"),
+        None => home_dir()?.join(".config/rclone/rclone.conf"),
     })
 }
 
@@ -338,10 +349,7 @@ impl Config {
         }
         let conf = match &self.file.rclone_config {
             Some(c) => expand(c)?,
-            None => match std::env::var_os("RCLONE_CONFIG").filter(|v| !v.is_empty()) {
-                Some(c) => PathBuf::from(c),
-                None => home_dir()?.join(".config/rclone/rclone.conf"),
-            },
+            None => default_rclone_config()?,
         };
         let lib = find_librclone(self.file.librclone.as_deref())?;
         RcloneRemote::open(lib.as_deref(), &conf, spec, Some(&self.state_dir.join("rclone-tmp")))
@@ -371,9 +379,15 @@ fn librclone_in(configured: Option<PathBuf>, env: Option<PathBuf>, exe: Option<&
     })
 }
 
+/// `C:\\folder`, `C:/folder` or `\\\\server\\share`: a Windows path (a bare `C:` is an rclone remote called C, as rclone itself reads it).
+fn is_windows_path(spec: &str) -> bool {
+    let b = spec.as_bytes();
+    spec.starts_with("\\\\") || (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'))
+}
+
 /// `Some(folder)` when `spec` names a local folder rather than an rclone remote.
 pub fn local_remote(spec: &str) -> Result<Option<PathBuf>, String> {
-    if spec.starts_with('/') || spec.starts_with('~') || spec.starts_with('.') {
+    if spec.starts_with('/') || spec.starts_with('~') || spec.starts_with('.') || (cfg!(windows) && is_windows_path(spec)) {
         let p = expand(spec)?;
         return std::path::absolute(&p).map(Some).map_err(|e| format!("{spec}: {e}"));
     }
@@ -383,6 +397,22 @@ pub fn local_remote(spec: &str) -> Result<Option<PathBuf>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// How a local remote `/tmp/r` is labelled: made absolute (on Windows that puts the current drive in front).
+    fn abs_tmp_r() -> String {
+        std::path::absolute("/tmp/r").unwrap().display().to_string()
+    }
+
+    #[test]
+    fn windows_paths_are_local_folders_only_on_windows() {
+        for p in [r"C:\photos", "D:/lib", r"\\nas\share\lib"] {
+            assert!(is_windows_path(p), "{p}");
+            assert_eq!(local_remote(p).unwrap().is_some(), cfg!(windows), "{p}");
+        }
+        for r in ["gdrive:LC", "C:", "c:lib", "lccrypt:"] {
+            assert!(!is_windows_path(r), "{r} is an rclone remote");
+        }
+    }
 
     #[test]
     fn a_host_name_becomes_a_valid_device_name() {
@@ -424,7 +454,7 @@ mod tests {
         let c = Config::load(Some(&f)).unwrap();
         assert_eq!((c.file.role, c.device()), (Role::Other, "laptop".to_string()));
         let o = c.other_config().unwrap();
-        assert_eq!((o.folders, o.device.as_str(), o.remote_label.as_str()), (vec!["A".to_string(), "B/C".into()], "laptop", "/tmp/r"));
+        assert_eq!((o.folders, o.device.as_str(), o.remote_label.as_str()), (vec!["A".to_string(), "B/C".into()], "laptop", abs_tmp_r().as_str()));
         c.file.save(&f).unwrap();
         let back = Config::load(Some(&f)).unwrap();
         assert_eq!((back.file.role, back.file.folders.len(), back.file.device.as_deref()), (Role::Other, 2, Some("laptop")));
@@ -474,7 +504,7 @@ mod tests {
             .unwrap();
         let c = Config::load(Some(&f)).unwrap();
         let h = c.home_config().unwrap();
-        assert_eq!((h.exclude, h.pair_primary, h.remote_label.as_str()), (vec!["a".to_string()], PairPrimary::Raw, "/tmp/r"));
+        assert_eq!((h.exclude, h.pair_primary, h.remote_label.as_str()), (vec!["a".to_string()], PairPrimary::Raw, abs_tmp_r().as_str()));
         std::fs::write(&f, "remote = \"/tmp/r\"\npair_primary = \"tiff\"\nstate_dir = \"/tmp/lc-state-x\"\n").unwrap();
         assert!(Config::load(Some(&f)).is_err());
         let _ = std::fs::remove_dir_all(&d);

@@ -9,7 +9,7 @@ use super::state::{Rec, State};
 use super::{Other, OtherReport, OtherStatus, fetch_manifest, folder_of};
 use crate::home::{RunLock, content_hash_file, find_sidecars, stem};
 use crate::manifest::Item;
-use crate::util::{free_space, iso, link_no_replace, parse_iso, parse_stamp, sha256_hex, sidecar_version, sync_dir, temp_beside, utc_stamp, write_atomic};
+use crate::util::{free_space, is_busy, iso, link_no_replace, parse_iso, parse_stamp, sha256_hex, sidecar_version, replace_file, sync_dir, temp_beside, utc_stamp, write_atomic};
 use crate::{Error, Result};
 
 /// The inbox rejects bigger sidecars.
@@ -34,6 +34,11 @@ fn check_source(root: &Path) -> Result<()> {
 /// Whether a manifest path may be written below the photo folder: relative, `/`-separated, no `.` or `..`, nothing the file system treats
 /// specially. On Windows also the characters and names it refuses.
 pub(super) fn safe_rel(rel: &str) -> bool {
+    safe_rel_on(rel, cfg!(windows))
+}
+
+/// [`safe_rel`] for a given system (a test checks the Windows rules on every system).
+pub(super) fn safe_rel_on(rel: &str, windows: bool) -> bool {
     const RESERVED: [&str; 22] = [
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6",
         "LPT7", "LPT8", "LPT9",
@@ -41,7 +46,7 @@ pub(super) fn safe_rel(rel: &str) -> bool {
     !rel.is_empty()
         && rel.split('/').all(|c| {
             let basic = !c.is_empty() && c != "." && c != ".." && !c.contains('\\') && !c.chars().any(char::is_control);
-            let windows = !cfg!(windows)
+            let windows = !windows
                 || (!c.contains(['<', '>', ':', '"', '|', '?', '*'])
                     && !c.ends_with(['.', ' '])
                     && !RESERVED.contains(&c.split('.').next().unwrap_or("").to_ascii_uppercase().as_str()));
@@ -551,8 +556,13 @@ impl Other {
         if let Some(old) = old.filter(|o| *o != bytes.as_slice()) {
             self.keep_history(rel, old)?;
         }
-        if let Err(e) = std::fs::rename(&tmp, dest) {
+        if let Err(e) = replace_file(&tmp, dest) {
             let _ = std::fs::remove_file(&tmp);
+            if is_busy(&e) {
+                // (LightCraft or another program has the sidecar open: leave it for the next pass, which looks again; the pass goes on)
+                self.logln(format!("{rel}: the sidecar is in use by another program; the home PC's version is taken next time"));
+                return Ok(());
+            }
             return Err(Error::io(dest.display(), e));
         }
         rec.manifest = Some(version.to_string());
@@ -906,4 +916,29 @@ pub(super) fn human(n: u64) -> String {
         }
     }
     format!("{f:.1} {unit}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_manifest_path_is_safe_only_if_this_system_can_write_it() {
+        for rel in ["a.jpg", "2026/Trip 1/DSC1.ARW", "a b/c.xmp", "x/.hidden-is-the-home-pcs-business.jpg", "COMX/a.jpg", "con-ference/a.jpg"] {
+            assert!(safe_rel_on(rel, false) && safe_rel_on(rel, true), "{rel}");
+        }
+        for rel in ["", "/a.jpg", "a//b.jpg", "a/", "./a.jpg", "a/./b.jpg", "../a.jpg", "a/../b.jpg", "a\\b.jpg", "a/b\u{0}c.jpg", "a/b\nc.jpg"] {
+            assert!(!safe_rel_on(rel, false) && !safe_rel_on(rel, true), "{rel:?}");
+        }
+        // what only Windows refuses: the characters and names it reserves, a trailing dot or space, a stream (`photo.jpg:x`)
+        for rel in [
+            "a:b.jpg", "photo.jpg:stream", "a<b.jpg", "a>b.jpg", "a\"b.jpg", "a|b.jpg", "a?b.jpg", "a*b.jpg", "CON", "con.txt", "a/NUL.jpg", "a/aux/b.jpg",
+            "Com1.jpg", "lpt9.xmp", "LPT1", "trailing.dot./a.jpg", "a/trailing space /b.jpg", "a/b.", "a/b ",
+        ] {
+            assert!(safe_rel_on(rel, false), "{rel:?} is fine on Linux");
+            assert!(!safe_rel_on(rel, true), "{rel:?} must be refused on Windows");
+        }
+        assert!(safe_rel("a/b.jpg"));
+        assert_eq!(safe_rel("a:b.jpg"), !cfg!(windows));
+    }
 }

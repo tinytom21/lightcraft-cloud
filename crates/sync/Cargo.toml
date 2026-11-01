@@ -23,6 +23,10 @@ siphasher = { workspace = true }
 # free disk space before an imported photo is written
 rustix = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+# free disk space (GetDiskFreeSpaceExW) and a move that cannot replace (MoveFileExW)
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 # The phone fork's engine (it has `library.addRemote`, which upstream v0.15.0 lacks), pinned to its v0.1.0 tag. The desktop app keeps
 # the upstream engine; the two never meet in one crate. The fork depends on this crate, a dev-only cycle through git.

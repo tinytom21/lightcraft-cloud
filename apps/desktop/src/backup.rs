@@ -28,9 +28,11 @@ pub fn newest_age_hours(json: &str, now: SystemTime) -> Result<f64, String> {
 
 /// Run `<command> snapshots --latest 1 --json` and say how old the newest snapshot is.
 pub fn latest_age_hours(command: &str, now: SystemTime) -> Result<f64, String> {
-    let out = std::process::Command::new(command)
-        .args(["snapshots", "--latest", "1", "--json"])
-        .stdin(std::process::Stdio::null())
+    let mut cmd = std::process::Command::new(command);
+    cmd.args(["snapshots", "--latest", "1", "--json"]).stdin(std::process::Stdio::null());
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000); // (no console window)
+    let out = cmd
         .output()
         .map_err(|e| format!("cannot run `{command}` to confirm a recent backup: {e}"))?;
     if !out.status.success() {
@@ -69,11 +71,14 @@ mod tests {
     fn a_command_that_fails_cannot_confirm_a_backup() {
         let d = std::env::temp_dir().join(format!("lc-desktop-backup-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
-        for (name, body, want) in
-            [("fail.sh", "#!/bin/sh\nexit 3\n", "failed"), ("ok.sh", "#!/bin/sh\necho '[{\"time\":\"2026-11-01T11:00:00Z\"}]'\n", "")]
-        {
+        #[cfg(unix)]
+        let scripts = [("fail.sh", "#!/bin/sh\nexit 3\n", "failed"), ("ok.sh", "#!/bin/sh\necho '[{\"time\":\"2026-11-01T11:00:00Z\"}]'\n", "")];
+        #[cfg(windows)]
+        let scripts = [("fail.bat", "@echo off\r\nexit /b 3\r\n", "failed"), ("ok.bat", "@echo off\r\necho [{\"time\":\"2026-11-01T11:00:00Z\"}]\r\n", "")];
+        for (name, body, want) in scripts {
             let f = d.join(name);
             std::fs::write(&f, body).unwrap();
+            #[cfg(unix)]
             std::fs::set_permissions(&f, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
             let r = latest_age_hours(&f.to_string_lossy(), now());
             if want.is_empty() {
