@@ -74,6 +74,9 @@ impl Switch {
 }
 
 impl Remote for Switch {
+    fn version_tag(&self, path: &str) -> Result<Option<String>, lightcraft_cloud_client::Error> {
+        self.inner.version_tag(path)
+    }
     fn list(&self, dir: &str, recursive: bool) -> Result<Vec<RemoteEntry>, Error> {
         self.up()?;
         self.inner.list(dir, recursive)
@@ -167,6 +170,31 @@ fn service(e: &Env, spy: &Spy, with_home: bool) -> Service<RoleWorker> {
 fn run_due(svc: &mut Service<RoleWorker>, e: &Env, secs: u64) {
     e.clock.advance(Duration::from_secs(secs));
     while svc.step() {}
+}
+
+/// Found in the first real use: an edit from the home PC waited up to 15 minutes for the next full sync.
+#[test]
+fn a_new_list_of_photos_is_noticed_at_the_two_minute_check_and_an_unchanged_one_starts_nothing() {
+    let e = env("quick", "other");
+    let spy = Spy::default();
+    let mut svc = service(&e, &spy, false);
+    run_due(&mut svc, &e, 20); // the first sync
+    run_due(&mut svc, &e, 2 * 60); // the first check only remembers
+    let synced_at = |s: &Service<RoleWorker>| s.status().last_sync.as_ref().map(|l| l.when.clone());
+    let before = synced_at(&svc);
+    run_due(&mut svc, &e, 2 * 60);
+    assert_eq!(synced_at(&svc), before, "nothing changed, so no sync");
+    // the same size, different content: what a changed rating can look like
+    let new = b"<x:xmpmeta>version 2, from the home PC</x:xmpmeta>".to_vec();
+    put(&e.cloud, "originals/Lisbon/A.xmp", &new);
+    let mpath = e.cloud.join("mobile/manifest.json");
+    let mut m: serde_json::Value = serde_json::from_slice(&std::fs::read(&mpath).unwrap()).unwrap();
+    m["photos"][0]["sidecarVersion"] = json!(sha16(&new));
+    m["generated"] = json!("2026-11-01T10:00:00Z");
+    put(&e.cloud, "mobile/manifest.json", m.to_string().as_bytes());
+    run_due(&mut svc, &e, 2 * 60);
+    assert_eq!(std::fs::read(e.photos.join("Lisbon/A.xmp")).unwrap(), new, "taken at the check, not 15 minutes later");
+    assert_ne!(synced_at(&svc), before);
 }
 
 #[test]

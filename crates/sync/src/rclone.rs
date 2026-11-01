@@ -208,6 +208,15 @@ impl Remote for RcloneRemote {
         Some(running.iter().filter_map(|t| t.get("bytes").and_then(Value::as_u64)).sum())
     }
 
+    fn version_tag(&self, path: &str) -> Result<Option<String>> {
+        let found = match self.lib.call("operations/stat", &json!({"fs": self.fs, "remote": path})) {
+            Ok(v) => v,
+            Err(Error::NotFound(_)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        Ok(found.get("item").filter(|i| !i.is_null()).map(|i| format!("{}-{}", i.get("Size").unwrap_or(&Value::Null), i.get("ModTime").unwrap_or(&Value::Null))))
+    }
+
     fn remove_empty_dir(&self, dir: &str) -> Result<()> {
         if dir.trim_matches('/').is_empty() {
             return Ok(());

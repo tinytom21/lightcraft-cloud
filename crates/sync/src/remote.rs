@@ -45,6 +45,11 @@ pub trait Remote: Send + Sync {
     fn bytes_in_flight(&self) -> Option<u64> {
         None
     }
+    /// A short text that changes when the file at `path` changes, with one cheap call and without reading the file; `None` when there
+    /// is no such file. By default the size, which a remote that knows more should improve on (an edit can keep a file's size).
+    fn version_tag(&self, path: &str) -> Result<Option<String>> {
+        Ok(self.stat(path)?.map(|e| e.size.to_string()))
+    }
     /// The entry at `path`, if there is one.
     fn stat(&self, path: &str) -> Result<Option<RemoteEntry>> {
         let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
@@ -133,6 +138,14 @@ impl Remote for DirRemote {
             std::fs::create_dir_all(dir).map_err(|e| Error::io(to, e))?;
         }
         std::fs::rename(&src, &dst).map_err(|e| Error::io(from, e))
+    }
+
+    fn version_tag(&self, path: &str) -> Result<Option<String>> {
+        match std::fs::metadata(self.at(path)?) {
+            Ok(m) => Ok(Some(format!("{}-{:?}", m.len(), m.modified().ok()))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(Error::io(path, e)),
+        }
     }
 
     fn remove_empty_dir(&self, dir: &str) -> Result<()> {

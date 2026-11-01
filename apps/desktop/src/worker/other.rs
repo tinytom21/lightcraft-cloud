@@ -28,12 +28,14 @@ pub struct OtherWorker {
     retry_delay: Option<std::time::Duration>,
     /// Where a pass and an upload step report how far they are.
     progress: Option<Arc<Feed>>,
+    /// The cloud library's list of photos as the last check saw it.
+    manifest_seen: Option<String>,
 }
 
 impl OtherWorker {
     pub fn new(config_path: PathBuf, remote: RemoteFactory, clock: Arc<dyn Clock>) -> OtherWorker {
         let link: LinkFactory = Box::new(|port| Box::new(TcpLink::new(port)));
-        let mut w = OtherWorker { config_path, cfg: None, config_error: None, remote, clock, link, retry_delay: None, progress: None };
+        let mut w = OtherWorker { config_path, cfg: None, config_error: None, remote, clock, link, retry_delay: None, progress: None, manifest_seen: None };
         let _ = w.reload();
         w
     }
@@ -99,6 +101,9 @@ impl OtherWorker {
         Ok(other)
     }
 }
+
+/// The cloud library's list of photos.
+const MANIFEST: &str = "mobile/manifest.json";
 
 /// An error of a pass as a job error: a network failure is calm, a newer format or a bad setting is a refusal.
 fn pass_error(e: Error) -> JobError {
@@ -201,8 +206,16 @@ impl Worker for OtherWorker {
     }
 
     /// Nothing to poll: this PC does not look at other devices' edits.
+    /// There is no inbox to read on another PC; the same cheap check every two minutes looks for a new list of photos from the home PC,
+    /// so a home edit does not wait for the next full sync. The first look only remembers (a sync follows the start of the app anyway).
     fn inbox_waiting(&mut self) -> Result<usize, String> {
-        Ok(0)
+        let Some(cfg) = self.cfg.as_ref().filter(|c| Self::usable(c)) else { return Ok(0) };
+        let tag = (self.remote)(cfg)?.version_tag(MANIFEST).map_err(|e| e.to_string())?;
+        let changed = self.manifest_seen.is_some() && tag.is_some() && self.manifest_seen != tag;
+        if tag.is_some() {
+            self.manifest_seen = tag;
+        }
+        Ok(usize::from(changed))
     }
 
     fn lightcraft_flush(&mut self, retry_given_up: bool) -> BridgeReport {

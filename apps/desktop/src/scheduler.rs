@@ -74,7 +74,7 @@ impl Reason {
         match self {
             Reason::Startup => "start",
             Reason::Timer => "every 15 minutes",
-            Reason::PhoneEdits => "phone edits waiting",
+            Reason::PhoneEdits => "changes waiting",
             Reason::FolderChanged => "photos changed",
             Reason::Manual => "Sync now",
             Reason::Resumed => "resumed",

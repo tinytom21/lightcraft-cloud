@@ -274,3 +274,29 @@ fn an_expired_oauth_token_is_refreshed_through_the_library_and_saved_to_the_conf
     assert!(!saved.contains("stale-access-token"), "the stale token is still in the config file");
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// The two-minute check on another PC relies on this: a same-sized change shows, and a missing file is not an error.
+#[test]
+fn a_version_tag_changes_with_the_file_even_at_the_same_size() {
+    let _turn = LIBRCLONE_TURN.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(so) = so() else {
+        eprintln!("skipped: set LIBRCLONE to a librclone.so");
+        return;
+    };
+    let base = std::env::temp_dir().join(format!("lc-rclone-tag-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("remote/mobile")).unwrap();
+    std::fs::write(base.join("rclone.conf"), "").unwrap();
+    let f = base.join("remote/mobile/manifest.json");
+    std::fs::write(&f, b"one").unwrap();
+    let t0 = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+    std::fs::File::options().write(true).open(&f).unwrap().set_modified(t0).unwrap();
+    let r = lightcraft_cloud_client::RcloneRemote::open(Some(&so), &base.join("rclone.conf"), &base.join("remote").to_string_lossy(), None).unwrap();
+    use lightcraft_cloud_client::Remote;
+    let first = r.version_tag("mobile/manifest.json").unwrap().expect("the file is there");
+    assert_eq!(r.version_tag("mobile/manifest.json").unwrap().as_deref(), Some(first.as_str()), "the same file, the same tag");
+    std::fs::write(&f, b"two").unwrap();
+    assert_ne!(r.version_tag("mobile/manifest.json").unwrap().unwrap(), first);
+    assert_eq!(r.version_tag("mobile/nothing.json").unwrap(), None);
+    let _ = std::fs::remove_dir_all(base);
+}
