@@ -391,7 +391,10 @@ mod tests {
         assert_eq!(link_no_replace(&a, &b).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
         let c = deep.join("three.jpg");
         move_no_replace(&b, &c).unwrap();
-        assert_eq!(move_no_replace(&a, &c).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        // (not `a`: it is a hard link of the same file as `c`, and a move of a file onto itself is no conflict)
+        let other = deep.join("four.jpg");
+        write_atomic(&other, b"other").unwrap();
+        assert_eq!(move_no_replace(&other, &c).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read(&c).unwrap(), b"bytes");
         assert!(a.as_os_str().len() > 260);
         assert!(free_space(&a).is_some_and(|n| n > 0));

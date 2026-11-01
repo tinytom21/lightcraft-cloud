@@ -249,7 +249,7 @@ fn sidecars_of(root: &Path) -> BTreeSet<String> {
             if e.path().is_dir() {
                 walk(base, &e.path(), out);
             } else if e.path().extension().is_some_and(|x| x == "xmp") {
-                out.insert(e.path().strip_prefix(base).unwrap().to_string_lossy().into_owned());
+                out.insert(e.path().strip_prefix(base).unwrap().to_string_lossy().replace('\\', "/"));
             }
         }
     }

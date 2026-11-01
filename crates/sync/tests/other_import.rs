@@ -718,6 +718,9 @@ fn lightcraft_is_not_told_about_photos_it_imported_only_about_photos_downloaded_
     assert!(w.queue().list().iter().all(|e| e.announced), "and the queue does not try to either");
 }
 
+// (names like CON, `a:b` and `ends.` cannot exist as folders on Windows, so they cannot be picked up there: the rule is covered by
+// `safe_rel_on` and the home-side import tests, which run everywhere)
+#[cfg(unix)]
 #[test]
 fn a_destination_the_home_pc_would_reject_is_not_queued_and_is_one_line_in_the_problems() {
     let w = W::new("refuse-dest");

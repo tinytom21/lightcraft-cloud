@@ -179,7 +179,7 @@ fn the_first_pass_downloads_the_chosen_folder_tells_lightcraft_and_the_status_sa
     // LightCraft was told about both photos, by absolute path, and nothing waits any more
     let mut told = e.lightcraft.0.lock().unwrap().clone();
     told.sort();
-    assert_eq!(told, [e.photos.join("Lisbon/A.jpg").display().to_string(), e.photos.join("Lisbon/B.jpg").display().to_string()]);
+    assert_eq!(told, [e.photos.join("Lisbon").join("A.jpg").display().to_string(), e.photos.join("Lisbon").join("B.jpg").display().to_string()]);
     assert_eq!(s.lightcraft_waiting, 0);
     // the next pass has nothing to do, so says nothing
     run_due(&mut svc, &e, 15 * 60);
