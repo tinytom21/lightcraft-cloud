@@ -1,0 +1,32 @@
+name: installer-script
+
+# A quick check that the Inno Setup script compiles (about a minute, with stand-in files instead of a build). The full build and the install,
+# update and uninstall tests on Windows are in release.yml.
+on:
+  push:
+    paths: ["packaging/windows/**", ".github/workflows/installer-script.yml"]
+  pull_request:
+    paths: ["packaging/windows/**", ".github/workflows/installer-script.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compile with stand-in files
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup --version 6.6.1 -y --no-progress; if ($LASTEXITCODE -ne 0) { throw "choco failed" } }
+          New-Item -ItemType Directory stage, dist | Out-Null
+          foreach ($f in 'lightcraft-cloud-desktop.exe', 'librclone.dll', 'README.txt', 'LICENSE-MIT.txt', 'LICENSE-APACHE.txt', 'LICENSE-rclone.txt', 'LICENSE-Inter-OFL.txt') {
+            Set-Content -Path "stage\$f" -Value "stand-in"
+          }
+          & $iscc "/DAppVersion=0.0.0" "/DStage=$((Resolve-Path stage).Path)" "/DOutDir=$((Resolve-Path dist).Path)" packaging\windows\lightcraft-cloud.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed: $LASTEXITCODE" }
+          Get-ChildItem dist | Format-Table Name, Length

@@ -153,7 +153,7 @@ begin
 end;
 
 { Start the app again if it was running (also when the install failed: the old one is still there). }
-function DeinitializeSetup: Boolean;
+procedure DeinitializeSetup;
 var
   Code: Integer;
   Exe: String;
@@ -164,7 +164,6 @@ begin
     if FileExists(Exe) then
       Exec(Exe, 'run', ExpandConstant('{app}'), SW_SHOWNORMAL, ewNoWait, Code);
   end;
-  Result := True;
 end;
 
 function InitializeUninstall: Boolean;
