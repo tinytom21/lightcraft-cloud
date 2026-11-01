@@ -92,7 +92,7 @@ impl OtherWorker {
 /// An error of a pass as a job error: a network failure is calm, a newer format or a bad setting is a refusal.
 fn pass_error(e: Error) -> JobError {
     match e {
-        Error::Remote(m) => JobError::Offline(m),
+        Error::Remote(m) if !super::login_failed(&m) => JobError::Offline(m),
         Error::Format(m) => JobError::Refused(m),
         Error::NotFound(_) => JobError::Failed("The cloud library has no photos yet: the home PC has not published anything there.".into()),
         e => to_job_error(e),

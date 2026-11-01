@@ -37,10 +37,23 @@ pub fn log_path(state_dir: &Path) -> PathBuf {
     state_dir.join("logs").join("lightcraft-cloud-desktop.log")
 }
 
+/// Whether a remote error means the cloud storage refused this app's login, which retrying can never fix (a failure to reach the login
+/// server, on the other hand, is just being offline, even though its text also says "couldn't fetch token").
+pub(crate) fn login_failed(message: &str) -> bool {
+    ["invalid_grant", "invalid_client", "unauthorized_client"].iter().any(|w| message.contains(w))
+}
+
+/// What the user is told then, with the remote's name when rclone's message gives it.
+pub(crate) fn login_line(message: &str) -> String {
+    let remote = message.split("config reconnect ").nth(1).and_then(|r| r.split(['"', '\\', ' ']).next()).filter(|r| r.ends_with(':'));
+    format!("The cloud storage login has expired or been withdrawn, so nothing can sync until it is renewed. In a terminal run: rclone config reconnect {}", remote.unwrap_or("<remote>:"))
+}
+
 pub(crate) fn to_job_error(e: Error) -> JobError {
     match e {
         Error::Busy(_) => JobError::Busy,
         Error::Invalid(m) => JobError::Refused(m),
+        Error::Remote(m) if login_failed(&m) => JobError::Failed(login_line(&m)),
         e => JobError::Failed(e.to_string()),
     }
 }
@@ -202,5 +215,21 @@ impl Worker for RoleWorker {
             Role::Other => self.other.last_run(),
             Role::Home => self.home.as_ref().and_then(|h| h.last_run()),
         }
+    }
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::*;
+
+    const DEAD: &str = r#"couldn't find root directory ID: Get "https://www.googleapis.com/drive/v3/files/root": couldn't fetch token: invalid_grant: maybe token expired? - try refreshing with "rclone config reconnect gdrive:""#;
+    const NO_NET: &str = r#"couldn't find root directory ID: Get "https://www.googleapis.com/drive/v3/files/root": couldn't fetch token: Post "https://oauth2.googleapis.com/token": dial tcp: lookup oauth2.googleapis.com: no such host"#;
+
+    #[test]
+    fn a_refused_login_is_a_failure_that_says_what_to_do_and_no_network_is_not() {
+        assert!(login_failed(DEAD) && !login_failed(NO_NET));
+        let JobError::Failed(text) = to_job_error(Error::Remote(DEAD.into())) else { panic!() };
+        assert!(text.ends_with("rclone config reconnect gdrive:"), "{text}");
+        assert!(login_line("invalid_grant").ends_with("rclone config reconnect <remote>:"));
     }
 }
