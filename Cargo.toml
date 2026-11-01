@@ -25,19 +25,19 @@ rustix = { version = "1.1", default-features = false, features = ["std", "fs"] }
 
 # LightCraft's engine (pinned release; no `sam` or `denoise` features: rendering only). The desktop app renders thumbnails and
 # smart previews with it (the sync crate's tests use the phone fork's engine instead, see its Cargo.toml). The other crates are for generating test photos.
-lightcraft-engine = { git = "https://github.com/storytold/lightcraft", tag = "v0.15.0" }
-lightcraft-scenes = { git = "https://github.com/storytold/lightcraft", tag = "v0.15.0" }
-lightcraft-mcp = { git = "https://github.com/storytold/lightcraft", tag = "v0.15.0" }
-lightcraft-meta = { git = "https://github.com/storytold/lightcraft", tag = "v0.15.0" }
-lightcraft-raw = { git = "https://github.com/storytold/lightcraft", tag = "v0.15.0" }
-lightcraft-color = { git = "https://github.com/storytold/lightcraft", tag = "v0.15.0" }
-lightcraft-codecs = { git = "https://github.com/storytold/lightcraft", tag = "v0.15.0" }
-lightcraft-raster = { git = "https://github.com/storytold/lightcraft", tag = "v0.15.0" }
+lightcraft-engine = { git = "https://github.com/storytold/lightcraft", tag = "v0.17.0" }
+lightcraft-scenes = { git = "https://github.com/storytold/lightcraft", tag = "v0.17.0" }
+lightcraft-mcp = { git = "https://github.com/storytold/lightcraft", tag = "v0.17.0" }
+lightcraft-meta = { git = "https://github.com/storytold/lightcraft", tag = "v0.17.0" }
+lightcraft-raw = { git = "https://github.com/storytold/lightcraft", tag = "v0.17.0" }
+lightcraft-color = { git = "https://github.com/storytold/lightcraft", tag = "v0.17.0" }
+lightcraft-codecs = { git = "https://github.com/storytold/lightcraft", tag = "v0.17.0" }
+lightcraft-raster = { git = "https://github.com/storytold/lightcraft", tag = "v0.17.0" }
 
 toml = "1"
 
 # The desktop app: folder watching, desktop notifications (pure Rust over D-Bus), the tray icon (its `ksni` backend: no GTK, no
-# libappindicator, a StatusNotifierItem over D-Bus), and the egui windows at the version LightCraft v0.15.0 uses.
+# libappindicator, a StatusNotifierItem over D-Bus), and the egui windows at the version LightCraft v0.17.0 uses.
 notify = "8"
 notify-rust = "4"
 tray-icon = { version = "0.26", default-features = false, features = ["ksni"] }

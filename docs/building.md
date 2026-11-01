@@ -33,7 +33,7 @@ print "skipped" and pass.
 
 The sync crate's tests drive the lightcraft-android engine (tag `v0.1.0`, pinned by `rev` in `crates/sync/Cargo.toml`), because the
 upstream LightCraft engine does not have the command `library.addRemote` yet. The desktop app keeps the upstream engine
-(`v0.15.0`), so `Cargo.lock` holds both. Bump the `rev` when the phone fork's engine changes.
+(`v0.17.0`), so `Cargo.lock` holds both. Bump the `rev` when the phone fork's engine changes.
 
 ## Windows (light build: another PC)
 

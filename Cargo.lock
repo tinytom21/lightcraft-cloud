@@ -823,7 +823,7 @@ source = "git+https://github.com/storytold/craft-libs?rev=82a24b006eefa036b43c09
 [[package]]
 name = "craft-docpath"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
+source = "git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7#c5a1cbfb5f9049f9270955caffb5bee5997aebf7"
 
 [[package]]
 name = "crc32fast"
@@ -2527,14 +2527,14 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-catalog"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
  "chrono",
  "crc32fast",
- "lightcraft-develop 0.15.0",
- "lightcraft-meta 0.15.0",
- "lightcraft-raw 0.15.0",
+ "lightcraft-develop 0.17.0",
+ "lightcraft-meta 0.17.0",
+ "lightcraft-raw 0.17.0",
  "log",
  "serde",
  "serde_json",
@@ -2569,14 +2569,14 @@ dependencies = [
  "egui",
  "egui_kittest",
  "lightcraft-cloud-client",
- "lightcraft-codecs 0.15.0",
- "lightcraft-color 0.15.0",
- "lightcraft-engine 0.15.0",
+ "lightcraft-codecs 0.17.0",
+ "lightcraft-color 0.17.0",
+ "lightcraft-engine 0.17.0",
  "lightcraft-mcp",
- "lightcraft-meta 0.15.0",
- "lightcraft-raster 0.15.0",
- "lightcraft-raw 0.15.0",
- "lightcraft-scenes 0.15.0",
+ "lightcraft-meta 0.17.0",
+ "lightcraft-raster 0.17.0",
+ "lightcraft-raw 0.17.0",
+ "lightcraft-scenes 0.17.0",
  "log",
  "notify",
  "notify-rust",
@@ -2622,8 +2622,8 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-codecs"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
  "avif-serialize",
  "bytemuck",
@@ -2633,9 +2633,9 @@ dependencies = [
  "jpeg-decoder",
  "jpeg-encoder",
  "jxl-oxide",
- "lightcraft-color 0.15.0",
- "lightcraft-geom 0.15.0",
- "lightcraft-raster 0.15.0",
+ "lightcraft-color 0.17.0",
+ "lightcraft-geom 0.17.0",
+ "lightcraft-raster 0.17.0",
  "moxcms 0.9.1",
  "png",
  "rav1e",
@@ -2659,10 +2659,10 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-color"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
- "lightcraft-geom 0.15.0",
+ "lightcraft-geom 0.17.0",
  "serde",
 ]
 
@@ -2683,10 +2683,10 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-denoise-core"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
- "lightcraft-raster 0.15.0",
+ "lightcraft-raster 0.17.0",
  "miniz_oxide 0.9.1",
  "rayon",
  "serde",
@@ -2710,11 +2710,11 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-develop"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
- "lightcraft-color 0.15.0",
- "lightcraft-geom 0.15.0",
+ "lightcraft-color 0.17.0",
+ "lightcraft-geom 0.17.0",
  "miniz_oxide 0.9.1",
  "serde",
  "serde_json",
@@ -2760,32 +2760,32 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-engine"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
  "ab_glyph",
  "chrono",
- "craft-docpath 0.1.0 (git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0)",
+ "craft-docpath 0.1.0 (git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7)",
  "harfrust 0.13.3",
- "lightcraft-catalog 0.15.0",
- "lightcraft-codecs 0.15.0",
- "lightcraft-color 0.15.0",
- "lightcraft-denoise-core 0.15.0",
- "lightcraft-develop 0.15.0",
- "lightcraft-faces 0.15.0",
- "lightcraft-fetch 0.15.0",
- "lightcraft-geocode 0.15.0",
- "lightcraft-geom 0.15.0",
- "lightcraft-gpu 0.15.0",
- "lightcraft-lensdb 0.15.0",
- "lightcraft-merge 0.15.0",
- "lightcraft-meta 0.15.0",
- "lightcraft-pipeline 0.15.0",
- "lightcraft-preview 0.15.0",
- "lightcraft-raster 0.15.0",
- "lightcraft-raw 0.15.0",
- "lightcraft-scenes 0.15.0",
- "lightcraft-slideshow 0.15.0",
+ "lightcraft-catalog 0.17.0",
+ "lightcraft-codecs 0.17.0",
+ "lightcraft-color 0.17.0",
+ "lightcraft-denoise-core 0.17.0",
+ "lightcraft-develop 0.17.0",
+ "lightcraft-faces 0.17.0",
+ "lightcraft-fetch 0.17.0",
+ "lightcraft-geocode 0.17.0",
+ "lightcraft-geom 0.17.0",
+ "lightcraft-gpu 0.17.0",
+ "lightcraft-lensdb 0.17.0",
+ "lightcraft-merge 0.17.0",
+ "lightcraft-meta 0.17.0",
+ "lightcraft-pipeline 0.17.0",
+ "lightcraft-preview 0.17.0",
+ "lightcraft-raster 0.17.0",
+ "lightcraft-raw 0.17.0",
+ "lightcraft-scenes 0.17.0",
+ "lightcraft-slideshow 0.17.0",
  "log",
  "miniz_oxide 0.9.1",
  "rayon",
@@ -2812,8 +2812,8 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-faces"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
  "matrixmultiply",
  "ndarray",
@@ -2838,8 +2838,8 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-fetch"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
  "log",
  "rustls",
@@ -2859,8 +2859,8 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-geocode"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
  "miniz_oxide 0.9.1",
  "serde",
@@ -2876,8 +2876,8 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-geom"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
  "serde",
 ]
@@ -2901,16 +2901,16 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-gpu"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
  "bytemuck",
- "lightcraft-color 0.15.0",
- "lightcraft-develop 0.15.0",
- "lightcraft-faces 0.15.0",
- "lightcraft-geom 0.15.0",
- "lightcraft-pipeline 0.15.0",
- "lightcraft-raster 0.15.0",
+ "lightcraft-color 0.17.0",
+ "lightcraft-develop 0.17.0",
+ "lightcraft-faces 0.17.0",
+ "lightcraft-geom 0.17.0",
+ "lightcraft-pipeline 0.17.0",
+ "lightcraft-raster 0.17.0",
  "log",
  "pollster 1.0.1",
  "wgpu",
@@ -2926,8 +2926,8 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-inpaint"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
  "rayon",
 ]
@@ -2944,22 +2944,22 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-lensdb"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
- "lightcraft-develop 0.15.0",
- "lightcraft-geom 0.15.0",
+ "lightcraft-develop 0.17.0",
+ "lightcraft-geom 0.17.0",
  "quick-xml",
 ]
 
 [[package]]
 name = "lightcraft-mcp"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
- "lightcraft-codecs 0.15.0",
- "lightcraft-engine 0.15.0",
- "lightcraft-raster 0.15.0",
+ "lightcraft-codecs 0.17.0",
+ "lightcraft-engine 0.17.0",
+ "lightcraft-raster 0.17.0",
  "log",
  "serde_json",
 ]
@@ -2983,16 +2983,16 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-merge"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
- "lightcraft-codecs 0.15.0",
- "lightcraft-color 0.15.0",
- "lightcraft-geom 0.15.0",
- "lightcraft-meta 0.15.0",
- "lightcraft-raster 0.15.0",
- "lightcraft-raw 0.15.0",
- "lightcraft-scenes 0.15.0",
+ "lightcraft-codecs 0.17.0",
+ "lightcraft-color 0.17.0",
+ "lightcraft-geom 0.17.0",
+ "lightcraft-meta 0.17.0",
+ "lightcraft-raster 0.17.0",
+ "lightcraft-raw 0.17.0",
+ "lightcraft-scenes 0.17.0",
  "rayon",
  "serde",
  "thiserror 2.0.21",
@@ -3012,12 +3012,12 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-meta"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
  "chrono",
- "lightcraft-geom 0.15.0",
- "lightcraft-tiff 0.15.0",
+ "lightcraft-geom 0.17.0",
+ "lightcraft-tiff 0.17.0",
  "quick-xml",
  "serde",
 ]
@@ -3039,15 +3039,15 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-pipeline"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
- "lightcraft-color 0.15.0",
- "lightcraft-develop 0.15.0",
- "lightcraft-geom 0.15.0",
- "lightcraft-inpaint 0.15.0",
- "lightcraft-raster 0.15.0",
- "lightcraft-raw 0.15.0",
+ "lightcraft-color 0.17.0",
+ "lightcraft-develop 0.17.0",
+ "lightcraft-geom 0.17.0",
+ "lightcraft-inpaint 0.17.0",
+ "lightcraft-raster 0.17.0",
+ "lightcraft-raw 0.17.0",
  "rayon",
  "serde",
 ]
@@ -3067,11 +3067,11 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-preview"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
  "jpeg-encoder",
- "lightcraft-raster 0.15.0",
+ "lightcraft-raster 0.17.0",
  "log",
  "siphasher",
  "zune-core",
@@ -3091,11 +3091,11 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-raster"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
- "lightcraft-color 0.15.0",
- "lightcraft-geom 0.15.0",
+ "lightcraft-color 0.17.0",
+ "lightcraft-geom 0.17.0",
  "rayon",
  "serde",
 ]
@@ -3122,16 +3122,16 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-raw"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
  "jpeg-encoder",
  "jxl-oxide",
- "lightcraft-color 0.15.0",
- "lightcraft-geom 0.15.0",
- "lightcraft-meta 0.15.0",
- "lightcraft-raster 0.15.0",
- "lightcraft-tiff 0.15.0",
+ "lightcraft-color 0.17.0",
+ "lightcraft-geom 0.17.0",
+ "lightcraft-meta 0.17.0",
+ "lightcraft-raster 0.17.0",
+ "lightcraft-tiff 0.17.0",
  "miniz_oxide 0.9.1",
  "rayon",
  "serde",
@@ -3153,11 +3153,11 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-scenes"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
- "lightcraft-color 0.15.0",
- "lightcraft-raster 0.15.0",
+ "lightcraft-color 0.17.0",
+ "lightcraft-raster 0.17.0",
  "rayon",
  "serde",
 ]
@@ -3174,10 +3174,10 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-slideshow"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
- "lightcraft-raster 0.15.0",
+ "lightcraft-raster 0.17.0",
  "serde",
  "serde_json",
 ]
@@ -3193,8 +3193,8 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-tiff"
-version = "0.15.0"
-source = "git+https://github.com/storytold/lightcraft?tag=v0.15.0#e381c1ae6b2006ce627b243fe41697ce0d9608e0"
+version = "0.17.0"
+source = "git+https://github.com/storytold/lightcraft?tag=v0.17.0#5a09d075306291a1522d5e8bb0710774f3733594"
 dependencies = [
  "serde",
  "thiserror 2.0.21",

@@ -28,7 +28,7 @@ rustix = { workspace = true }
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
-# The phone fork's engine (it has `library.addRemote`, which upstream v0.15.0 lacks), pinned to its v0.1.0 tag. The desktop app keeps
+# The phone fork's engine (it has `library.addRemote`, which upstream v0.15.0 to v0.17.0 lack), pinned to its v0.1.0 tag. The desktop app keeps
 # the upstream engine; the two never meet in one crate. The fork depends on this crate, a dev-only cycle through git.
 lightcraft-engine = { git = "https://github.com/tinytom21/lightcraft-android", rev = "dd8af9a5d7115247b7e8d213bc08c070f7da7bd4" }
 lightcraft-scenes = { git = "https://github.com/tinytom21/lightcraft-android", rev = "dd8af9a5d7115247b7e8d213bc08c070f7da7bd4" }

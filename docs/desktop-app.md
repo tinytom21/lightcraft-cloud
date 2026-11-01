@@ -47,7 +47,7 @@ against a missing drive), the mobile files, and the manifest last. `--dry-run` c
 The tray icon (idle green, syncing blue, changes waiting amber, paused grey, error red) has the menu Sync now, Pause/Resume,
 Status..., Settings..., Quit, and, while a newer version exists, "Update to vX.Y.Z" at the top (see "Installing and updating"). On Linux it is a StatusNotifierItem over D-Bus (`tray-icon`'s `ksni` backend: no GTK or
 libappindicator to install). The desktop needs a tray host: KDE has one; GNOME needs the AppIndicator extension (Ubuntu ships
-it). The windows (egui 0.37, the version LightCraft v0.15.0 uses) run as `lightcraft-cloud-desktop ui status|settings`, in a
+it). The windows (egui 0.37, the version LightCraft v0.17.0 uses) run as `lightcraft-cloud-desktop ui status|settings`, in a
 process of their own, so a problem in a window cannot stop the sync; they read `<state>/status.json` and write the config file,
 which the app notices within two seconds.
 
@@ -254,7 +254,7 @@ app does that for you, until LightCraft does it by itself (upstream PR #3421), w
 
 ### Rendering
 
-Thumbnails and smart previews come from LightCraft's engine (`lightcraft-engine`, pinned to `v0.15.0`, no `sam` and no
+Thumbnails and smart previews come from LightCraft's engine (`lightcraft-engine`, pinned to `v0.17.0`, no `sam` and no
 `denoise` features), in this process, through the same commands the Python tool sends to `lightcraft-cli`: `library.import`
 (mode `add`), `photo.inspect`, `library.smartPreviews`, `app.export` (JPEG, long edge `thumb_px`, quality 80, sRGB, with the
 photo's current edits) and, for a changed sidecar, `photo.readMetadataFromFile`. `previewKey` is the engine's own name for the
@@ -265,3 +265,10 @@ Render-only is enforced, not assumed: the engine works on a scratch library in `
 switched off), the app refuses a library folder under `~/Pictures` or named `LightCraft Library` and has no setting to point it
 elsewhere, and the tests check that the source folder is byte- and mtime-identical after a sync. The user's LightCraft library
 is never opened, locked or written.
+
+**A new engine version does not re-render anything by itself.** The state remembers each photo's size, time and sidecar, not the
+engine that made its thumbnail, and a sync renders only the photos the scan lists as new, changed or with a changed sidecar. After an
+update that carries a newer engine, the first sync finds nothing to do and uploads nothing: the thumbnails and smart previews already
+in the cloud stay as they are (the new engine opens the old scratch library in `<state>/lib` as it is). A photo that is new, changed or
+has a new edit is rendered by the new engine from then on. The `previewKey` and the photo `id` do not depend on the engine version.
+The manifest's `publisher` (`lightcraft-cloud-desktop <version>`) is not compared when deciding whether to upload the manifest.
