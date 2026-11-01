@@ -4,7 +4,7 @@ name: desktop
 # No secrets are used; the only output is a zip artifact.
 on:
   push:
-    branches: [step6-windows, main]
+    branches: [main]
   pull_request:
 
 permissions:
