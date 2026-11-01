@@ -91,7 +91,7 @@ fn env(tag: &str, backup_time: &str) -> Env {
     std::fs::write(
         &config,
         format!(
-            "source = \"{}\"\nremote = \"{}\"\nstate_dir = \"{}\"\nnotify = true\nphoto_backup = \"{}\"\ndevice_history_days = 30\n",
+            "source = '{}'\nremote = '{}'\nstate_dir = '{}'\nnotify = true\nphoto_backup = '{}'\ndevice_history_days = 30\n",
             photos.display(),
             remote.display(),
             state.display(),

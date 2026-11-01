@@ -128,7 +128,7 @@ fn env(tag: &str, role: &str) -> Env {
     std::fs::write(
         &config,
         format!(
-            "role = \"{role}\"\nsource = \"{}\"\nremote = \"{}\"\nstate_dir = \"{}\"\nfolders = [\"Lisbon\"]\ndevice = \"laptop\"\nnotify = true\nlightcraft_control_port = 7999\n",
+            "role = \"{role}\"\nsource = '{}'\nremote = '{}'\nstate_dir = '{}'\nfolders = [\"Lisbon\"]\ndevice = \"laptop\"\nnotify = true\nlightcraft_control_port = 7999\n",
             photos.display(),
             cloud.display(),
             state.display()

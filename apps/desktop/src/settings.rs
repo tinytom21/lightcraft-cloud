@@ -291,7 +291,7 @@ mod tests {
         );
         assert_eq!((c.file.thumb_px, c.file.max_delete), (512, 50));
         // a form made from the saved file keeps what it does not show
-        std::fs::write(&e.config_path, format!("source = \"{}\"\nremote = \"gd:LC\"\nthumb_px = 256\nmax_delete = 7\n", photos.display())).unwrap();
+        std::fs::write(&e.config_path, format!("source = '{}'\nremote = \"gd:LC\"\nthumb_px = 256\nmax_delete = 7\n", photos.display())).unwrap();
         let c = Config::load(Some(&e.config_path)).unwrap();
         let mut f2 = Form::from_file(&c.file, false);
         f2.notifications = false;
