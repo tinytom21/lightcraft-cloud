@@ -8,7 +8,7 @@ the PC then applies. Originals are only ever mirrored one way, and photo files a
 the folders you choose and send their edits back the same way.
 
 Remote layout and the inbox protocol: [FORMAT.md](FORMAT.md).
-Phone app: https://github.com/artcraft-android/lightcraft-android (cloud library support is a pending PR).
+Phone app: [LightCraft Cloud for Android](https://github.com/tinytom21/lightcraft-android/tree/lightcraft-cloud).
 
 ## What is in this repository
 
@@ -17,7 +17,7 @@ Phone app: https://github.com/artcraft-android/lightcraft-android (cloud library
 | `crates/sync` | Rust crate `lightcraft-cloud-client`: the sync client shared by the apps (talks to the remote through librclone, reads the manifest, fetches thumbnails and previews, sends edits back; the phone app uses it) and, in its `home` module, the PC side: publishing a photo folder, applying the phone's edits, merging sidecars. |
 | `apps/desktop` | `lightcraft-cloud-desktop`: the PC app: an always-running tray app (and the command line). Two builds: the full one is the home PC (renders thumbnails and smart previews with LightCraft's engine) or another PC; the light one (`--no-default-features`, no engine) is another PC only. See "Desktop app" and "Another PC" below. |
 | `tools/parity` | The harness that runs the Python tool and the Rust app on the same generated photos and compares everything they write. |
-| `legacy/` | The current PC tool, `lc-cloud`, written in Python. It is still what runs the sync today; see "Legacy tool" below. |
+| `legacy/` | The first PC tool, `lc-cloud`, written in Python. `lightcraft-cloud-desktop` replaces it; see "Legacy tool" below. |
 
 ## Building the Rust part
 
@@ -65,7 +65,7 @@ CI (`.github/workflows/desktop.yml`) builds the light build (`--no-default-featu
 
 ## Desktop app (`lightcraft-cloud-desktop`)
 
-The Rust port of what `lc-cloud` does on the PC, writing the same remote layout ([FORMAT.md](FORMAT.md)), so the phone app
+The PC app, a Rust port of what `lc-cloud` did, writing the same remote layout ([FORMAT.md](FORMAT.md)), so the phone app
 works with either. It has its own config and state; it never reads or writes the Python tool's
 (`~/.config/lightcraft-cloud/`, `~/.local/state/lightcraft-cloud/`), and refuses a `state_dir` inside the latter.
 
@@ -284,13 +284,13 @@ publishing and history), plus tests with the real engine in `apps/desktop/tests`
 
 ## Legacy tool (`lc-cloud`)
 
-The current PC side, still in use. Publish a folder of photos as a LightCraft cloud library. `lc-cloud` runs on your PC, mirrors the folder to any
+The first PC side, replaced by `lightcraft-cloud-desktop` and kept for reference. Publish a folder of photos as a LightCraft cloud library. `lc-cloud` runs on your PC, mirrors the folder to any
 [rclone](https://rclone.org) remote (Google Drive, S3, WebDAV, ...), and writes thumbnails, smart previews and a manifest
 next to it. The LightCraft phone app browses that library, downloads a small preview to edit, and sends the edits back
 as XMP sidecars. `lc-cloud` pulls them into the matching sidecar on the PC. The PC stays the master copy: originals are
 only ever mirrored one way, and photo files are never modified.
 
-Phone app: https://github.com/artcraft-android/lightcraft-android (cloud library support is a pending PR).
+Phone app: [LightCraft Cloud for Android](https://github.com/tinytom21/lightcraft-android/tree/lightcraft-cloud).
 Remote layout and the inbox protocol: [FORMAT.md](FORMAT.md).
 
 ### Requirements
