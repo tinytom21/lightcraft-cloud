@@ -4,10 +4,11 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::time::{Duration, Instant};
 
-use egui::{Color32, RichText, Ui};
+use egui::{Margin, RichText, Ui};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 use crate::settings::{Form, SaveEnv, Storage};
+use crate::ui::theme::{self, Kind as ButtonKind};
 
 /// The window a dialog belongs to (eframe's `Frame`): without a parent the desktop portal cannot place the dialog and it
 /// can end up hidden behind the window.
@@ -137,85 +138,99 @@ impl SettingsPanel {
         if self.picker.waiting() {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
         }
-        ui.heading(if self.setup { "Set up LightCraft Cloud" } else { "Settings" });
+        let t = theme::CHARCOAL;
+        theme::title(ui, if self.setup { "Set up LightCraft Cloud" } else { "Settings" });
         if self.setup {
-            ui.label("Choose the photos to publish and where the cloud library is stored. Nothing is uploaded until you save.");
+            ui.add_space(4.0);
+            ui.add(egui::Label::new(RichText::new("Choose the photos to publish and where the cloud library is stored. Nothing is uploaded until you save.").color(t.text_dim)).wrap());
         }
-        ui.add_space(8.0);
-
-        let label = ui.label(RichText::new("Photo folder").strong());
-        ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.form.source).desired_width(380.0).hint_text("/path/to/your/photos")).labelled_by(label.id);
-            if ui.button("Browse…").clicked() {
-                self.picker.start(&self.form.source, parent);
-            }
-        });
-        ui.add_space(6.0);
-        let label = ui.label(RichText::new("Folders to leave out (one name pattern per line, e.g. exported)").strong());
-        ui.add(egui::TextEdit::multiline(&mut self.form.exclude).desired_rows(3).desired_width(460.0)).labelled_by(label.id);
-
-        ui.add_space(10.0);
-        ui.label(RichText::new("Storage").strong());
-        let mut kind = if matches!(self.form.storage, Storage::Rclone { .. }) { Kind::Rclone } else { Kind::Local };
-        let before = kind;
-        ui.horizontal(|ui| {
-            ui.radio_value(&mut kind, Kind::Rclone, "One of my rclone remotes");
-            ui.radio_value(&mut kind, Kind::Local, "A folder on this PC");
-        });
-        if kind != before {
-            self.form.storage = match kind {
-                Kind::Rclone => Storage::Rclone { remote: String::new(), path: "LightCraft Cloud".into() },
-                Kind::Local => Storage::Local { dir: String::new() },
-            };
-        }
-        let names: Vec<String> = self.remotes.clone().unwrap_or_default();
-        match &mut self.form.storage {
-            Storage::Rclone { remote, path } => {
-                ui.horizontal(|ui| {
-                    let shown = if remote.is_empty() { "Choose a remote".to_string() } else { remote.clone() };
-                    egui::ComboBox::from_label("Remote").selected_text(shown).show_ui(ui, |ui| {
-                        for n in &names {
-                            ui.selectable_value(remote, n.clone(), n);
-                        }
-                    });
-                    let label = ui.label("Folder on it");
-                    ui.add(egui::TextEdit::singleline(path).desired_width(220.0).hint_text("LightCraft Cloud")).labelled_by(label.id);
-                });
-                match &self.remotes {
-                    Err(e) => {
-                        ui.colored_label(Color32::from_rgb(0xd9, 0x8a, 0x1f), format!("Could not list your rclone remotes: {e}"));
-                    }
-                    Ok(n) if n.is_empty() => {
-                        ui.colored_label(Color32::from_rgb(0xd9, 0x8a, 0x1f), "Your rclone config has no remotes yet. Add one with `rclone config`.");
-                    }
-                    Ok(_) => {}
-                }
-                ui.label(RichText::new("The app uses your existing rclone config for now (sign-in comes later).").weak());
-            }
-            Storage::Local { dir } => {
-                let label = ui.label("Folder on this PC");
-                ui.add(egui::TextEdit::singleline(dir).desired_width(460.0).hint_text("/path/to/a/folder")).labelled_by(label.id);
-            }
-        }
-        ui.add_space(6.0);
-        ui.radio_value(&mut self.form.previews_only, false, "Originals and previews");
-        ui.radio_value(&mut self.form.previews_only, true, "Previews only");
-
-        ui.add_space(10.0);
-        ui.checkbox(&mut self.form.notifications, "Show desktop notifications");
-        ui.checkbox(&mut self.form.start_at_login, "Start when I log in");
-
         ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            if ui.button(if self.setup { "Save and start" } else { "Save" }).clicked() {
-                self.save();
-            }
+
+        theme::panel(ui, None, |ui| {
+            let label = theme::field_label(ui, "Photo folder");
+            ui.horizontal(|ui| {
+                let browse = 96.0;
+                let room = (ui.available_width() - browse - ui.spacing().item_spacing.x).max(120.0);
+                ui.add_sized([room, 30.0], theme::text_edit(&mut self.form.source).hint_text("/path/to/your/photos")).labelled_by(label.id);
+                if theme::button(ui, "Browse…", ButtonKind::Secondary).clicked() {
+                    self.picker.start(&self.form.source, parent);
+                }
+            });
+            ui.add_space(4.0);
+            let label = theme::field_label(ui, "Folders to leave out (one name pattern per line, e.g. exported)");
+            let width = ui.available_width();
+            ui.add(egui::TextEdit::multiline(&mut self.form.exclude).desired_rows(3).desired_width(width).margin(Margin::symmetric(8, 6))).labelled_by(label.id);
         });
+
+        theme::gap(ui);
+        theme::panel(ui, Some("Storage"), |ui| {
+            let mut kind = if matches!(self.form.storage, Storage::Rclone { .. }) { Kind::Rclone } else { Kind::Local };
+            let before = kind;
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 16.0;
+                ui.radio_value(&mut kind, Kind::Rclone, "One of my rclone remotes");
+                ui.radio_value(&mut kind, Kind::Local, "A folder on this PC");
+            });
+            if kind != before {
+                self.form.storage = match kind {
+                    Kind::Rclone => Storage::Rclone { remote: String::new(), path: "LightCraft Cloud".into() },
+                    Kind::Local => Storage::Local { dir: String::new() },
+                };
+            }
+            let names: Vec<String> = self.remotes.clone().unwrap_or_default();
+            match &mut self.form.storage {
+                Storage::Rclone { remote, path } => {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        let shown = if remote.is_empty() { "Choose a remote".to_string() } else { remote.clone() };
+                        egui::ComboBox::from_label("Remote").selected_text(shown).show_ui(ui, |ui| {
+                            for n in &names {
+                                ui.selectable_value(remote, n.clone(), n);
+                            }
+                        });
+                        let label = ui.label("Folder on it");
+                        ui.add_sized([200.0, 30.0], theme::text_edit(path).hint_text("LightCraft Cloud")).labelled_by(label.id);
+                    });
+                    match &self.remotes {
+                        Err(e) => {
+                            ui.add(egui::Label::new(RichText::new(format!("Could not list your rclone remotes: {e}")).color(t.caution)).wrap());
+                        }
+                        Ok(n) if n.is_empty() => {
+                            ui.add(egui::Label::new(RichText::new("Your rclone config has no remotes yet. Add one with `rclone config`.").color(t.caution)).wrap());
+                        }
+                        Ok(_) => {}
+                    }
+                    ui.add(egui::Label::new(RichText::new("The app uses your existing rclone config for now (sign-in comes later).").size(11.5).color(t.text_dim)).wrap());
+                }
+                Storage::Local { dir } => {
+                    let label = theme::field_label(ui, "Folder on this PC");
+                    let width = ui.available_width();
+                    ui.add_sized([width, 30.0], theme::text_edit(dir).hint_text("/path/to/a/folder")).labelled_by(label.id);
+                }
+            }
+            ui.add_space(2.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 16.0;
+                ui.radio_value(&mut self.form.previews_only, false, "Originals and previews");
+                ui.radio_value(&mut self.form.previews_only, true, "Previews only");
+            });
+        });
+
+        theme::gap(ui);
+        theme::panel(ui, None, |ui| {
+            ui.checkbox(&mut self.form.notifications, "Show desktop notifications");
+            ui.checkbox(&mut self.form.start_at_login, "Start when I log in");
+        });
+
+        ui.add_space(14.0);
+        if theme::button(ui, if self.setup { "Save and start" } else { "Save" }, ButtonKind::Primary).clicked() {
+            self.save();
+        }
         for p in &self.problems {
-            ui.colored_label(Color32::from_rgb(0xd0, 0x3b, 0x3b), p);
+            ui.add(egui::Label::new(RichText::new(p).color(t.reject)).wrap());
         }
         for d in &self.done {
-            ui.colored_label(Color32::from_rgb(0x2e, 0x9d, 0x5b), d);
+            ui.add(egui::Label::new(RichText::new(d).color(t.ok)).wrap());
         }
     }
 }

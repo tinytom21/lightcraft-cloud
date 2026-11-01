@@ -14,6 +14,7 @@ use crate::instance::InstanceLock;
 use crate::settings::{Form, SaveEnv};
 use crate::ui::settings_panel::SettingsPanel;
 use crate::ui::status::{self, StatusView};
+use crate::ui::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -75,13 +76,15 @@ impl eframe::App for Window {
             self.tab = t;
         }
         if !self.setup_only {
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.tab, Tab::Status, "Status");
-                ui.selectable_value(&mut self.tab, Tab::Settings, "Settings");
+            theme::top_bar(ui, |ui| {
+                for (tab, label) in [(Tab::Status, "Status"), (Tab::Settings, "Settings")] {
+                    if theme::tab(ui, self.tab == tab, label).clicked() {
+                        self.tab = tab;
+                    }
+                }
             });
-            ui.separator();
         }
-        egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
+        theme::page(ui, |ui| match self.tab {
             Tab::Status if !self.setup_only => {
                 status::show(ui, &StatusView { status: self.status.as_ref(), running: self.running, now: SystemTime::now() })
             }
@@ -131,7 +134,7 @@ pub fn run_window(tab: Tab, config_path: Option<PathBuf>) -> Result<(), String> 
     };
     win.refresh();
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title(title).with_inner_size([620.0, 640.0]).with_min_inner_size([480.0, 420.0]),
+        viewport: egui::ViewportBuilder::default().with_title(title).with_inner_size([620.0, 700.0]).with_min_inner_size([480.0, 420.0]),
         ..eframe::NativeOptions::default()
     };
     let pending = win.pending.clone();
@@ -139,6 +142,7 @@ pub fn run_window(tab: Tab, config_path: Option<PathBuf>) -> Result<(), String> 
         title,
         options,
         Box::new(move |cc| {
+            theme::install(&cc.egui_ctx);
             let ctx = cc.egui_ctx.clone();
             std::thread::spawn(move || read_tab_requests(std::io::stdin().lock(), pending, ctx));
             Ok(Box::new(win))

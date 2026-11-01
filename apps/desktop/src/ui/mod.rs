@@ -4,6 +4,7 @@
 
 pub mod settings_panel;
 pub mod status;
+pub mod theme;
 pub mod window;
 
 pub use settings_panel::{FolderPicker, SettingsPanel};
