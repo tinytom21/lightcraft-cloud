@@ -212,7 +212,9 @@ fn the_home_pcs_new_sidecar_is_taken_and_its_folder_is_read_in_lightcraft_once()
     put(&e.cloud, "mobile/manifest.json", m.to_string().as_bytes());
     run_due(&mut svc, &e, 15 * 60);
     assert_eq!(std::fs::read(e.photos.join("Lisbon/A.xmp")).unwrap(), new);
-    assert_eq!(*e.lightcraft.1.lock().unwrap(), [e.photos.join("Lisbon").to_str().unwrap().to_string()]);
+    // (as the app sends it: the system's own form, which on Windows turns this test's `pc/photos` into `pc\\photos`)
+    let folder = lightcraft_cloud_desktop::refresh::system_form(&e.photos.join("Lisbon"));
+    assert_eq!(*e.lightcraft.1.lock().unwrap(), [folder.to_str().unwrap().to_string()]);
     assert_eq!(svc.status().lightcraft_refresh_waiting, 0);
     run_due(&mut svc, &e, 15 * 60);
     assert_eq!(e.lightcraft.1.lock().unwrap().len(), 1, "nothing changed, so nothing more is read");
