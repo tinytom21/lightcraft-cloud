@@ -74,7 +74,8 @@ and contents. Nothing in the format changes. Names are longer underneath (a 12-b
    documents (base, PC, phone), each compared by namespace and name, written as attribute or child element alike:
    * the same on both sides, or changed only by the phone: the phone's value; changed only on the PC: the PC's value
    * changed differently on both sides: a conflict, and the **newer side wins** that one property (inbox UTC stamp vs.
-     PC sidecar mtime; ties go to the PC). Conflicts are logged. A property that is absent counts as a value, so a
+     the PC sidecar's time; ties go to the PC). A sidecar made from an edit has that edit's stamp as its time (a merge the newer
+     of its two sides), any other sidecar its mtime. Stamps are when the device sent the edit, by its own clock. Conflicts are logged. A property that is absent counts as a value, so a
      deletion on one side is kept unless the other side changed the property too.
    * `xmp:MetadataDate`, `xmp:ModifyDate` and `xmp:CreatorTool` come from the newer side and are never conflicts.
    * `lc:settings` (JSON) is merged the same way leaf by leaf through nested objects. Lists (masks, spots, ...) are one

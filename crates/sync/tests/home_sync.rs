@@ -968,6 +968,29 @@ fn inbox_pc_newer_wins_the_conflicting_leaf() {
     assert_eq!(settings_of(&im.pc()), with_settings(&[("light.exposure", j(0.9)), ("color.vibrance", j(4.0))]));
 }
 
+/// Found by a question on Reddit: an edit sent just before the home PC applied another one, and arriving just after, lost to it, because
+/// the applied sidecar's file time is when this PC wrote it, not when that edit was sent.
+#[test]
+fn edits_arriving_in_different_syncs_are_ordered_by_when_they_were_sent() {
+    let v0 = sc().build();
+    let first = sc().s(&[("light.exposure", j(0.5))]).build();
+    let later = sc().s(&[("light.exposure", j(0.9))]).build();
+    let earlier = sc().s(&[("light.exposure", j(0.1))]).build();
+    let im = Im::new(&v0, 1 << 32, &[&v0]);
+    assert_eq!(im.run(&[(Im::name(&v0, "20200101T000100Z"), first.clone())], false).applied, 1);
+    // sent after the applied edit, arrives later: it wins the setting, though the file on disk was written after its stamp
+    let s = im.run(&[(Im::name(&v0, "20200101T000200Z"), later)], false);
+    assert_eq!((s.merged, s.kept), (1, 0));
+    assert_eq!(settings_of(&im.pc())["light"]["exposure"], json!(0.9));
+
+    let im = Im::new(&v0, 1 << 32, &[&v0]);
+    assert_eq!(im.run(&[(Im::name(&v0, "20200101T000100Z"), first)], false).applied, 1);
+    // sent before the applied edit, arrives later: the applied edit keeps the setting
+    let s = im.run(&[(Im::name(&v0, "20200101T000000Z"), earlier)], false);
+    assert_eq!((s.merged + s.noop, s.kept), (1, 0), "{s:?}");
+    assert_eq!(settings_of(&im.pc())["light"]["exposure"], json!(0.5));
+}
+
 #[test]
 fn inbox_base_not_stored_falls_back_to_newest_wins() {
     let v0 = sc().build();

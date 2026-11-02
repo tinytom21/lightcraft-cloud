@@ -115,6 +115,11 @@ def norm_hist(p):
     return re.sub(r"pc-\d{8}T\d{6}Z", "pc-<mtime>", p)
 
 
+def xmp_files(root):
+    """The stored sidecars (the Rust app also keeps a `.stamp` beside the ones an edit made)."""
+    return {p for p in files(root) if str(p).endswith(".xmp")}
+
+
 def compare_sets(area, a, b, norm=lambda x: x):
     A, B = sorted(map(norm, a)), sorted(map(norm, b))
     if A == B:
@@ -276,7 +281,7 @@ def compare_round(py, rs, label):
     compare_manifest(py, rs)
     compare_media(py, rs)
     compare_state(py, rs)
-    compare_sets("sidecar version store (names)", files(py.state / "sidecar-versions"), files(rs.state / "sidecar-versions"))
+    compare_sets("sidecar version store (names)", xmp_files(py.state / "sidecar-versions"), xmp_files(rs.state / "sidecar-versions"))
     # originals: the same bytes
     diffs = []
     for p in files(py.remote):
@@ -418,7 +423,7 @@ def main():
     compare_sets("local history (names)", files(py.state / "history"), files(rs.state / "history"), lambda p: norm_hist(re.sub(r"^\d{4}-\d{2}-\d{2}/", "", p)))
     diffs = [p for p in files(py.state / "history") if (rs.state / "history" / p).exists() and (py.state / "history" / p).read_bytes() != (rs.state / "history" / p).read_bytes()]
     report("local history: same bytes", not diffs, str(diffs))
-    compare_sets("sidecar version store (names)", files(py.state / "sidecar-versions"), files(rs.state / "sidecar-versions"))
+    compare_sets("sidecar version store (names)", xmp_files(py.state / "sidecar-versions"), xmp_files(rs.state / "sidecar-versions"))
     compare_sets("remote: inbox-done / inbox leftovers", [p for p in files(py.remote) if p.startswith(("inbox", "inbox-done"))],
                  [p for p in files(rs.remote) if p.startswith(("inbox", "inbox-done"))], norm_path)
     # the reject notes say why

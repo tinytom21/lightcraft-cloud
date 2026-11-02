@@ -59,10 +59,21 @@ The PC apps are one program, `lightcraft-cloud-desktop`, built two ways (the *ho
 
 ## What it does, day to day
 
-* **Edits.** Edit a photo in LightCraft on any PC, or on the phone. The edit is saved as an XMP sidecar next to the photo, travels through the cloud and ends up on every device. If two devices changed the same photo, the settings are merged and the newer edit wins any clash.
+* **Edits.** Edit a photo in LightCraft on any PC, or on the phone. The edit is saved as an XMP sidecar next to the photo, travels through the cloud and ends up on every device. If two devices changed the same photo, the edits are merged, as described below.
 * **Imports.** On another PC, import photos in LightCraft into the synced folder, in any folder structure you like. The app keeps your folder structure, sends the photos to the home PC, and they appear in LightCraft there.
 * **Live progress.** While it works, the Status window and the tray tooltip show what it is doing, how far along it is and about how long is left, and say so if nothing has moved for a while.
 * **Refresh of LightCraft.** The app tells your running LightCraft about new photos and new edits, so you do not have to run Synchronize Folder. This needs LightCraft to be running and its control port to be on (see Quick start).
+
+## If two devices edit the same photo
+
+Usually neither edit is thrown away. Both go to the home PC, which merges them setting by setting, using the version each device started from. This works the same for a laptop that was offline for a week.
+
+* **Different settings** (exposure on the phone, a rating on the laptop): both are kept.
+* **The same setting, changed differently:** the edit sent last wins that setting. "Last" means when the device sent the edit, by its own clock, not when you made it.
+* **Crop, geometry, tone curve, profile and white balance** each count as one unit, and so do masks and spots. If both sides changed anything inside one, the later edit's whole unit wins.
+* **If the edits can't be merged safely** (the starting version is gone, a file can't be read, the edits use different LightCraft settings formats), the newest edit wins the whole file.
+
+The version that gets replaced or loses is saved in the home PC's history (`history/` in its state folder), and every incoming edit stays in the cloud for 30 days. Clashes are written to the log, and getting a losing version back is a manual file copy: there is no screen for it yet. Photo files are never modified. Details: [FORMAT.md](FORMAT.md#conflict-policy).
 
 ## Quick start
 

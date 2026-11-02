@@ -169,6 +169,19 @@ impl VersionStore {
         }
     }
 
+    /// Remember when the edit that made this version was sent (the seconds of its inbox stamp). A convenience like the versions: without
+    /// it a conflict compares with the file's own time.
+    pub fn store_stamp(&self, hash: &str, epoch: f64) {
+        if let Err(e) = write_atomic(&self.dir.join(format!("{hash}.stamp")), epoch.to_string().as_bytes()) {
+            log::warn!("cannot keep the time of sidecar version {hash}: {e}");
+        }
+    }
+
+    /// When the edit that made this version was sent, if it came through the inbox.
+    pub fn stamp(&self, hash: &str) -> Option<f64> {
+        std::fs::read_to_string(self.dir.join(format!("{hash}.stamp"))).ok()?.trim().parse().ok().filter(|t: &f64| t.is_finite())
+    }
+
     /// The stored version with this hash, or None (never stored, purged, or damaged).
     pub fn load(&self, hash: &str) -> Option<Vec<u8>> {
         let data = std::fs::read(self.dir.join(format!("{hash}.xmp"))).ok()?;

@@ -283,6 +283,11 @@ impl Home {
                 scan_cache.insert(rel.clone(), scan_sidecar_now(source, &rel)?);
             }
             let (sc_rel, mut sc_hash, mut sc_mtime) = scan_cache[&rel].clone();
+            // a sidecar that an edit made is as old as that edit, not as the moment this PC wrote it: otherwise an edit sent before
+            // that write, arriving after it, would look older than the one it came after
+            if let Some(t) = sc_hash.as_deref().and_then(|h| versions.stamp(h)) {
+                sc_mtime = Some(t);
+            }
             if let Some((h, t)) = cur.get(&rel) {
                 sc_hash = Some(h.clone());
                 sc_mtime = Some(*t);
@@ -368,8 +373,11 @@ impl Home {
                 self.sidecar_written(&abs_t);
                 let new_hash = sidecar_version(out);
                 versions.store(out, &new_hash);
-                cur.insert(rel.clone(), (new_hash.clone(), p.epoch));
-                scan_cache.insert(rel.clone(), (Some(target.clone()), Some(new_hash), Some(p.epoch)));
+                // (a merge holds both sides, so it is as new as the newer one)
+                let made = if merged.is_some() { sc_mtime.map_or(p.epoch, |t| t.max(p.epoch)) } else { p.epoch };
+                versions.store_stamp(&new_hash, made);
+                cur.insert(rel.clone(), (new_hash.clone(), made));
+                scan_cache.insert(rel.clone(), (Some(target.clone()), Some(new_hash), Some(made)));
                 if merged.is_none() {
                     summary.applied += 1;
                 } else {
