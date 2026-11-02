@@ -73,6 +73,22 @@ fn scan_sidecar_naming_rules() {
     assert_eq!(e["x/P1.jpg"].sidecar_target, "x/P1.jpg.xmp");
 }
 
+/// Windows (and macOS) do not tell `IMG_1.CR3.XMP` from `img_1.cr3.xmp`: the sidecar is found whatever its capitals, and a raw and a JPEG whose
+/// stems differ only by case are one pair, as in `find_sidecars` and the manifest.
+#[test]
+fn sidecars_and_pairs_are_found_whatever_the_capitals() {
+    let d = temp("scan-case");
+    for n in ["x/IMG_1.CR3", "x/img_1.JPG", "x/img_1.XMP", "x/Q.ARW", "x/q.arw.xmp", "x/R.jpg", "x/r.Xmp"] {
+        touch(&d, n, b"x", 100);
+    }
+    let e = scan_source(&d, SystemTime::now(), &[], None).entries;
+    assert_eq!(e["x/IMG_1.CR3"].sidecar.as_deref(), Some("x/img_1.XMP"), "the raw owns the stem sidecar, found in other capitals");
+    assert_eq!(e["x/Q.ARW"].sidecar.as_deref(), Some("x/q.arw.xmp"));
+    assert_eq!(e["x/R.jpg"].sidecar.as_deref(), Some("x/r.Xmp"));
+    // the sidecar to create is spelled after the photo
+    assert_eq!(e["x/IMG_1.CR3"].sidecar_target, "x/IMG_1.xmp");
+}
+
 #[test]
 fn scan_diff_classification() {
     let d = temp("scan5");
