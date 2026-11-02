@@ -151,17 +151,28 @@ jobs:
           foreach ($n in "lightcraft-cloud-${{ steps.ver.outputs.version }}-windows-setup.exe", "lightcraft-cloud-${{ steps.ver.outputs.version }}-windows-home-setup.exe") {
             if (-not (Test-Path "dist\$n")) { throw "$n was not built" }
           }
+      - name: The v0.2.0 installer (the last release), checked against its published checksums
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory old | Out-Null
+          $base = "https://github.com/tinytom21/lightcraft-cloud/releases/download/v0.2.0"
+          Invoke-WebRequest "$base/lightcraft-cloud-0.2.0-windows-setup.exe" -OutFile old\lightcraft-cloud-0.2.0-windows-setup.exe
+          Invoke-WebRequest "$base/SHA256SUMS" -OutFile old\SHA256SUMS
+          $want = ((Get-Content old\SHA256SUMS | Where-Object { $_ -match 'windows-setup.exe' }) -split '\s+')[0]
+          $got = (Get-FileHash old\lightcraft-cloud-0.2.0-windows-setup.exe -Algorithm SHA256).Hash.ToLower()
+          if ($want -ne $got) { throw "the v0.2.0 installer does not match its checksum: $want vs $got" }
+          "v0.2.0 installer: $((Get-Item old\lightcraft-cloud-0.2.0-windows-setup.exe).Length) bytes, sha256 $got"
       - name: Test the light installer on Windows (install, run, update over a running copy, uninstall; the home one over it, and not the other way)
         shell: pwsh
         run: |
           $d = "dist\lightcraft-cloud-${{ steps.ver.outputs.version }}"
-          ./packaging/windows/test-installer.ps1 -Setup (Resolve-Path "$d-windows-setup.exe").Path -Version "${{ steps.ver.outputs.version }}" -Variant light -OtherSetup (Resolve-Path "$d-windows-home-setup.exe").Path
+          ./packaging/windows/test-installer.ps1 -Setup (Resolve-Path "$d-windows-setup.exe").Path -Version "${{ steps.ver.outputs.version }}" -Variant light -OtherSetup (Resolve-Path "$d-windows-home-setup.exe").Path -OldSetup (Resolve-Path old\lightcraft-cloud-0.2.0-windows-setup.exe).Path
       - name: Test the home installer on Windows (the same; and the light one does not go over it)
         if: ${{ !cancelled() }}
         shell: pwsh
         run: |
           $d = "dist\lightcraft-cloud-${{ steps.ver.outputs.version }}"
-          ./packaging/windows/test-installer.ps1 -Setup (Resolve-Path "$d-windows-home-setup.exe").Path -Version "${{ steps.ver.outputs.version }}" -Variant home -OtherSetup (Resolve-Path "$d-windows-setup.exe").Path
+          ./packaging/windows/test-installer.ps1 -Setup (Resolve-Path "$d-windows-home-setup.exe").Path -Version "${{ steps.ver.outputs.version }}" -Variant home -OtherSetup (Resolve-Path "$d-windows-setup.exe").Path -OldSetup (Resolve-Path old\lightcraft-cloud-0.2.0-windows-setup.exe).Path
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:

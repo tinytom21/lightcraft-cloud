@@ -4,6 +4,7 @@
 #   test-installer.ps1 -Setup <lightcraft-cloud-x.y.z-windows-setup.exe> -Version x.y.z                                  (the light edition)
 #   test-installer.ps1 -Setup <lightcraft-cloud-x.y.z-windows-home-setup.exe> -Version x.y.z -Variant home               (the home edition)
 #   ... -OtherSetup <the other edition's installer>   also tests installing one edition over the other
+#   ... -OldSetup <the v0.2.0 installer>             first installs that, and checks that this installer updates it
 #
 # What it checks: a silent install to the default place; the version, from there; the Run value; the Start menu entry and the uninstall
 # entry; the installer run again over a RUNNING copy (the app is asked to quit, files replaced, the app started again); `quit`; that a Run value
@@ -15,7 +16,8 @@ param(
     [Parameter(Mandatory)][string]$Setup,
     [Parameter(Mandatory)][string]$Version,
     [ValidateSet('light', 'home')][string]$Variant = 'light',
-    [string]$OtherSetup = ''
+    [string]$OtherSetup = '',
+    [string]$OldSetup = ''
 )
 $ErrorActionPreference = 'Stop'
 
@@ -72,6 +74,16 @@ Set-Content -Path (Join-Path $state 'planted-state.txt') -Value 'planted state'
 Set-Content -Path (Join-Path $rclone 'planted-rclone.conf') -Value '[x]'
 Set-Content -Path (Join-Path $photos 'IMG_TEST.txt') -Value 'not a photo'
 Check (-not (Test-Path $exe)) 'nothing is installed yet'
+
+# ---------------------------------------------------------------- an install from before there were two editions
+if ($OldSetup) {
+    Step 'an install made by the old installer (v0.2.0: one edition, no edition.txt)'
+    Check ((RunSetup 'old' $OldSetup) -eq 0) 'the old installer exits with 0'
+    Check (-not (Test-Path (Join-Path $app 'edition.txt'))) 'it wrote no edition.txt (an install without one is the light edition)'
+    $ov = & $exe --version | Out-String
+    Check ($ov -match 'lightcraft-cloud-desktop 0\.2\.0') "the installed exe is the old one: $($ov.Trim())"
+    Check ($null -ne (RunValue)) 'and it set "start when I log in"'
+}
 
 # ---------------------------------------------------------------- a first install
 Step 'silent install to the default place'
