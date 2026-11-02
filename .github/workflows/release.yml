@@ -4,12 +4,11 @@ name: release
 # two Linux archives and SHA256SUMS.
 #   * a tag `v*`: builds, checks, and creates a DRAFT GitHub release with the files and generated notes. Nothing is ever published by
 #     this workflow: the draft is published by hand (the in-app updater only sees published releases);
-#   * `workflow_dispatch` (and, for now, a push to the branch v0.2.1-work): the same build and the same checks, no release at all.
+#   * `workflow_dispatch`: the same build and the same checks, no release at all.
 # The only secret used is the automatic GITHUB_TOKEN, and only in the last job, only on a tag.
 on:
   push:
     tags: ["v*"]
-    branches: [v0.2.1-work] # (temporary, removed before the work is merged)
   workflow_dispatch:
 
 permissions:
