@@ -27,6 +27,12 @@ pub struct EngineRenderer {
     ids: HashMap<PathBuf, u64>,
 }
 
+/// A photo's path as this system writes it. The sync crate names photos `<source>/<a/b/c.jpg>`; on Windows that is `D:\Photos\a/b/c.jpg`, a path
+/// that works but is spelled two ways. The engine keeps the text it was given, so every call spells it the same way: with the system's separator.
+fn native(p: &Path) -> PathBuf {
+    if cfg!(windows) { PathBuf::from(p.to_string_lossy().replace('/', "\\")) } else { p.to_path_buf() }
+}
+
 fn engine(e: impl std::fmt::Display) -> Error {
     Error::Engine(e.to_string())
 }
@@ -165,7 +171,7 @@ impl EngineRenderer {
             .catalog
             .photos()
             .filter_map(|p| match &p.source {
-                Source::File { path } => Some((PathBuf::from(path), p.id.0)),
+                Source::File { path } => Some((native(Path::new(path)), p.id.0)),
                 Source::Demo { .. } => None,
             })
             .collect();
@@ -193,7 +199,7 @@ impl EngineRenderer {
     }
 
     fn id_of(&self, photo: &Path) -> Option<u64> {
-        self.ids.get(photo).copied()
+        self.ids.get(&native(photo)).copied()
     }
 
     fn need(&self, photo: &Path) -> Result<u64> {
@@ -203,6 +209,8 @@ impl EngineRenderer {
 
 impl Renderer for EngineRenderer {
     fn add(&mut self, photo: &Path) -> Result<Added> {
+        let photo = native(photo);
+        let photo = photo.as_path();
         let r = self.run("library.import", json!({"paths": [photo.to_string_lossy()], "mode": "add"}))?;
         if let Some(f) = r["failed"].as_array().and_then(|f| f.first()) {
             return Err(Error::Engine(format!("import failed: {f}")));
@@ -210,7 +218,7 @@ impl Renderer for EngineRenderer {
         let me = photo.to_string_lossy();
         let id = if let Some(id) = r["imported"].as_array().and_then(|a| a.first()).and_then(Value::as_u64) {
             id
-        } else if let Some(d) = r["duplicates"].as_array().and_then(|d| d.iter().find(|d| d["path"].as_str() == Some(me.as_ref()))) {
+        } else if let Some(d) = r["duplicates"].as_array().and_then(|d| d.iter().find(|d| d["path"].as_str().is_some_and(|p| Path::new(p) == photo || p == me.as_ref()))) {
             let existing = d["existing"].as_u64();
             // the same file imported by an earlier run (its entry is still in the scratch library): not a duplicate
             match existing.filter(|e| self.ids.get(photo) == Some(e)) {
@@ -258,7 +266,7 @@ impl Renderer for EngineRenderer {
     }
 
     fn forget(&mut self, photos: &[PathBuf]) -> Result<()> {
-        let ids: Vec<u64> = photos.iter().filter_map(|p| self.ids.remove(p)).collect();
+        let ids: Vec<u64> = photos.iter().filter_map(|p| self.ids.remove(&native(p))).collect();
         if ids.is_empty() {
             return Ok(());
         }

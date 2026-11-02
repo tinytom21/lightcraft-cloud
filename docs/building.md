@@ -21,7 +21,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 The desktop app has two builds. The default one (feature `home`) is the full app and needs LightCraft's engine to render
-previews. `cargo build --release -p lightcraft-cloud-desktop --no-default-features` is the light build for another PC: the same
+previews. It builds and runs on Linux and on Windows (x86-64, MSVC). `cargo build --release -p lightcraft-cloud-desktop --no-default-features` is the light build for another PC: the same
 tray app, windows and sync client, with no LightCraft crate besides the shared sync crate in `cargo tree`, and a much smaller
 binary. Given a config for the home PC it says so and does nothing. Run the tests and clippy for both
 (`cargo test -p lightcraft-cloud-desktop --no-default-features`).
@@ -33,16 +33,44 @@ print "skipped" and pass.
 
 The sync crate's tests drive the lightcraft-android engine (tag `v0.1.0`, pinned by `rev` in `crates/sync/Cargo.toml`), because the
 upstream LightCraft engine does not have the command `library.addRemote` yet. The desktop app keeps the upstream engine
-(`v0.17.0`), so `Cargo.lock` holds both. Bump the `rev` when the phone fork's engine changes.
+(`v0.17.0`), so `Cargo.lock` holds both. Bump the `rev` when the phone fork's engine changes. Changing the app's engine version
+re-renders nothing by itself (see "Rendering" in [desktop-app.md](desktop-app.md)).
 
-## Windows (light build: another PC)
+**Tests that are not portable.** `cargo test --workspace` is run on Windows and on Linux by CI (`desktop.yml`, job "full build and all tests"), with no
+test skipped by default: a test that cannot run prints `skipped:` or `SKIPPED:` and the job fails on the word. Tests that make symbolic links need the
+privilege to (a CI runner has it; `LC_REQUIRE_SYMLINKS=1` turns a missing privilege into a failure instead of a printed skip). What is limited to one system, and why:
 
-`.github/workflows/release.yml` builds the light build (`--no-default-features`: no engine, role "another PC") on `windows-latest` and
-packs it into `lightcraft-cloud-<version>-windows-setup.exe` with Inno Setup (`packaging/windows/lightcraft-cloud.iss`; the `windows-latest` image ships Inno Setup 6.7.1, which CI uses and prints;
-if the image ever lacks it, CI installs 6.6.1 with Chocolatey; the script needs 6.3 or newer). The installer is per user (no administrator): `%LOCALAPPDATA%\Programs\LightCraft Cloud\` with the
+| Test | Runs on | Why |
+| --- | --- | --- |
+| `crates/sync/tests/home_windows.rs` (a sidecar or photo another program holds) | Windows | Linux has no mandatory file locks, so nothing there can be held. |
+| `other_import.rs: a_destination_the_home_pc_would_reject...` (`CON`, `a:b`, `ends.` as folder names) | Linux | Windows cannot create such folders, so no photo can be in one; the rule itself is tested on every system by `safe_rel_on` and the home import tests. |
+| `src/pending.rs` `mod tests` (written with POSIX paths) | Linux | They are not absolute paths on Windows; the module `windows_tests` beside it covers the same rules with Windows paths. |
+| `src/autostart.rs` | Linux: the `.desktop` file; Windows: the `Run` key (in a registry key of the test's own) | The two systems store "start when I log in" differently. |
+| `src/app.rs` `fake_exe` | Linux: a shell script; Windows: the `fake_window` example | A script cannot be started by `CreateProcess` as a program. |
+| `config.rs` `a_tilde_means...` | both, with different results for `~\` | A backslash is an ordinary character in a Linux file name. |
+| `util.rs` Windows tests (long paths, a held file) | Windows | The Win32 calls they test do not exist elsewhere. |
+
+The slow engine tests (`apps/desktop/tests/engine.rs`, `home_e2e.rs`) render with the CPU on both systems (`LIGHTCRAFT_GPU=0` in CI).
+
+## Windows (both builds)
+
+`.github/workflows/release.yml` builds both builds on `windows-latest` (`--no-default-features`: the light build, no engine, role "another PC"; and the default features: the home
+build with the engine) and packs each into an installer with Inno Setup (one script, `packaging/windows/lightcraft-cloud.iss`; `/DHome` makes the home one):
+`lightcraft-cloud-<version>-windows-setup.exe` (light; **this name must never change**, every v0.2.0 app's updater looks for it) and `lightcraft-cloud-<version>-windows-home-setup.exe`
+(the `windows-latest` image ships Inno Setup 6.7.1, which CI uses and prints;
+if the image ever lacks it, CI installs 6.6.1 with Chocolatey; the script needs 6.3 or newer). Each installer is per user (no administrator): `%LOCALAPPDATA%\Programs\LightCraft Cloud\` with the
 exe, `librclone.dll` (rclone's librclone built from [`tools/librclone`](../tools/librclone), rclone v1.75.2, with Go and cgo), the licences and
-`README.txt` (`packaging/windows/README.txt`). `desktop.yml` still builds, lints and tests the light build on every push, but no longer
-makes a zip.
+`README.txt` (`packaging/windows/README.txt` for the light one, `README-home.txt` for the home one). `desktop.yml` builds, lints and tests both builds on every push (and the whole workspace's tests on Windows
+and Linux), but makes no zip.
+
+* **One identity, two editions.** Both installers have the same `AppId`, folder, Start menu entry, Run value and uninstall entry; the installer writes `edition.txt` (`home` or `light`) next to the exe,
+  and `--version` says the same on its second line. Installing the home installer over the light app is an upgrade. The light installer over the home app is **refused** by `InitializeSetup` (nothing is
+  changed, the exit code is 1) because it would replace the engine and silently stop the home PC; an install from v0.2.0 has no `edition.txt` and counts as light. After an uninstall (which removes
+  `edition.txt`) either goes on. `test-installer.ps1 -Variant light|home -OtherSetup <the other installer>` tests all of that on the runner. The same-AppId choice means one program per PC (the
+  instance lock would stop a second copy anyway) and a plain upgrade path from "other PC" to "home PC".
+* **The C runtime is inside the exe.** `.cargo/config.toml` sets `-C target-feature=+crt-static` for `x86_64-pc-windows-msvc`, so `cargo build --release -p lightcraft-cloud-desktop` (either build) needs no
+  Visual C++ Redistributable on a clean PC. CI proves it per build: `tools/ci/pe_imports.py` lists the exe's imports (and delay-loaded ones) and fails on any `vcruntime*`, `msvcp*`, `ucrtbase` or
+  `api-ms-win-crt-*` import, and on any DLL that is not a file of `System32` (API sets excepted).
 
 * The installer stops a running app with the new exe's `quit` command, replaces the files, and starts the app again; if the install
   fails it starts the old one. `lightcraft-cloud-desktop quit [--wait SECONDS]` writes `<state>/quit-request`; the running app notices it
@@ -80,14 +108,15 @@ A release is made from a commit on `main` whose `desktop.yml` run is green. Noth
 
 1. Set the version in `Cargo.toml` (`[workspace.package] version`; the desktop crate and the sync crate follow it), run `cargo check` so `Cargo.lock` follows, update the docs, merge.
 2. Tag it and push the tag: `git tag v0.2.0 && git push origin v0.2.0`. The tag must be `v` plus the Cargo version; the workflow stops otherwise.
-3. `release.yml` builds, on real runners: the Windows installer (and runs `test-installer.ps1` against it), `linux-light` and `linux-home` on
+3. `release.yml` builds, on real runners: the two Windows installers (and runs `test-installer.ps1` against each, with the other as `-OtherSetup`), `linux-light` and `linux-home` on
    Ubuntu 22.04 (the oldest runner, so glibc 2.35 is the minimum; the job prints the real minimum and fails if it is higher; each archive's `install.sh` is
-   run in a throwaway home folder), and `SHA256SUMS` of the three files. Then it creates a **draft** release with those four files and generated notes.
+   run in a throwaway home folder), and `SHA256SUMS` of the four files. Then it creates a **draft** release with those five files and generated notes.
    A tag with a `-` in it (`v0.3.0-rc.1`) makes a draft prerelease.
 4. Open the draft on GitHub, read the notes, try the installer on a real Windows desktop (tray icon, Status window, SmartScreen), and publish it by hand.
-   The in-app updater only sees published releases (never drafts or prereleases), and it needs `lightcraft-cloud-<version>-windows-setup.exe` and `SHA256SUMS` in the release.
+   The in-app updater only sees published releases (never drafts or prereleases), and it needs, for the light app, `lightcraft-cloud-<version>-windows-setup.exe` and, for the home app,
+   `lightcraft-cloud-<version>-windows-home-setup.exe`, with `SHA256SUMS`, in the release; an app offers nothing when the file of its own kind is missing.
 
-`workflow_dispatch` and a push to the branch `installer` run the same builds and checks and publish nothing. The updater reads
+`workflow_dispatch` runs the same builds and checks and publishes nothing. The updater reads
 `https://api.github.com/repos/tinytom21/lightcraft-cloud/releases/latest`; its address, and the address installers are downloaded from, are constants in `apps/desktop/src/update.rs`
 (there is deliberately no setting, environment variable or option for them; the tests use a local server through a function only tests can call).
 

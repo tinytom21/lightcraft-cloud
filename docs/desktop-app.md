@@ -63,10 +63,15 @@ which the app notices within two seconds.
 
 ### Installing and updating
 
-**Windows** installs with `lightcraft-cloud-<version>-windows-setup.exe` (per user, no administrator, to
-`%LOCALAPPDATA%\Programs\LightCraft Cloud\`; see "Windows" in [building.md](building.md) for what it does). Running a newer setup over an
-installed or running copy is an update: the installer asks the app to quit (`quit`), replaces the files and starts it again. Config and state
-live elsewhere, so they carry over, also from a copy that was run from the old zip. **Linux** installs with the `install.sh` in the archive
+**Windows** installs with `lightcraft-cloud-<version>-windows-setup.exe` (another PC) or `lightcraft-cloud-<version>-windows-home-setup.exe` (the
+home PC, with the engine): per user, no administrator, to `%LOCALAPPDATA%\Programs\LightCraft Cloud\`; see "Windows" in [building.md](building.md) for
+what it does. Running a newer setup over an installed or running copy is an update: the installer asks the app to quit (`quit`), replaces the files and
+starts it again. Config and state live elsewhere, so they carry over, also from a copy that was run from the old zip. The two installers share one
+identity (the same Apps & features entry, folder, Start menu entry and "start when I log in" value), so there is one LightCraft Cloud per PC: the home
+installer goes over an installed other-PC app (an upgrade; Apps & features then reads "LightCraft Cloud (home PC)"), and the other-PC installer **refuses**
+to go over the home one (it changes nothing and exits with an error), because it would take the engine away and the home PC would stop publishing without
+a word. To go back to the other-PC app on purpose, uninstall first. `--version` prints a second line, `edition: home` or `edition: light`; the installer
+keeps the same fact in `edition.txt` next to the program (an install from v0.2.0 has none, and is light). **Linux** installs with the `install.sh` in the archive
 (`lightcraft-cloud-<version>-linux-light.tar.gz` or `-linux-home.tar.gz`; no `sudo`): the program in `~/.local/bin`, `librclone.so` in
 `~/.local/lib/lightcraft-cloud/`, which is one of the places the app looks for it.
 
@@ -88,12 +93,13 @@ window gets a row with the version, a link to the release notes and, on Windows,
 shown per version (not again after a restart; not at all with notifications off). Nothing is downloaded or installed until the click.
 
 **Update now** (Windows). The window asks the app (the file `<state>/update-request`); the app then downloads
-`lightcraft-cloud-<version>-windows-setup.exe` and `SHA256SUMS` from that release into `<state>/update/` (Status shows the progress bar and sizes),
+`lightcraft-cloud-<version>-windows-setup.exe` (the home build: `lightcraft-cloud-<version>-windows-home-setup.exe`) and `SHA256SUMS` from that release into `<state>/update/` (Status shows the progress bar and sizes),
 compares the installer's SHA-256 with the one in `SHA256SUMS`, and, if no sync or upload is running ("Updating when this sync finishes" otherwise), runs the
 installer with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`. The installer stops the app, replaces the files and starts the new version. Anything
 that goes wrong first (no network, a checksum that does not match, a file name or address that is not the release's, an installer that
 fails) is shown in Status in plain words and leaves the running app as it was; the old version keeps working. The leftover installer is removed at the next start.
-Only addresses under `https://github.com/tinytom21/lightcraft-cloud/releases/download/<tag>/` are downloaded, and a redirect is followed only to GitHub's own file
+**A build updates only to its own kind**: the home build looks for the home installer, the light build for the light one, and neither fetches the other's; a
+release that lacks the right installer (or `SHA256SUMS`) is offered as nothing at all on Windows. Only addresses under `https://github.com/tinytom21/lightcraft-cloud/releases/download/<tag>/` are downloaded, and a redirect is followed only to GitHub's own file
 hosts (`objects.githubusercontent.com` and its release-assets and github-releases siblings), over HTTPS. The address cannot be changed by a setting,
 an environment variable or an option.
 
@@ -176,7 +182,7 @@ came from the home PC.
 
 Limits for now: a folder means the photos directly in it (tick each subfolder you want); a photo moved by the home PC stays where
 this PC has it; if the home PC keeps its own sidecar instead of applying yours, your edit stays here until its sidecar changes
-again; the free-disk-space check is Linux only so far.
+again; the free-disk-space check needs the system to say how much is free (Linux and Windows do).
 
 ### Config
 
@@ -188,7 +194,7 @@ are ignored, so a Python config can be reused. State in `~/.local/state/lightcra
 | --- | --- | --- |
 | `remote` | **none, required** | an rclone `remote:path` (a crypt remote works: `lccrypt:`), or a local folder (starts with `/`, `~` or `.`; for tests). There is deliberately no default: nothing is published to a remote nobody named. |
 | `role` | `"home"` | `"home"` (publishes) or `"other"` (keeps a copy of some folders; see "Another PC") |
-| `source` | `~/Pictures/Photos` | folder to publish; on another PC, the local photo folder |
+| `source` | `~/Pictures/Photos` | folder to publish; on another PC, the local photo folder. `~` is the home folder (`%USERPROFILE%` on Windows, where `~\` works too) |
 | `folders` | `[]` | role `other`: the cloud library folders to keep, relative to `originals/` |
 | `device` | the host name, made valid | role `other`: this PC's name in `inbox/<device>/`; not a phone's name |
 | `exclude` | `[]` | folder-name patterns (fnmatch, case-sensitive) skipped at any depth |
@@ -203,7 +209,42 @@ are ignored, so a Python config can be reused. State in `~/.local/state/lightcra
 | `lightcraft_refresh_edits` | `true` | ask LightCraft to read the sidecars the sync wrote, so new edits show without Synchronize Folder (see "Showing new edits in LightCraft"); `false` turns only that off |
 | `state_dir` | `~/.local/state/lightcraft-cloud-desktop` | must not be under `~/Pictures` |
 | `rclone_config` | `$RCLONE_CONFIG`, else `~/.config/rclone/rclone.conf` | rclone config used for an rclone remote |
-| `librclone` | `$LIBRCLONE`, else `librclone.so` next to the executable, else `~/.local/lib/lightcraft-cloud/librclone.so`, else the system search path | the host `librclone.so` (see "Building the Rust part" in [building.md](building.md)); the desktop app looks in that order, so an installed app needs the library in one of those places (the Linux archives' `install.sh` and the Windows installer put it there) |
+| `librclone` | `$LIBRCLONE`, else `librclone.so` (Windows: `librclone.dll`) next to the executable, else `~/.local/lib/lightcraft-cloud/librclone.so`, else the system search path | the host `librclone.so` (see "Building the Rust part" in [building.md](building.md)); the desktop app looks in that order, so an installed app needs the library in one of those places (the Linux archives' `install.sh` and the Windows installer put it there) |
+
+### Windows as the home PC
+
+The Windows home PC is the same program as the Linux one (`lightcraft-cloud-<version>-windows-home-setup.exe`), built and tested on Windows 10/11 x86-64 and
+not code-signed. Where Windows differs from Linux, and what the app does about it:
+
+* **Paths.** Everything in the cloud is `/`-separated whatever the PC uses: the manifest, the originals' paths, the sidecar names, the import notes. The app turns
+  Windows paths into `/` paths when it reads the photo folder and back when it writes into it; a test publishes a nested folder with the real engine and checks that
+  no backslash reaches the manifest, then lets the other-PC code read it. Paths longer than 260 characters work (the app asks for the long form where it calls Windows
+  itself). A folder name Windows cannot hold (`CON`, `a:b`, a trailing dot) is refused from an import, as FORMAT.md says.
+* **Case.** Windows does not tell `IMG_1.JPG` from `img_1.jpg`. Sidecars are found whatever their capitals, a raw and a JPEG pair by stem whatever the capitals, and a
+  photo imported under a name that is taken is renamed `-2`, `-3`... (also ignoring case). "Folders to leave out" patterns stay case-sensitive (write them as the folder
+  is spelled), as on the other systems, so a library behaves the same on all of them.
+* **Files other programs hold.** Windows lets a program open a file so that nobody else can read or replace it. A phone edit that cannot be written because LightCraft (or a
+  virus scanner, or the indexer) has the sidecar open is tried again for a second and a half, then left in the cloud inbox for the next sync; the rest of the sync goes on, the
+  Status window shows "The sidecar ... is in use by another program", and the 2-minute inbox check does not start a sync for it again (the 15-minute sync retries). A sidecar that
+  cannot be *read* is not treated as deleted: its photo is left for the next sync and Status says so. A photo that cannot be opened to be read (rendered, hashed) is left out of
+  that sync altogether and listed in Status; nothing half-done is published. An upload that fails because the photo is held fails the sync with the file named, and the next one
+  tries again.
+* **Your LightCraft library.** The app never opens it. The scratch library it renders with is `<state>\lib` (`%LOCALAPPDATA%\lightcraft-cloud-desktop\lib`); the app refuses a scratch
+  library under `%USERPROFILE%\Pictures`, Windows' own Pictures folder and the OneDrive ones, in any spelling of the path (capitals, `\\?\`, `..`), one named like `LightCraft Library`,
+  one inside or around the folder `LIGHTCRAFT_LIBRARY` names, and any folder that holds (or sits inside) a LightCraft catalog (`catalog.snap`, `catalog.log`, `catalog.lock`)
+  that this app did not make. The folders it made carry a `.lightcraft-cloud-scratch` mark; a scratch library from an earlier version (no mark) is recognised by its state file next to it.
+  The state folder itself must not be under `Pictures` either.
+* **One run at a time.** The run lock and the one-app lock are Windows file locks, released by Windows when the process ends, so a crash or a kill leaves nothing behind.
+* **The folder watcher** uses Windows' directory change notifications. A burst of changes that overflows Windows' buffer is covered by the 15-minute sync.
+* **`photo_backup`.** The command is started without a console window. `restic` is found on the PATH as `restic.exe`; for a `.cmd` or `.bat` give its path (Windows starts those through `cmd`).
+  restic gets its repository and password from the user's environment (`RESTIC_REPOSITORY`, `RESTIC_PASSWORD`/`RESTIC_PASSWORD_FILE`). Without a backup newer than 48 hours the history is never
+  purged, and the Status window says so; `photo_backup = ""` switches the purge off.
+* **Setup.** "This is my home PC" offers `~/Pictures/Photos` as the folder (`C:\Users\you\Pictures\Photos`); choose the folder your photos are really in.
+* **Not different:** notifications (Windows toasts), the tray icon (`.ico` inside the exe), the windows-subsystem exe (no console; `--headless` and the commands print into the terminal that started them),
+  the control port (see Quick start), the updater (see above).
+
+What the Windows home PC cannot do: run on ARM Windows (no build), publish a photo folder on OneDrive "files on demand" without Windows downloading each file as it is read, or notice changes on a network
+drive that does not send change notifications (the 15-minute sync still runs). Everything else of the Linux home PC is there.
 
 ### Telling your LightCraft about new photos
 

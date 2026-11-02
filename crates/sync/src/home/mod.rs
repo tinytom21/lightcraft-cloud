@@ -270,18 +270,18 @@ impl Home {
     }
 }
 
-pub(crate) fn check_state_dir(dir: &Path) -> Result<()> {
-    let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from) else { return Ok(()) };
-    let pictures = std::fs::canonicalize(home.join("Pictures")).unwrap_or_else(|_| home.join("Pictures"));
-    // resolve as far as the path exists
-    let abs = std::path::absolute(dir).map_err(|e| Error::io(dir.display(), e))?;
+/// `p` made absolute, with symbolic links resolved as far as it exists (the rest, which does not exist yet, kept as written), as a list of
+/// components. On Windows (and macOS) the file system ignores case, so the components are lower-cased, and the `\\?\` form `canonicalize` gives is
+/// dropped, so that two spellings of one folder compare equal.
+fn resolved_parts(p: &Path) -> Result<Vec<String>> {
+    let abs = std::path::absolute(p).map_err(|e| Error::io(p.display(), e))?;
     let mut existing = abs.clone();
     let mut tail = Vec::new();
     while !existing.exists() {
         match (existing.file_name().map(|n| n.to_owned()), existing.parent().map(Path::to_path_buf)) {
-            (Some(n), Some(p)) => {
+            (Some(n), Some(parent)) => {
                 tail.push(n);
-                existing = p;
+                existing = parent;
             }
             _ => break,
         }
@@ -290,10 +290,20 @@ pub(crate) fn check_state_dir(dir: &Path) -> Result<()> {
     for t in tail.iter().rev() {
         resolved.push(t);
     }
-    if resolved.starts_with(&pictures) {
+    let text = resolved.to_string_lossy().replace('\\', "/");
+    let text = text.strip_prefix("//?/UNC/").map(|r| format!("//{r}")).or_else(|| text.strip_prefix("//?/").map(str::to_string)).unwrap_or(text);
+    let fold = cfg!(windows) || cfg!(target_os = "macos");
+    Ok(text.split('/').filter(|c| !c.is_empty()).map(|c| if fold { c.to_lowercase() } else { c.to_string() }).collect())
+}
+
+pub(crate) fn check_state_dir(dir: &Path) -> Result<()> {
+    let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from) else { return Ok(()) };
+    let pictures = resolved_parts(&home.join("Pictures"))?;
+    let mine = resolved_parts(dir)?;
+    if mine.len() >= pictures.len() && mine[..pictures.len()] == pictures[..] {
         return Err(Error::Invalid(format!(
             "state_dir {} is under ~/Pictures; refusing (keep it outside backups and away from your libraries)",
-            resolved.display()
+            dir.display()
         )));
     }
     Ok(())

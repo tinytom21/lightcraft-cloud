@@ -52,10 +52,10 @@ Three rules hold everywhere:
 | Part | What it is | Where |
 | --- | --- | --- |
 | Phone app | Android app. Shows thumbnails and small previews, lets you edit, sends the edits back. Holds no originals. | [lightcraft-android](https://github.com/tinytom21/lightcraft-android), downloads on its [Releases](https://github.com/tinytom21/lightcraft-android/releases) page |
-| Home PC app | Tray app on the PC where your master library lives. Publishes your photo folder, makes previews with LightCraft's engine, applies edits that arrive. Linux only for now. | This repository, [Releases](https://github.com/tinytom21/lightcraft-cloud/releases) |
+| Home PC app | Tray app on the PC where your master library lives. Publishes your photo folder, makes previews with LightCraft's engine, applies edits that arrive. Linux and Windows (x86-64). | This repository, [Releases](https://github.com/tinytom21/lightcraft-cloud/releases) |
 | Other-PC app | The same tray app without the engine. Keeps a copy of the folders you choose, sends back edits and imported photos. Windows and Linux. | This repository, [Releases](https://github.com/tinytom21/lightcraft-cloud/releases) |
 
-The PC apps are one program, `lightcraft-cloud-desktop`, built two ways. The phone app is a fork of LightCraft for Android.
+The PC apps are one program, `lightcraft-cloud-desktop`, built two ways (the *home* build with the engine, the *light* build without). The phone app is a fork of LightCraft for Android.
 
 ## What it does, day to day
 
@@ -68,14 +68,19 @@ The PC apps are one program, `lightcraft-cloud-desktop`, built two ways. The pho
 
 Setup is manual today. You need an rclone remote for your cloud storage (`rclone config`). The phone connects with a config file exported from the PC. There is no QR pairing.
 
-Downloads are on the [Releases](https://github.com/tinytom21/lightcraft-cloud/releases) page (from v0.2.0):
+Downloads are on the [Releases](https://github.com/tinytom21/lightcraft-cloud/releases) page (from v0.2.0; the Windows home PC one from v0.2.1):
 
 | File | For |
 | --- | --- |
 | `lightcraft-cloud-<version>-windows-setup.exe` | Windows, another PC. A normal installer; no administrator needed. |
+| `lightcraft-cloud-<version>-windows-home-setup.exe` | Windows, the home PC (with the engine). The same kind of installer. |
 | `lightcraft-cloud-<version>-linux-light.tar.gz` | Linux, another PC (no LightCraft engine). |
 | `lightcraft-cloud-<version>-linux-home.tar.gz` | Linux, the home PC (with the engine). |
-| `SHA256SUMS` | checksums of the three files above. |
+| `SHA256SUMS` | checksums of the four files above. |
+
+The two Windows installers are the same program in two builds, so they install in the same place and one goes over the other. The home one goes over an
+installed other-PC app (an upgrade, with your settings). The other-PC installer refuses to go over the home one and changes nothing, because that would stop
+the home PC from publishing; uninstall first if you really want that. An app updates only to its own kind: a home app never installs the other-PC installer, and the other way round.
 
 Each Linux archive holds the program, `librclone.so`, the licences and an `install.sh`. Unpack it and run `./install.sh`: it puts the
 program in `~/.local/bin` and the library in `~/.local/lib/lightcraft-cloud/`, where the app looks for it. It needs no `sudo`.
@@ -88,16 +93,19 @@ The Linux programs need glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 
 * Linux Flatpak: `flatpak override --user --env=LIGHTCRAFT_CONTROL_PORT=7980 ai.storyteller.lightcraft`
 * Windows: `setx LIGHTCRAFT_CONTROL_PORT 7980`
 
-**3. Home PC (Linux).**
+**3. Home PC (Linux or Windows).**
 
-1. Download `lightcraft-cloud-<version>-linux-home.tar.gz` from Releases, unpack it and run `./install.sh`. Start `lightcraft-cloud-desktop`. Setup opens on the first run.
-2. Choose **This is my home PC**, your photo folder and your rclone remote with a folder on it.
+1. Linux: download `lightcraft-cloud-<version>-linux-home.tar.gz` from Releases, unpack it and run `./install.sh`, then start `lightcraft-cloud-desktop`.
+   Windows: run `lightcraft-cloud-<version>-windows-home-setup.exe` and start LightCraft Cloud from the Start menu. Setup opens on the first run.
+2. Choose **This is my home PC**, your photo folder (the folder your photos are in, for example `D:\Photos` on Windows; never your LightCraft library folder) and your rclone remote with a folder on it.
 3. Choose "Originals and previews", or "Previews only" if you do not want the originals in the cloud.
 4. Save. The first sync starts and uploads the library.
 
+The app only renders on the home PC: it works on a scratch library of its own in its state folder and never opens, locks or changes your LightCraft library.
+
 **4. Another PC.**
 
-1. Windows: run `lightcraft-cloud-<version>-windows-setup.exe` from Releases. Linux: unpack `lightcraft-cloud-<version>-linux-light.tar.gz` and run `./install.sh`.
+1. Windows: run `lightcraft-cloud-<version>-windows-setup.exe` from Releases (not the home one). Linux: unpack `lightcraft-cloud-<version>-linux-light.tar.gz` and run `./install.sh`.
 2. Start it. Setup opens on the first run. Choose **This is another PC**.
 3. Pick the cloud library, a photo folder on this PC, and tick the folders to keep.
 4. Add that photo folder to LightCraft, and set LightCraft's import destination to it.
@@ -110,7 +118,7 @@ The Linux programs need glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 
 
 **Updates.** The app looks on GitHub once a day for a newer published release (the request carries only the app's name and version in its User-Agent, nothing about you or your library;
 switch it off with "Check for new versions" in Settings). When there is one, the tray menu and the Status window say so. On Windows, **Update now**
-downloads the installer, checks it against the release's `SHA256SUMS`, waits until no sync is running, installs it and restarts the app. On Linux it only links to the
+downloads the installer of its own kind, checks it against the release's `SHA256SUMS`, waits until no sync is running, installs it and restarts the app. On Linux it only links to the
 release; unpack the new archive and run `./install.sh` again. Nothing is ever installed without a click.
 
 ## Status and limits
@@ -118,8 +126,12 @@ release; unpack the new archive and run `./install.sh` again. Nothing is ever in
 This is early software.
 
 * Albums and uploading photos from the phone are not built.
-* The Windows installer and program are not code-signed, so Windows SmartScreen warns when you first run the installer. The update check compares the installer with a checksum file from the same GitHub release: that catches a damaged download, not a release published by someone who has taken over the GitHub account.
-* The home PC app is Linux only. A Mac build does not exist.
+* The Windows installers and programs are not code-signed, so Windows SmartScreen warns when you first run the installer. The update check compares the installer with a checksum file from the same GitHub release: that catches a damaged download, not a release published by someone who has taken over the GitHub account.
+* A Mac build does not exist. The home PC app runs on Linux and on Windows 10 or 11 (x86-64); there is no ARM build of either.
+* The Windows home PC app has been built and tested on a real Windows (a CI runner), but not yet used on a real home PC's tray and desktop. What differs from Linux
+  there: another program (LightCraft with a sidecar open, a virus scanner) can hold a file, and then the app waits for the next sync and Status says which file; the
+  history purge needs restic on the PATH (or a path in `photo_backup`), or `photo_backup = ""`; "Folders to leave out" are matched with their exact capitals.
+  See [desktop-app.md](docs/desktop-app.md#windows-as-the-home-pc).
 * LightCraft must be running for the automatic refresh to work. Without it the photos and sidecars still arrive; run Synchronize Folder in LightCraft.
 * On Linux the app needs rclone's `librclone.so` library in a place it looks; `install.sh` puts it there (see the [config reference](docs/desktop-app.md#config) for the places).
 

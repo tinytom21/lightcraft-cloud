@@ -28,13 +28,25 @@ pub fn newest_age_hours(json: &str, now: SystemTime) -> Result<f64, String> {
 
 /// Run `<command> snapshots --latest 1 --json` and say how old the newest snapshot is.
 pub fn latest_age_hours(command: &str, now: SystemTime) -> Result<f64, String> {
+    latest_age_hours_in(command, now, None)
+}
+
+/// [`latest_age_hours`], looking for the command on `path` (a PATH-style list) instead of this process's own: for tests.
+///
+/// The command is started without a console window. On Windows a bare `restic` finds `restic.exe` on the PATH; a `.cmd` or `.bat` needs its
+/// extension (Windows then starts it through `cmd`).
+pub fn latest_age_hours_in(command: &str, now: SystemTime, path: Option<&std::ffi::OsStr>) -> Result<f64, String> {
     let mut cmd = std::process::Command::new(command);
     cmd.args(["snapshots", "--latest", "1", "--json"]).stdin(std::process::Stdio::null());
+    if let Some(p) = path {
+        cmd.env("PATH", p);
+    }
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000); // (no console window)
-    let out = cmd
-        .output()
-        .map_err(|e| format!("cannot run `{command}` to confirm a recent backup: {e}"))?;
+    let out = cmd.output().map_err(|e| {
+        let hint = if cfg!(windows) && !command.contains('.') { " (on Windows, name the file with its extension: restic.exe, restic.cmd)" } else { "" };
+        format!("cannot run `{command}` to confirm a recent backup: {e}{hint}")
+    })?;
     if !out.status.success() {
         return Err("`photo_backup snapshots` failed; cannot confirm a recent backup".into());
     }
@@ -44,6 +56,7 @@ pub fn latest_age_hours(command: &str, now: SystemTime) -> Result<f64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn now() -> SystemTime {
         parse_rfc3339("2026-11-01T12:00:00Z").unwrap()
@@ -95,6 +108,45 @@ mod tests {
                 assert!(r.unwrap_err().contains(want));
             }
         }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The command is found on the PATH, as a user who set `photo_backup = "restic"` (or `"restic.cmd"`) expects. The program is a stand-in
+    /// that prints a snapshot an hour old: `fake-restic` (a script) on Unix, `fake-restic.cmd` (started through `cmd`) on Windows.
+    #[test]
+    fn the_command_is_found_on_the_path() {
+        let d = std::env::temp_dir().join(format!("lc-desktop-backup-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        #[cfg(unix)]
+        let (name, body) = ("fake-restic", "#!/bin/sh\necho '[{\"time\":\"2026-11-01T11:00:00Z\"}]'\n");
+        #[cfg(windows)]
+        let (name, body) = ("fake-restic.cmd", "@echo off\r\necho [{\"time\":\"2026-11-01T11:00:00Z\"}]\r\n");
+        let f = d.join(name);
+        std::fs::write(&f, body).unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&f, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        // (the system folders stay on the PATH: `cmd` and `sh` live there)
+        let mut dirs = vec![d.clone()];
+        if cfg!(windows) {
+            dirs.extend(std::env::var_os("SystemRoot").map(|r| PathBuf::from(r).join("System32")));
+        } else {
+            dirs.extend(["/bin", "/usr/bin"].map(PathBuf::from));
+        }
+        let path = std::env::join_paths(dirs).unwrap();
+        let mut r = latest_age_hours_in(name, now(), Some(&path));
+        for _ in 0..100 {
+            if !r.as_ref().is_err_and(|e| e.contains("busy")) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            r = latest_age_hours_in(name, now(), Some(&path));
+        }
+        assert!((r.unwrap() - 1.0).abs() < 1e-6);
+        // and a name that is nowhere says so, with the hint on Windows
+        let e = latest_age_hours_in("no-such-restic", now(), Some(&path)).unwrap_err();
+        assert!(e.contains("cannot run `no-such-restic`"), "{e}");
+        assert_eq!(e.contains("extension"), cfg!(windows), "{e}");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

@@ -124,3 +124,28 @@ fn the_manifest_and_the_remote_use_forward_slashes_in_nested_folders() {
     assert!(!m.to_string().contains("\\\\"), "no backslash anywhere in the manifest: {m}");
     assert!(fx.remote_tree().contains(&"originals/2024/Trip to Porto/Day 1/IMG_1.jpg".to_string()));
 }
+
+/// Windows does not tell `Pictures` from `PICTURES`, nor `C:\Users\me` from `\\?\C:\Users\me`: the state folder is refused in every spelling.
+#[test]
+fn the_state_folder_under_pictures_is_refused_in_any_spelling() {
+    use lightcraft_cloud_client::home::{Home, HomeConfig};
+    use lightcraft_cloud_client::DirRemote;
+    use std::sync::Arc;
+    let home = std::env::var("USERPROFILE").unwrap();
+    for bad in [
+        format!(r"{home}\Pictures\_x_state"),
+        format!(r"{home}\PICTURES\_x_state"),
+        format!(r"{}\pictures\_x_state", home.to_lowercase()),
+        format!(r"\\?\{home}\Pictures\_x_state"),
+        format!(r"{home}\Documents\..\Pictures\_x_state"),
+        format!("{home}/Pictures/_x_state"),
+    ] {
+        let cfg = HomeConfig::new(r"C:\nowhere", &bad, "r");
+        let e = Home::new(cfg, Arc::new(DirRemote::new(r"C:\nowhere-remote"))).err().unwrap_or_else(|| panic!("{bad} was accepted"));
+        assert!(e.to_string().contains("Pictures"), "{bad}: {e}");
+    }
+    assert!(!std::path::Path::new(&format!(r"{home}\Pictures\_x_state")).exists());
+    // a folder next to Pictures, whose name merely starts with it, is fine
+    let ok = HomeConfig::new(r"C:\nowhere", format!(r"{home}\Pictures2\_x_state"), "r");
+    assert!(Home::new(ok, Arc::new(DirRemote::new(r"C:\nowhere-remote"))).is_ok());
+}
