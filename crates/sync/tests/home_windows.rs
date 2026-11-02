@@ -175,7 +175,7 @@ fn what_lightcraft_is_told_is_a_plain_windows_path() {
     let id = content_hash(b"one");
     fx.put_inbox(&format!("phone/{id}-{LATER}-{}.xmp", sha16(&old)), &sc().rating(5).build());
     let bytes = b"imported photo bytes".to_vec();
-    let imp = content_hash(&bytes);
+    let imp = lightcraft_cloud_client::home::content_hash_bytes(&bytes);
     let dir = fx.remote.join(format!("imports/laptop/{imp}"));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("two.jpg"), &bytes).unwrap();

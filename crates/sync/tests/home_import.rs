@@ -1145,7 +1145,10 @@ fn the_hook_gets_the_absolute_path_of_an_adopted_photo_before_the_import_is_file
     let got = seen.lock().unwrap().clone();
     assert_eq!(got.len(), 1, "{got:?}");
     assert!(got[0].0.is_absolute() && got[0].0.ends_with("Trip/a.jpg"), "{:?}", got[0].0);
-    assert!(got[0].0.starts_with(std::fs::canonicalize(&fx.src).unwrap()), "inside the photo folder");
+    // (inside the photo folder; the path is the plain way of writing it, without the `\\?\` form canonicalize gives on Windows)
+    let canon = std::fs::canonicalize(&fx.src).unwrap();
+    let plain = std::path::PathBuf::from(canon.to_string_lossy().trim_start_matches(r"\\?\"));
+    assert!(got[0].0.starts_with(&plain), "inside the photo folder: {:?} vs {plain:?}", got[0].0);
     assert!(got[0].1, "the note was still waiting on the remote when the hook ran");
     assert!(got[0].0.is_file(), "the photo is on disk when it is announced");
 }
