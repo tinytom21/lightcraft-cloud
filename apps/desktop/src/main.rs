@@ -324,6 +324,10 @@ fn run_command(a: Args, cfg: Config) -> std::result::Result<(), Failure> {
             let home = build_home(&cfg, !a.dry)?;
             let mut renderer = engine::LazyRenderer::new(cfg.state_dir.join("lib"));
             let report = home.sync(&mut renderer, a.dry)?;
+            // (a sidecar or photo another program holds waits for the next sync; the user is told here as Status tells them)
+            for p in report.inbox.problems.iter().chain(&report.problems) {
+                println!("PROBLEM: {p}");
+            }
             let n = report.inbox.applied + report.inbox.merged;
             if n > 0 && !a.dry {
                 let name = cfg.source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();

@@ -240,7 +240,56 @@ mod tests {
     }
 
     fn env(d: &std::path::Path) -> SaveEnv {
-        SaveEnv { config_path: d.join("cfg/config.toml"), autostart_dir: d.join("autostart"), exe: PathBuf::from("/x/lightcraft-cloud-desktop") }
+        // (where "start when I log in" is written: a folder on Linux, a registry key of the test's own on Windows, never the real Run key)
+        let autostart_dir = if cfg!(windows) {
+            let name = d.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            PathBuf::from(format!(r"Software\LightCraftCloudTests\settings-{name}"))
+        } else {
+            d.join("autostart")
+        };
+        SaveEnv { config_path: d.join("cfg/config.toml"), autostart_dir, exe: PathBuf::from("/x/lightcraft-cloud-desktop") }
+    }
+
+    /// Whether anything of "start when I log in" exists at the test's place (the folder, or the registry key).
+    #[cfg(feature = "home")]
+    fn autostart_place_exists(e: &SaveEnv) -> bool {
+        #[cfg(windows)]
+        return crate::winsys::registry_key_exists(&e.autostart_dir.to_string_lossy());
+        #[cfg(not(windows))]
+        e.autostart_dir.exists()
+    }
+
+    /// Replace the entry with a marker only the test could have written, and read it back.
+    #[cfg(feature = "home")]
+    fn put_marker(e: &SaveEnv) {
+        #[cfg(windows)]
+        crate::winsys::registry_set(&e.autostart_dir.to_string_lossy(), autostart::FILE_NAME, "marker").unwrap();
+        #[cfg(not(windows))]
+        {
+            let entry = e.autostart_dir.join(autostart::FILE_NAME);
+            std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+            std::fs::write(entry, "marker").unwrap();
+        }
+    }
+
+    #[cfg(feature = "home")]
+    fn read_marker(e: &SaveEnv) -> String {
+        #[cfg(windows)]
+        return autostart::entry_text(&e.autostart_dir).unwrap();
+        #[cfg(not(windows))]
+        std::fs::read_to_string(e.autostart_dir.join(autostart::FILE_NAME)).unwrap()
+    }
+
+    /// Remove what a test made at the place.
+    #[cfg(feature = "home")]
+    fn clean_autostart(e: &SaveEnv) {
+        #[cfg(windows)]
+        {
+            crate::winsys::registry_delete_key(&e.autostart_dir.to_string_lossy());
+            crate::winsys::registry_delete_key(r"Software\LightCraftCloudTests");
+        }
+        #[cfg(not(windows))]
+        let _ = e;
     }
 
     #[test]
@@ -286,7 +335,7 @@ mod tests {
         f.notifications = false;
         let done = f.save(&e, Some(&["gd".to_string()])).unwrap();
         assert_eq!(done.len(), 1); // (the autostart box was not touched: nothing written there)
-        assert!(!e.autostart_dir.exists());
+        assert!(!autostart_place_exists(&e));
         let c = Config::load(Some(&e.config_path)).unwrap();
         assert_eq!(
             (c.file.exclude.clone(), c.file.remote.as_deref(), c.file.previews_only, c.file.notify),
@@ -332,7 +381,7 @@ mod tests {
         let mut f = Form::first_run(true);
         f.source = "/nonexistent-folder-for-lc-test".into();
         assert!(f.save(&e, None).is_err());
-        assert!(!e.config_path.exists() && !e.autostart_dir.exists());
+        assert!(!e.config_path.exists() && !autostart_place_exists(&e));
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -347,20 +396,20 @@ mod tests {
         f.start_at_login = true;
         let done = f.save(&e, None).unwrap();
         assert!(done.iter().any(|m| m.contains("start when you log in")) && autostart::is_enabled(&e.autostart_dir));
-        let entry = e.autostart_dir.join(autostart::FILE_NAME);
-        std::fs::write(&entry, "marker").unwrap();
+        put_marker(&e);
         f.save(&e, None).unwrap(); // saved again, box unchanged: the entry is not rewritten
-        assert_eq!(std::fs::read_to_string(&entry).unwrap(), "marker");
+        assert_eq!(read_marker(&e), "marker");
         f.start_at_login = false;
         f.save(&e, None).unwrap();
         assert!(!autostart::is_enabled(&e.autostart_dir));
         // a form opened with the box already ticked and saved as it is leaves the entry alone
-        enable_marker(&entry);
+        put_marker(&e);
         let mut g = Form::first_run(true);
         g.source = f.source.clone();
         g.storage = f.storage.clone();
         g.save(&e, None).unwrap();
-        assert_eq!(std::fs::read_to_string(&entry).unwrap(), "marker");
+        assert_eq!(read_marker(&e), "marker");
+        clean_autostart(&e);
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -425,9 +474,4 @@ mod tests {
         assert_eq!(Form::from_file(&file, false).role == Role::Other, !cfg!(feature = "home"));
     }
 
-    #[cfg(feature = "home")]
-    fn enable_marker(entry: &std::path::Path) {
-        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
-        std::fs::write(entry, "marker").unwrap();
-    }
 }

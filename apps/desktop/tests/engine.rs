@@ -27,7 +27,7 @@ fn files(root: &Path) -> Vec<String> {
             if e.path().is_dir() {
                 walk(base, &e.path(), out);
             } else {
-                out.push(e.path().strip_prefix(base).unwrap().to_string_lossy().into_owned());
+                out.push(e.path().strip_prefix(base).unwrap().to_string_lossy().replace('\\', "/"));
             }
         }
     }

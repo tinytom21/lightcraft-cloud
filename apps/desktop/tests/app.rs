@@ -20,6 +20,13 @@ use lightcraft_cloud_desktop::service::{Command, Service};
 use lightcraft_cloud_desktop::worker::HomeWorker;
 use sha2::{Digest, Sha256};
 
+/// The modification time of a photo "from yesterday", on the fake clock's calendar. (Not the wall clock's: the fake clock starts on
+/// 2026-11-01 whatever day the tests run on, and a photo modified in the fake clock's future is still being written, so it would not be
+/// published. Tests that used the real time failed for an hour after midnight on 2026-11-02, the day after the fake clock's own.)
+fn long_ago() -> std::time::SystemTime {
+    FakeClock::new().now() - Duration::from_secs(86_400)
+}
+
 struct Trivial;
 
 impl Renderer for Trivial {
@@ -94,7 +101,7 @@ fn env(tag: &str, backup_time: &str) -> Env {
         let p = photos.join(name);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, format!("photo number {i}")).unwrap();
-        std::fs::OpenOptions::new().write(true).open(&p).unwrap().set_modified(std::time::SystemTime::now() - Duration::from_secs(86_400)).unwrap();
+        std::fs::OpenOptions::new().write(true).open(&p).unwrap().set_modified(long_ago()).unwrap();
     }
     std::fs::create_dir_all(&remote).unwrap();
     let restic = fake_restic(&root, backup_time);
@@ -174,7 +181,7 @@ fn a_folder_change_syncs_a_new_photo_after_the_quiet_time() {
     run_due(&mut svc, &e, 20);
     let p = e.photos.join("c.jpg");
     std::fs::write(&p, b"a third photo").unwrap();
-    std::fs::OpenOptions::new().write(true).open(&p).unwrap().set_modified(std::time::SystemTime::now() - Duration::from_secs(86_400)).unwrap();
+    std::fs::OpenOptions::new().write(true).open(&p).unwrap().set_modified(long_ago()).unwrap();
     svc.handle(Command::FolderChanged);
     run_due(&mut svc, &e, 29);
     assert_eq!(svc.status().last_sync.as_ref().unwrap().photos, 2);
@@ -542,7 +549,7 @@ fn demo_a_long_publish_for_the_status_window() {
         let p = photos.join(format!("Trip/IMG_{i:04}.jpg"));
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, bytes).unwrap();
-        std::fs::OpenOptions::new().write(true).open(&p).unwrap().set_modified(std::time::SystemTime::now() - Duration::from_secs(86_400)).unwrap();
+        std::fs::OpenOptions::new().write(true).open(&p).unwrap().set_modified(long_ago()).unwrap();
     }
     std::fs::create_dir_all(&remote).unwrap();
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
