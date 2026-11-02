@@ -157,6 +157,7 @@ jobs:
           $d = "dist\lightcraft-cloud-${{ steps.ver.outputs.version }}"
           ./packaging/windows/test-installer.ps1 -Setup (Resolve-Path "$d-windows-setup.exe").Path -Version "${{ steps.ver.outputs.version }}" -Variant light -OtherSetup (Resolve-Path "$d-windows-home-setup.exe").Path
       - name: Test the home installer on Windows (the same; and the light one does not go over it)
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: |
           $d = "dist\lightcraft-cloud-${{ steps.ver.outputs.version }}"

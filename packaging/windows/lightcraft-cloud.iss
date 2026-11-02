@@ -128,9 +128,11 @@ begin
     does not: nothing is changed, and the exit code is not 0. (The home edition over the light one is an upgrade and is fine.) }
   if InstalledEdition = 'home' then
   begin
-    MsgBox('This PC has the home PC edition of LightCraft Cloud, and this is the other-PC edition, which cannot publish your photos. ' +
+    Log('refused: the home PC edition is installed and this is the other-PC edition');
+    { (SuppressibleMsgBox: a plain MsgBox is shown even with /SUPPRESSMSGBOXES, and nobody is there to answer it in a silent install) }
+    SuppressibleMsgBox('This PC has the home PC edition of LightCraft Cloud, and this is the other-PC edition, which cannot publish your photos. ' +
       'Installing it would stop this PC from being your home PC, so nothing was changed.' + #13#10#13#10 +
-      'To go back to the other-PC edition on purpose, uninstall LightCraft Cloud first (Settings > Apps), then run this installer.', mbError, MB_OK);
+      'To go back to the other-PC edition on purpose, uninstall LightCraft Cloud first (Settings > Apps), then run this installer.', mbError, MB_OK, IDOK);
     Result := False;
   end;
 #endif
