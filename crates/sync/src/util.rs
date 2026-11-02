@@ -217,6 +217,32 @@ fn replace_file_waiting(tmp: &Path, dest: &Path, first_wait: Duration, tries: u3
     unreachable!()
 }
 
+/// A path the way a person writes it, for handing to another program (LightCraft): on Windows with `\` between the folders (the sync crate
+/// writes `<source>\a/b/c.jpg`) and without the `\\?\` form that `canonicalize` gives, unless the path is too long to be written any other
+/// way. Elsewhere the path as it is.
+pub(crate) fn plain_path(p: &Path) -> PathBuf {
+    #[cfg(windows)]
+    return PathBuf::from(plain_windows(&p.to_string_lossy()));
+    #[cfg(not(windows))]
+    p.to_path_buf()
+}
+
+/// [`plain_path`] on text, for Windows paths (also called by the tests on every system).
+#[cfg(any(windows, test))]
+fn plain_windows(s: &str) -> String {
+    let native = s.replace('/', "\\");
+    let short = |t: String| if t.len() < 248 { t } else { native.clone() };
+    if let Some(rest) = native.strip_prefix(r"\\?\UNC\") {
+        short(format!(r"\\{rest}"))
+    } else if let Some(rest) = native.strip_prefix(r"\\?\")
+        && rest.as_bytes().get(1) == Some(&b':')
+    {
+        short(rest.to_string())
+    } else {
+        native
+    }
+}
+
 pub(crate) fn sync_dir(dir: &Path) {
     if let Ok(f) = std::fs::File::open(dir) {
         let _ = f.sync_all();
@@ -285,6 +311,19 @@ pub fn parallel<T: Sync, R: Send>(items: &[T], jobs: usize, f: impl Fn(&T) -> R 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_windows_path_is_handed_over_the_way_a_person_writes_it() {
+        assert_eq!(plain_windows(r"C:\Users\me\Photos\Trip/IMG_1.xmp"), r"C:\Users\me\Photos\Trip\IMG_1.xmp", "one kind of separator");
+        assert_eq!(plain_windows(r"\\?\C:\Users\me\Photos/A/B/x.jpg"), r"C:\Users\me\Photos\A\B\x.jpg", "no verbatim prefix");
+        assert_eq!(plain_windows(r"\\?\UNC\nas\share\Photos/x.jpg"), r"\\nas\share\Photos\x.jpg");
+        let long = format!(r"\\?\C:\{}\x.jpg", "a folder with a longish name\\".repeat(10));
+        assert_eq!(plain_windows(&long), long, "a path too long for the plain form keeps the long form");
+        assert_eq!(plain_windows(r"relative\x.jpg"), r"relative\x.jpg");
+        if !cfg!(windows) {
+            assert_eq!(plain_path(Path::new("/a/b/../c.jpg")), Path::new("/a/b/../c.jpg"), "elsewhere a path is left as it is");
+        }
+    }
 
     #[test]
     fn stamps_round_trip() {

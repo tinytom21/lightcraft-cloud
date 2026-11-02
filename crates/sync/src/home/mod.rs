@@ -233,7 +233,7 @@ impl Home {
     /// Tell the sidecar hook (if any) that `path` was just written.
     pub(crate) fn sidecar_written(&self, path: &Path) {
         if let Some(h) = &self.sidecar_hook
-            && let Err(e) = h(path)
+            && let Err(e) = h(&crate::util::plain_path(path))
         {
             self.logln(format!("{}: the sidecar hook failed: {e}", path.display()));
         }

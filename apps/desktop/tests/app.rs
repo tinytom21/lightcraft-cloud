@@ -309,6 +309,11 @@ fn lines_of(seen: &Arc<Mutex<Vec<String>>>, command: &str) -> Vec<serde_json::Va
 /// A port nothing listens on now, and that no other test of this process was given. (Asking the system for a free port and letting it go,
 /// as this once did, can hand the same number to two tests that run side by side, and the second fake LightCraft then cannot bind it.
 /// The tests need the port closed at first and open later, so the listener cannot simply be kept.)
+/// A canonical path without the `\\?\` form (Windows), the way a person writes it.
+fn plain(p: &Path) -> PathBuf {
+    PathBuf::from(p.to_string_lossy().trim_start_matches(r"\\?\"))
+}
+
 fn free_port() -> u16 {
     static GIVEN: Mutex<Vec<u16>> = Mutex::new(Vec::new());
     loop {
@@ -344,7 +349,8 @@ fn an_adopted_photo_waits_for_lightcraft_across_a_restart_and_goes_in_when_it_op
     let spy = Spy::default();
     let mut svc = service(&e, &spy);
     run_due(&mut svc, &e, 20); // (nothing listens on the port: LightCraft is closed)
-    let photo = std::fs::canonicalize(&e.photos).unwrap().join("Trip/c.jpg");
+    // (what LightCraft is told: the photo's real folder, written the plain way: on Windows without the \\?\ form canonicalize gives, and with \ throughout)
+    let photo = plain(&std::fs::canonicalize(&e.photos).unwrap()).join("Trip").join("c.jpg");
     assert_eq!(std::fs::read(&photo).unwrap(), bytes, "the photo was adopted");
     let st = svc.status().clone();
     assert!(st.last_error.is_none(), "{:?}", st.errors);
@@ -399,7 +405,8 @@ fn an_applied_phone_edit_makes_lightcraft_read_that_folder_at_once_with_exactly_
     phone_edit_for_a(&e);
     run_due(&mut svc, &e, 120);
     assert!(e.photos.join("a.xmp").is_file(), "the edit was applied: {:?}", svc.status().last_sync);
-    let folder = std::fs::canonicalize(&e.photos).unwrap();
+    // (the folder of the sidecar the sync wrote, as the config names the photo folder)
+    let folder = e.photos.clone();
     let syncs = lines_of(&seen, "folder.synchronize");
     assert_eq!(syncs.len(), 1, "{:?}", seen.lock().unwrap());
     assert_eq!(

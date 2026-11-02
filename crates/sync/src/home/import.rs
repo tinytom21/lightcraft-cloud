@@ -484,7 +484,7 @@ impl Home {
                     _ => None,
                 };
                 match (&self.adopted_hook, on_disk) {
-                    (Some(hook), Some(path)) if !dry => hook(&run.root.join(path)).map_err(|e| Fail::Wait(format!("cannot record {path} for the caller: {e}")))?,
+                    (Some(hook), Some(path)) if !dry => hook(&crate::util::plain_path(&run.root.join(path))).map_err(|e| Fail::Wait(format!("cannot record {path} for the caller: {e}")))?,
                     _ => {}
                 }
                 Ok(o)
