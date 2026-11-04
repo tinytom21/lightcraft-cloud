@@ -195,20 +195,12 @@ impl Other {
         Some(p)
     }
 
-    pub(super) fn retry<T>(&self, mut f: impl FnMut() -> Result<T>) -> Result<T> {
-        let mut last = None;
-        for attempt in 0..3 {
-            match f() {
-                Err(Error::Remote(m)) => {
-                    last = Some(Error::Remote(m));
-                    if attempt < 2 {
-                        std::thread::sleep(self.retry_delay);
-                    }
-                }
-                r => return r,
-            }
-        }
-        Err(last.unwrap_or_else(|| Error::Remote("no answer".into())))
+    pub(super) fn retrier(&self) -> crate::imports::Retrier {
+        crate::imports::Retrier { delay: self.retry_delay }
+    }
+
+    pub(super) fn retry<T>(&self, f: impl FnMut() -> Result<T>) -> Result<T> {
+        self.retrier().run(f)
     }
 
     pub(super) fn get(&self, remote_path: &str, local: &Path) -> Result<()> {

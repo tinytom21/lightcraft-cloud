@@ -8,6 +8,7 @@
 mod albums;
 mod error;
 pub mod home;
+mod imports;
 mod library;
 mod manifest;
 pub mod other;

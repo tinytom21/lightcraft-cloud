@@ -17,14 +17,14 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use super::Other;
 use super::pass::push_unique;
 use super::state::State;
 use crate::home::{RunLock, content_hash_file, rel_join};
 use crate::progress::Stage;
-use crate::util::{iso, parse_iso, write_atomic};
+use crate::imports::{Awaiting, Outgoing, collect_results, import_note, list_outgoing, send_import};
+use crate::util::{iso, write_atomic};
 use crate::{Error, Result};
 
 /// The queue's folder below the state folder.
@@ -32,22 +32,7 @@ pub const OUT_DIR: &str = "imports-out";
 
 // ------------------------------------------------------------------ the queue
 
-/// What the home PC said about an import (`imports-done/.../<id>.result.json`).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct OutResult {
-    /// `added`, `duplicate` or `rejected`.
-    pub status: String,
-    /// The photo's final path at the home PC (relative to `originals/`), for `added` and `duplicate`.
-    pub path: Option<String>,
-    pub reason: Option<String>,
-}
-
-impl OutResult {
-    pub fn is_rejected(&self) -> bool {
-        self.status == "rejected"
-    }
-}
+pub use crate::imports::OutResult;
 
 /// One photo that was imported on this PC and goes to the home PC.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -106,7 +91,7 @@ impl OutEntry {
     }
 
     fn note(&self) -> serde_json::Value {
-        json!({"format": 1, "id": self.id, "folder": self.folder, "name": self.name, "size": self.size, "mtime": self.mtime, "sidecar": self.sidecar})
+        import_note(&self.id, &self.folder, &self.name, self.size, &self.mtime, self.sidecar.as_deref())
     }
 
     /// The commit note as it will be written.
@@ -400,13 +385,8 @@ impl Other {
         Ok(rep)
     }
 
-    /// `imports/<device>/` as the remote has it: `<id>/<name>` and `<id>.json` to size.
     fn list_outgoing(&self) -> Result<HashMap<String, u64>> {
-        match self.retry(|| self.remote.list(&format!("imports/{}", self.cfg.device), true)) {
-            Ok(v) => Ok(v.into_iter().filter(|e| !e.is_dir).map(|e| (e.path, e.size)).collect()),
-            Err(Error::NotFound(_)) => Ok(HashMap::new()),
-            Err(e) => Err(e),
-        }
+        list_outgoing(&*self.remote, self.retrier(), &self.cfg.device)
     }
 
     fn upload_one(&self, queue: &ImportQueue, e: &mut OutEntry, remote: &HashMap<String, u64>, rep: &mut UploadReport) -> Result<()> {
@@ -422,39 +402,30 @@ impl Other {
             super::pickup::forget_file(&self.cfg.state_dir, &e.path());
             return Ok(());
         }
-        let dev = &self.cfg.device;
-        let photo_remote = format!("imports/{dev}/{}/{}", e.id, e.name);
-        if remote.get(&format!("{}/{}", e.id, e.name)) != Some(&e.size) {
-            self.retry(|| self.remote.put(&photo, &photo_remote))?;
-            rep.files_sent += 1;
-            rep.bytes_sent += e.size;
-        }
-        if let Some(sn) = &e.sidecar {
-            let Some(bytes) = queue.snapshot(&e.id) else {
-                // (the snapshot is gone: send the photo without a sidecar rather than never)
-                e.sidecar = None;
-                e.sidecar_sha = None;
-                return queue.save(e);
-            };
-            if remote.get(&format!("{}/{sn}", e.id)) != Some(&(bytes.len() as u64)) {
-                let tmp = self.cfg.state_dir.join("outbox").join(format!("{}.xmp", e.id));
-                write_atomic(&tmp, &bytes)?;
-                let sent = self.retry(|| self.remote.put(&tmp, &format!("imports/{dev}/{}/{sn}", e.id)));
-                let _ = std::fs::remove_file(&tmp);
-                sent?;
-                rep.files_sent += 1;
-                rep.bytes_sent += bytes.len() as u64;
-            }
-        }
-        // the note, last: it is what tells the home PC the files are all there
+        let sidecar_bytes = match &e.sidecar {
+            Some(_) => match queue.snapshot(&e.id) {
+                Some(b) => Some(b),
+                None => {
+                    // (the snapshot is gone: send the photo without a sidecar rather than never)
+                    e.sidecar = None;
+                    e.sidecar_sha = None;
+                    return queue.save(e);
+                }
+            },
+            None => None,
+        };
         let note = serde_json::to_vec(&e.note()).map_err(|x| Error::Io(format!("note: {x}")))?;
-        if remote.get(&format!("{}.json", e.id)) != Some(&(note.len() as u64)) {
-            let tmp = self.cfg.state_dir.join("outbox").join(format!("{}.note.json", e.id));
-            write_atomic(&tmp, &note)?;
-            let sent = self.retry(|| self.remote.put(&tmp, &format!("imports/{dev}/{}.json", e.id)));
-            let _ = std::fs::remove_file(&tmp);
-            sent?;
-        }
+        let out = Outgoing {
+            id: &e.id,
+            name: &e.name,
+            size: e.size,
+            photo: &photo,
+            sidecar: e.sidecar.as_deref().zip(sidecar_bytes.as_deref()),
+            note: &note,
+        };
+        let sent = send_import(&*self.remote, self.retrier(), &self.cfg.device, &self.cfg.state_dir.join("outbox"), remote, &out)?;
+        rep.files_sent += sent.files;
+        rep.bytes_sent += sent.bytes;
         e.uploaded = Some(iso(self.now()));
         queue.save(e)?;
         rep.committed += 1;
@@ -464,62 +435,22 @@ impl Other {
 
     /// Look for `imports-done/<day>/<device>/<id>.result.json` of the photos sent and not answered yet.
     fn collect_results(&self, queue: &ImportQueue, entries: &mut [OutEntry], rep: &mut UploadReport) -> Result<()> {
-        let oldest = entries.iter().filter(|e| e.uploaded.is_some() && e.result.is_none()).filter_map(|e| e.uploaded.as_deref()).min().and_then(parse_iso);
-        // (a day before the oldest upload, for a clock that is a little off)
-        let from = oldest.map(|t| iso(t - Duration::from_secs(86_400))[..10].to_string()).unwrap_or_default();
-        let days = match self.retry(|| self.remote.list("imports-done", false)) {
-            Ok(v) => v,
-            Err(Error::NotFound(_)) => return Ok(()),
-            Err(e) => return Err(e),
-        };
-        let mut days: Vec<String> = days.into_iter().filter(|d| d.is_dir && d.path.as_str() >= from.as_str()).map(|d| d.path).collect();
-        // (newest first: after a "try again" an older result of the same photo may still be there)
-        days.sort_by(|a, b| b.cmp(a));
-        // a photo sent again counts as answered only once the home PC has taken its new note away (it files the note last)
-        let note_still_there = if entries.iter().any(|e| e.retried && e.uploaded.is_some() && e.result.is_none()) { self.list_outgoing()? } else { HashMap::new() };
-        let dev = &self.cfg.device;
-        for day in days {
-            let files = match self.retry(|| self.remote.list(&format!("imports-done/{day}/{dev}"), false)) {
-                Ok(v) => v,
-                Err(Error::NotFound(_)) => continue,
-                Err(e) => return Err(e),
-            };
-            for f in files.into_iter().filter(|f| !f.is_dir) {
-                let Some(id) = f.path.strip_suffix(".result.json") else { continue };
-                let Some(e) = entries.iter_mut().find(|e| e.id == id && e.uploaded.is_some() && e.result.is_none()) else { continue };
-                if e.retried && note_still_there.contains_key(&format!("{id}.json")) {
-                    continue;
-                }
-                let tmp = self.cfg.state_dir.join("outbox").join(format!("{id}.result.json"));
-                if let Some(dir) = tmp.parent() {
-                    std::fs::create_dir_all(dir).map_err(|x| Error::io(dir.display(), x))?;
-                }
-                let got = self.get(&format!("imports-done/{day}/{dev}/{}", f.path), &tmp);
-                let bytes = got.and_then(|()| std::fs::read(&tmp).map_err(|x| Error::io(tmp.display(), x)));
-                let _ = std::fs::remove_file(&tmp);
-                let v: serde_json::Value = match bytes.and_then(|b| serde_json::from_slice(&b).map_err(|x| Error::Format(x.to_string()))) {
-                    Ok(v) => v,
-                    Err(err @ Error::Remote(_)) => return Err(err),
-                    Err(_) => continue, // (not readable yet or ever: the entry keeps waiting)
-                };
-                let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("").to_string();
-                if !matches!(status.as_str(), "added" | "duplicate" | "rejected") {
-                    continue;
-                }
-                let path = v.get("path").and_then(|s| s.as_str()).map(str::to_string);
-                let reason = v.get("reason").and_then(|s| s.as_str()).map(str::to_string);
-                e.result = Some(OutResult { status: status.clone(), path, reason: reason.clone() });
-                e.retried = false;
-                if status == "rejected" {
-                    e.reported = true;
-                    push_unique(
-                        &mut rep.problems,
-                        format!("{} was not added at the home PC: {}. It stays in your photo folder.", e.name, reason.as_deref().unwrap_or("no reason given")),
-                    );
-                }
-                rep.results.push((id.to_string(), status));
-                queue.save(e)?;
+        let awaiting: Vec<Awaiting> =
+            entries.iter().filter(|e| e.uploaded.is_some() && e.result.is_none()).map(|e| Awaiting { id: &e.id, uploaded: e.uploaded.as_deref().unwrap_or(""), retried: e.retried }).collect();
+        let found = collect_results(&*self.remote, self.retrier(), &self.cfg.device, &self.cfg.state_dir.join("outbox"), &awaiting)?;
+        for (id, result) in found {
+            let Some(e) = entries.iter_mut().find(|e| e.id == id) else { continue };
+            e.retried = false;
+            if result.is_rejected() {
+                e.reported = true;
+                push_unique(
+                    &mut rep.problems,
+                    format!("{} was not added at the home PC: {}. It stays in your photo folder.", e.name, result.reason.as_deref().unwrap_or("no reason given")),
+                );
             }
+            rep.results.push((id, result.status.clone()));
+            e.result = Some(result);
+            queue.save(e)?;
         }
         Ok(())
     }
