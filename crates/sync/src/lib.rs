@@ -10,6 +10,7 @@ pub mod home;
 mod library;
 mod manifest;
 pub mod other;
+pub mod pairing;
 mod progress;
 mod rclone;
 mod remote;

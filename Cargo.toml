@@ -71,3 +71,9 @@ incremental = false
 
 [profile.dev.package."*"]
 debug = false
+
+# Pairing's key derivation (32 MiB, 3 passes) would take seconds unoptimised in the tests.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3

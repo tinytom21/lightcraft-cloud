@@ -18,6 +18,12 @@ log = { workspace = true }
 libloading = { workspace = true }
 # LightCraft's content hash, streamed (the same algorithm and key as the engine's; a test compares them)
 siphasher = { workspace = true }
+# Pairing (pure Rust, no C: builds for Android): ChaCha20-Poly1305, Argon2id, deflate (miniz_oxide), the OS random source, zeroizing
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+zeroize = "1"
 
 [target.'cfg(unix)'.dependencies]
 # free disk space before an imported photo is written
@@ -33,3 +39,5 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage
 lightcraft-engine = { git = "https://github.com/tinytom21/lightcraft-android", rev = "dd8af9a5d7115247b7e8d213bc08c070f7da7bd4" }
 lightcraft-scenes = { git = "https://github.com/tinytom21/lightcraft-android", rev = "dd8af9a5d7115247b7e8d213bc08c070f7da7bd4" }
 lightcraft-meta = { git = "https://github.com/tinytom21/lightcraft-android", rev = "dd8af9a5d7115247b7e8d213bc08c070f7da7bd4" }
+# (only the size test: what QR version the pairing text needs)
+qrcode = { version = "0.14", default-features = false }
