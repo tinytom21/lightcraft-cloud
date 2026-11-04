@@ -182,6 +182,19 @@ pub fn list_folders(remote: &dyn Remote) -> Result<Vec<FolderInfo>> {
     Ok(by.into_values().collect())
 }
 
+/// Whether `inbox/<device>/` is already on the remote: a device of that name has sent edits (so a second PC with the same name would
+/// mix up its edits with that one's).
+pub fn device_in_use(remote: &dyn Remote, device: &str) -> Result<bool> {
+    if !valid_device(device) {
+        return Err(Error::Invalid("not a valid device name".into()));
+    }
+    match remote.list(&format!("inbox/{device}"), false) {
+        Ok(entries) => Ok(!entries.is_empty()),
+        Err(Error::NotFound(_)) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 type Clock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
 type Logger = Arc<dyn Fn(&str) + Send + Sync>;
 
@@ -273,5 +286,25 @@ impl Other {
 
     fn today(&self) -> String {
         iso(self.now())[..10].to_string()
+    }
+}
+
+#[cfg(test)]
+mod device_tests {
+    use super::*;
+
+    #[test]
+    fn a_device_with_edits_in_the_inbox_is_in_use() {
+        let d = std::env::temp_dir().join(format!("lc-device-in-use-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("inbox/laptop")).unwrap();
+        std::fs::write(d.join("inbox/laptop/x.json"), "{}").unwrap();
+        std::fs::create_dir_all(d.join("inbox/empty")).unwrap();
+        let r = crate::DirRemote::new(d.clone());
+        assert!(device_in_use(&r, "laptop").unwrap());
+        assert!(!device_in_use(&r, "other-pc").unwrap());
+        assert!(!device_in_use(&r, "empty").unwrap());
+        assert!(device_in_use(&r, "../x").is_err());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

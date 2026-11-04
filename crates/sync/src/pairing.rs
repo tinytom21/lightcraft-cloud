@@ -142,6 +142,11 @@ fn remote_name(remote: &str) -> Option<String> {
     Some(name.to_string())
 }
 
+/// The names of the sections of rclone config text (for listing the remotes a pairing brought).
+pub fn section_names(conf_text: &str) -> Vec<String> {
+    parse_ini(conf_text).into_iter().map(|s| s.name).collect()
+}
+
 fn refuse<T>(why: &str) -> Result<T> {
     Err(Error::Invalid(why.to_string()))
 }
