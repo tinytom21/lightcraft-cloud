@@ -77,7 +77,9 @@ class Side:
 
     def write_config(self, extra=""):
         self.cfg.write_text(f'source = "{self.src}"\nremote = "{self.remote}"\nstate_dir = "{self.state}"\n'
-                            f'exclude = ["exported"]\nnotify = false\n{extra}')
+                            f'exclude = ["exported"]\nnotify = false\n'
+                            # (the Rust app would otherwise ask a LightCraft that happens to be open on the default port for its albums)
+                            f'lightcraft_control_port = 0\n{extra}')
 
 
 def run_python(side, work):
