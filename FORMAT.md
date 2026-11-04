@@ -54,7 +54,18 @@ and contents. Nothing in the format changes. Names are longer underneath (a 12-b
   file's sidecar.
 * Folders matching the publisher's `exclude` patterns are not published at all (no originals, thumbs or
   manifest entries).
-* The manifest is only replaced when the photo list changes, and only after thumbs/previews are uploaded.
+* The manifest is only replaced when the photo list or the albums change, and only after thumbs/previews are uploaded.
+* `albums` (optional, additive; the format stays 1): the home PC's LightCraft albums, for a client to show view-only. Absent when the
+  publisher has none to offer (an older publisher, albums switched off, or LightCraft never open so far).
+  ```json
+  "albums": [{"id": "12", "name": "Lisbon", "path": ["Trips", "2026"], "smart": false, "photos": ["<photo id>", "..."]}]
+  ```
+  `id` is stable (the LightCraft catalog album id, as text): a rename keeps it, so a client can keep its own album for it. `name` is the
+  album's name; `path` the names of the folders above it, outermost first (`[]` at the top level; folders hold albums, never photos, and are
+  not listed on their own). `smart` says the album is a smart album on the PC; its `photos` are the matches when it was read, so a client
+  shows it as an ordinary list. `photos` are manifest photo `id`s of primaries (an alternate's id is never listed; the album lists its
+  primary), in the PC's order, each at most once; a member that is not published (outside the synced folder, excluded) is left out. The
+  list is in LightCraft's order. A client must ignore an album entry it cannot use; an `albums` field that is absent means no albums.
 
 ## Inbox (phone to PC)
 * A client only ever **creates new files** in `inbox/<device>/`, named `<id>-<UTCstamp>-<base>.xmp`:

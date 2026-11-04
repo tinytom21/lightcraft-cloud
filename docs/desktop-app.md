@@ -227,6 +227,7 @@ are ignored, so a Python config can be reused. State in `~/.local/state/lightcra
 | `lightcraft_control_port` | `7980` | the port of your running LightCraft's control channel (see "Telling your LightCraft about new photos"); `0` switches it off, and then nothing at all is sent to LightCraft |
 | `check_for_updates` | `true` | look on GitHub for a newer version, shortly after the start and once a day (see "Installing and updating"); `false`: no request is made and no update is shown |
 | `lightcraft_refresh_edits` | `true` | ask LightCraft to read the sidecars the sync wrote, so new edits show without Synchronize Folder (see "Showing new edits in LightCraft"); `false` turns only that off |
+| `publish_albums` | `true` | read LightCraft's albums over the control channel after each sync and publish them to the phone (see "Publishing your albums"); `false`: nothing is read and the manifest has no albums |
 | `state_dir` | `~/.local/state/lightcraft-cloud-desktop` | must not be under `~/Pictures` |
 | `rclone_config` | `$RCLONE_CONFIG`, else `~/.config/rclone/rclone.conf` | rclone config used for an rclone remote |
 | `librclone` | `$LIBRCLONE`, else `librclone.so` (Windows: `librclone.dll`) next to the executable, else `~/.local/lib/lightcraft-cloud/librclone.so`, else the system search path | the host `librclone.so` (see "Building the Rust part" in [building.md](building.md)); the desktop app looks in that order, so an installed app needs the library in one of those places (the Linux archives' `install.sh` and the Windows installer put it there) |
@@ -287,7 +288,8 @@ What the app does with it, and nothing else:
 * every 2 minutes, and right after a sync that added photos, if the list is not empty it checks that what answers on the port is
   LightCraft (`engine.commands`) and then sends `library.import` with mode `add` and the photos' paths, ten at a time. `add` means
   LightCraft keeps a reference to each file where it is: nothing is copied, moved, or deleted. Besides that, only the two requests
-  in "Showing new edits in LightCraft" are ever sent (every line is checked against that exact list before it is written);
+  in "Showing new edits in LightCraft" and the three reads in "Publishing your albums" are ever sent (every line is checked against that exact list
+  before it is written);
 * a photo leaves the list only when LightCraft's reply says it has it (added, or already in the library). One it refuses is
   retried and logged; after ten tries it is left alone, **Problems** in the Status window says so once, and it is tried once
   more the next time the app starts;
@@ -321,6 +323,30 @@ app does that for you, until LightCraft does it by itself (upstream PR #3421), w
   shows even with `lightcraft_refresh_edits = false`;
 * sidecars must be named like the photo with `.xmp` added, `IMG_1.CR3.xmp` (Settings, Import tab, **Sidecar names**): LightCraft's
   other naming, `IMG_1.xmp`, would be one file for a raw and its JPEG.
+
+### Publishing your albums
+
+The phone shows your LightCraft albums, view-only, in an album folder called **From PC**. The home PC publishes them in the manifest's `albums`
+(FORMAT.md). To know them it asks the LightCraft you have open, over the same control channel, so it needs the control port on and
+LightCraft open; nothing is read from disk, and the app never opens, copies or looks into your library or its catalog.
+
+* **What is read**, after each sync has published the photos, and nothing else: `albums.list` (the album tree), then for each album
+  `catalog.query` with only the album as filter, a page of up to 1000 photos at a time (a smart album answers with its current matches, so
+  smart albums are published as the list of their photos), then `photo.inspect` for each photo the app has not looked up before, to get its
+  content hash, which is the photo's id in the manifest. The hashes are kept in `<state>/album-hashes.json` and the last read in
+  `<state>/albums.json`, so a photo is looked up once. At most 2000 photos are looked up per sync, so the first run on a big library
+  spreads over several syncs (Status says how many are still to look up) and the sync itself never waits for it.
+* **Read-only, enforced.** The same gate that checks every request the app sends admits exactly these three shapes and refuses everything
+  else: `albums.list` with no parameters; `catalog.query` with exactly `filter` (only `album`, a number), `offset` and `limit` (at most
+  1000) and no `sort`; `photo.inspect` with exactly `id`. No album or photo command (`album.create`, `album.addPhotos`, `photo.delete`, ...)
+  can pass, and tests try each.
+* **Which photos.** An album member whose file is not in the synced photo folder, or is left out by `exclude`, is not listed. The raw or
+  JPEG partner of a published photo is listed as the photo it belongs to. Photos in LightCraft's bin are not members.
+* **LightCraft closed, or a query failing:** the albums published last time stay exactly as they were (the photos still sync), and
+  Status shows a quiet line: "Albums: last read 3 h ago; LightCraft was not open". The manifest is rewritten when only the albums changed
+  (a rename, a photo added to an album), and not otherwise.
+* **Off:** `publish_albums = false` reads nothing and the manifest carries no `albums`; the phone then removes its **From PC** folder.
+  `lightcraft_control_port = 0` leaves the albums as they were last read, if ever.
 
 ### Rendering
 
