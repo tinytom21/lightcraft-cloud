@@ -112,6 +112,8 @@ impl eframe::App for Window {
                     }
                     None => {}
                 }
+                ui.add_space(10.0);
+                theme::hint(ui, &version_line());
             }
             _ => {
                 self.settings.show_with_parent(ui, Some(frame));
@@ -126,6 +128,11 @@ impl eframe::App for Window {
             }
         });
     }
+}
+
+/// The line at the foot of the Status window.
+pub fn version_line() -> String {
+    format!("LightCraft Cloud {}", env!("CARGO_PKG_VERSION"))
 }
 
 /// Open the window. `config_path`: `--config`, else the default.
@@ -191,6 +198,11 @@ fn list_remotes(file: &File) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_version_line_is_the_crates() {
+        assert!(version_line().ends_with(env!("CARGO_PKG_VERSION")));
+    }
 
     #[test]
     fn requests_set_the_tab_and_the_end_of_input_changes_nothing() {
