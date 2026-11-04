@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 
 use super::import::ImportSummary;
 use super::inbox::InboxSummary;
+use super::albums::{self, AlbumsReport, ManifestAlbum};
 use super::manifest::{ManifestPhoto, build_manifest_photos, manifest_ids};
 use super::scan::{FileInfo, Plan, Scan, diff_scan, ext_lower, in_scope, published_removals, scan_source_settled, walk_source};
 use super::state::{Meta, Row, RunLock, State, Uploaded};
@@ -61,6 +62,8 @@ pub struct SyncReport {
     /// Things the user can act on, one line each (a sidecar or a photo another program holds, so it waits for the next sync). The
     /// inbox's own are in `inbox.problems`.
     pub problems: Vec<String>,
+    /// The albums of the manifest (`None`: `publish_albums` is off).
+    pub albums: Option<AlbumsReport>,
 }
 
 /// What [`Home::status`] reports.
@@ -275,7 +278,9 @@ impl Home {
         // (6) the manifest, last
         self.logln("step 6/6: manifest");
         self.rp.stage(Stage::Publishing, 0, 0);
-        report.manifest_uploaded = self.publish_manifest(st, &photos)?;
+        let (albums, albums_report) = self.albums_for_manifest(&photos);
+        report.albums = albums_report;
+        report.manifest_uploaded = self.publish_manifest(st, &photos, albums.as_deref())?;
         report.photos = photos.len();
         st.set("last_run", &iso(self.now()));
         st.set("last_result", &if report.failed.is_empty() { "ok".to_string() } else { format!("ok, {} photos failed", report.failed.len()) });
@@ -577,13 +582,15 @@ impl Home {
     /// Upload `mobile/manifest.json` unless the remote in use already has this exact photo list. Returns whether it was
     /// uploaded. The local copy is what the remote has: replaced only after the upload worked, and the remote it went to is
     /// recorded, so a failed upload or a changed remote is retried instead of skipped.
-    fn publish_manifest(&self, st: &mut State, photos: &[ManifestPhoto]) -> Result<bool> {
+    fn publish_manifest(&self, st: &mut State, photos: &[ManifestPhoto], albums: Option<&[ManifestAlbum]>) -> Result<bool> {
         let mpath = self.mobile().join("manifest.json");
         let new_photos = serde_json::to_value(photos).map_err(|e| Error::Format(e.to_string()))?;
+        let new_albums = albums.map(serde_json::to_value).transpose().map_err(|e| Error::Format(e.to_string()))?;
         let old: Option<Value> = std::fs::read(&mpath).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let sent_to = st.get("manifest_uploaded").map(str::to_string);
         if let Some(old) = &old
             && old.get("photos") == Some(&new_photos)
+            && old.get("albums") == new_albums.as_ref()
             && old.get("format").and_then(Value::as_u64) == Some(FORMAT)
             && sent_to.as_deref() == Some(self.cfg.remote_label.as_str())
         {
@@ -597,8 +604,10 @@ impl Home {
             generated: String,
             publisher: &'a str,
             photos: &'a [ManifestPhoto],
+            #[serde(skip_serializing_if = "Option::is_none")]
+            albums: Option<&'a [ManifestAlbum]>,
         }
-        let doc = Doc { format: FORMAT, generated: iso(self.now()), publisher: &self.cfg.publisher, photos };
+        let doc = Doc { format: FORMAT, generated: iso(self.now()), publisher: &self.cfg.publisher, photos, albums };
         let mut bytes = Vec::new();
         {
             use serde::Serialize;
@@ -615,6 +624,59 @@ impl Home {
         st.set("manifest_uploaded", &self.cfg.remote_label);
         self.logln(format!("  manifest uploaded ({} photos)", photos.len()));
         Ok(true)
+    }
+
+    /// The albums for the manifest: read from the album source when there is one (and publish_albums is on), else, or when the read
+    /// fails, the last read. Never fails the sync: a problem is only reported (and logged). `None` albums: not published.
+    fn albums_for_manifest(&self, photos: &[ManifestPhoto]) -> (Option<Vec<ManifestAlbum>>, Option<AlbumsReport>) {
+        if !self.cfg.publish_albums {
+            return (None, None);
+        }
+        let dir = &self.cfg.state_dir;
+        let mut stored = albums::load_stored(dir);
+        let mut report = AlbumsReport::default();
+        if let Some(src) = &self.albums {
+            let mut cache = albums::load_hashes(dir);
+            let before = cache.len();
+            let r = {
+                let mut src = src.lock().unwrap_or_else(|e| e.into_inner());
+                albums::read_albums(&mut *src, &mut cache, albums::INSPECT_LIMIT)
+            };
+            if cache.len() != before
+                && let Err(e) = albums::save_hashes(dir, &cache)
+            {
+                self.logln(format!("  albums: the photo lookups were not saved: {e}"));
+            }
+            match r {
+                Ok(read) => {
+                    let s = albums::StoredAlbums { format: 1, read: iso(self.now()), complete: read.complete, albums: read.albums };
+                    match albums::save_stored(dir, &s) {
+                        Ok(()) => {
+                            self.logln(format!("  albums: {} read ({} photos looked up, {} still to look up)", s.albums.len(), read.inspected, read.unknown));
+                            report.unknown = read.unknown;
+                            stored = Some(s);
+                        }
+                        Err(e) => {
+                            self.logln(format!("  albums: not saved: {e}"));
+                            report.problem = Some(format!("the albums could not be saved: {e}"));
+                        }
+                    }
+                }
+                Err(e) => {
+                    let why = match &e {
+                        albums::SourceError::Unreachable(_) => "LightCraft was not open".to_string(),
+                        albums::SourceError::Failed(m) => format!("LightCraft's answer was not usable ({m})"),
+                    };
+                    self.logln(format!("  albums: not read ({}); the last ones stay", e.text()));
+                    report.problem = Some(why);
+                }
+            }
+        }
+        report.last_read = stored.as_ref().map(|s| s.read.clone()).filter(|r| !r.is_empty());
+        let Some(stored) = stored else { return (None, Some(report)) };
+        let list = albums::manifest_albums(&stored.albums, photos);
+        report.published = list.len();
+        (Some(list), Some(report))
     }
 
     /// Last run, tracked photos, remote size, pending inbox files. Reads only.

@@ -8,6 +8,7 @@
 //! [`Renderer`] makes the thumbnails and smart previews and describes the photos; the app plugs in its own.
 //! Nothing here opens, locks or writes a LightCraft library.
 
+mod albums;
 mod hash;
 mod import;
 mod inbox;
@@ -24,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+pub use albums::{AlbumNode, AlbumSource, AlbumsReport, INSPECT_LIMIT, ManifestAlbum, MemberPage, PAGE, ReadOutcome, SourceError, StoredAlbum, StoredAlbums, manifest_albums, read_albums};
 pub use hash::{ContentHasher, content_hash_bytes, content_hash_file, content_hash_reader};
 pub(crate) use import::rel_join;
 pub use import::{DEFAULT_IMPORT_FREE_MARGIN, IMPORT_INCOMPLETE_LIMIT_HOURS, ImportNote, ImportSummary, ImportedPhoto, check_import_note, check_import_target};
@@ -93,6 +95,9 @@ pub struct HomeConfig {
     pub publisher: String,
     /// Free disk space that must be left over after an imported photo is written (bytes); under that the import waits.
     pub import_free_margin: u64,
+    /// Publish LightCraft's albums in the manifest (`albums`, see FORMAT.md). They are read through an [`AlbumSource`] the app sets;
+    /// off, the manifest has no `albums`.
+    pub publish_albums: bool,
 }
 
 impl HomeConfig {
@@ -109,6 +114,7 @@ impl HomeConfig {
             previews_only: false,
             publisher: format!("lightcraft-cloud {}", env!("CARGO_PKG_VERSION")),
             import_free_margin: DEFAULT_IMPORT_FREE_MARGIN,
+            publish_albums: true,
         }
     }
 }
@@ -179,6 +185,8 @@ pub struct Home {
     sidecar_hook: Option<AdoptedHook>,
     /// Where the stages of a sync are reported (see [`Home::set_progress_hook`]).
     rp: Reporter,
+    /// Where the albums are read from (see [`Home::set_album_source`]).
+    albums: Option<std::sync::Arc<std::sync::Mutex<dyn AlbumSource>>>,
 }
 
 /// What [`Home::set_adopted_hook`] takes: the absolute path of the photo; `Err(why)` leaves the import waiting.
@@ -188,7 +196,7 @@ impl Home {
     /// Refuses a state folder under `~/Pictures` (keep it out of backups and away from the user's libraries).
     pub fn new(cfg: HomeConfig, remote: Arc<dyn Remote>) -> Result<Self> {
         check_state_dir(&cfg.state_dir)?;
-        Ok(Home { cfg, remote, clock: Arc::new(SystemTime::now), log: Arc::new(|m| log::info!("{m}")), retry_delay: Duration::from_secs(2), import_crash: None, adopted_hook: None, sidecar_hook: None, rp: Reporter::new(None, Arc::new(SystemTime::now)) })
+        Ok(Home { cfg, remote, clock: Arc::new(SystemTime::now), log: Arc::new(|m| log::info!("{m}")), retry_delay: Duration::from_secs(2), import_crash: None, adopted_hook: None, sidecar_hook: None, rp: Reporter::new(None, Arc::new(SystemTime::now)), albums: None })
     }
 
     pub fn config(&self) -> &HomeConfig {
@@ -237,6 +245,13 @@ impl Home {
         {
             self.logln(format!("{}: the sidecar hook failed: {e}", path.display()));
         }
+    }
+
+    /// Where the albums are read from after a publish (only when `publish_albums` is on). The source is asked, in this order, for the
+    /// album tree, each album's members and the content hash of each member it has not looked up before (at most [`INSPECT_LIMIT`]
+    /// per sync); when it fails, the last albums read are published again unchanged. See `albums.rs`.
+    pub fn set_album_source(&mut self, src: impl AlbumSource + 'static) {
+        self.albums = Some(std::sync::Arc::new(std::sync::Mutex::new(src)));
     }
 
     /// Pause before the second and third attempt of a remote call that failed (default 2 s).
