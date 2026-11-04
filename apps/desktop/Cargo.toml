@@ -72,6 +72,10 @@ required-features = ["home"]
 name = "home_e2e"
 required-features = ["home"]
 
+[[test]]
+name = "home_albums"
+required-features = ["home"]
+
 # The tray icon's Linux backend is a StatusNotifierItem over D-Bus (`ksni`); the other systems use tray-icon's own.
 [target.'cfg(target_os = "linux")'.dependencies]
 tray-icon = { workspace = true }
