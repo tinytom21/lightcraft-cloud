@@ -55,6 +55,8 @@ lc-cloud purge-history [--days N]           delete remote history/ and inbox-don
 lc-cloud inbox-check                        start a sync only if phone edits are waiting (used by the inbox timer)
 ```
 
+The Python tool does not publish albums (FORMAT.md `albums`; the desktop app does). It ignores an `albums` field written by the app, and a manifest it writes has none.
+
 Config file: `--config FILE`, else `$LC_CLOUD_CONFIG`, else `~/.config/lightcraft-cloud/config.toml`.
 Environment: `LC_INBOX_SYNC_CMD` (command `inbox-check` runs; default `systemctl --user start --no-block lightcraft-cloud.service`),
 `LC_WATCH_CMD`, `LC_WATCH_QUIET` (default 30 s), `LC_WATCH_MAX` (default 300 s) for `lc-cloud-watch`.
