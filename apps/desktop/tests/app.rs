@@ -262,7 +262,7 @@ fn the_cli_and_the_app_do_not_sync_at_the_same_time() {
 
 // ------------------------------------------------------------------ telling LightCraft about adopted photos
 
-/// A LightCraft on a loopback port: the command list, an import that adds everything it is sent, the XMP preferences (with the
+/// A LightCraft on a loopback port: the command list, no albums, an import that adds everything it is sent, the XMP preferences (with the
 /// `autoWrite` the test holds), and a synchronize that reads one sidecar. Keeps the lines it got.
 fn fake_lightcraft_with(port: u16, auto_write: Arc<AtomicBool>) -> Arc<Mutex<Vec<String>>> {
     let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
@@ -279,6 +279,9 @@ fn fake_lightcraft_with(port: u16, auto_write: Arc<AtomicBool>) -> Arc<Mutex<Vec
                     serde_json::json!({"id": id, "ok": true, "result": [{"id": "library.folders", "enabled": true}, {"id": "library.import", "enabled": true}]})
                 } else if v["params"]["command"] == "library.xmpPreferences" {
                     serde_json::json!({"id": id, "ok": true, "result": {"autoWrite": auto_write.load(Ordering::SeqCst), "naming": "stem"}})
+                } else if v["params"]["command"] == "albums.list" {
+                    // (a sync also reads the albums, see tests/home_albums.rs: this LightCraft has none)
+                    serde_json::json!({"id": id, "ok": true, "result": []})
                 } else if v["params"]["command"] == "folder.synchronize" {
                     serde_json::json!({"id": id, "ok": true, "result": {"imported": 0, "relinked": 0, "removed": 0, "read": 1, "failed": []}})
                 } else {
@@ -402,6 +405,8 @@ fn an_applied_phone_edit_makes_lightcraft_read_that_folder_at_once_with_exactly_
     run_due(&mut svc, &e, 20);
     assert!(lines_of(&seen, "folder.synchronize").is_empty());
     assert!(!svc.status().lightcraft_sidecars_off());
+    // the sync read the (no) albums from the open LightCraft
+    assert_eq!(svc.status().albums.as_ref().map(|a| (a.published, a.problem.clone(), a.last_read.is_some())), Some((0, None, true)));
     phone_edit_for_a(&e);
     run_due(&mut svc, &e, 120);
     assert!(e.photos.join("a.xmp").is_file(), "the edit was applied: {:?}", svc.status().last_sync);
@@ -494,6 +499,11 @@ fn refresh_switched_off_or_the_port_off_queues_nothing_and_a_closed_lightcraft_k
     let st = svc.status();
     assert_eq!((st.lightcraft_sidecars_off, st.lightcraft_reachable, st.lightcraft_refresh_waiting), (false, Some(false), 1));
     assert!(st.errors.is_empty() && st.last_error.is_none(), "{st:?}");
+    // (and the albums: never read, so Status says so quietly; not a problem)
+    let a = st.albums.as_ref().expect("the albums line");
+    assert_eq!((a.published, a.last_read.clone(), a.problem.as_deref()), (0, None, Some("LightCraft was not open")));
+    assert_eq!(a.line(std::time::SystemTime::now()), "not read yet; LightCraft was not open");
+    assert_eq!(st.active_problems.len(), 0);
 }
 
 #[test]
