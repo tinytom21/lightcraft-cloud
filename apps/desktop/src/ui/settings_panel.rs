@@ -226,7 +226,7 @@ pub struct SettingsPanel {
     pub done: Vec<String>,
     /// Set when a save worked (the window tells the app through the config file; this is for the shell and tests).
     pub saved: bool,
-    /// "I have a pairing code" (another PC): the pasted text and the typed code live here until used, then are wiped.
+    /// "Pair with my home PC" (another PC): this PC's generated code and the pasted text live here until used, then are wiped.
     pub join: Join,
     /// The user's own rclone remotes, kept while a paired config's remotes are shown.
     own_remotes: Result<Vec<String>, String>,
@@ -234,11 +234,12 @@ pub struct SettingsPanel {
     pub device_in_use: bool,
 }
 
-/// The "I have a pairing code" box. No `Debug`: it holds secrets.
+/// The "Pair with my home PC" box. No `Debug`: it holds secrets.
 #[derive(Default)]
 pub struct Join {
     pub open: bool,
     pub text: String,
+    /// This PC's own code, made when the box is opened (a new one each time) and shown to the user. Memory only.
     pub code: String,
     /// What went wrong, in words (never the text or the code).
     pub error: Option<String>,
@@ -280,7 +281,7 @@ impl SettingsPanel {
         }
     }
 
-    /// Open the pasted pairing text with the typed code: on success the config is written to `paired-rclone.conf` beside the app's
+    /// Open the pasted pairing text with this PC's own code: on success the config is written to `paired-rclone.conf` beside the app's
     /// config (never the user's own rclone.conf), the form uses it, and the folder list is read.
     pub fn join_with_code(&mut self) {
         use lightcraft_cloud_client::pairing;
@@ -512,21 +513,22 @@ impl SettingsPanel {
         });
     }
 
-    /// "I have a pairing code": paste the text, type the code.
+    /// "Pair with my home PC": shows this PC's new code to type on the home PC, then a field for the text the home PC shows.
     fn join_box(&mut self, ui: &mut Ui) {
         let t = theme::CHARCOAL;
         if !self.join.open {
-            if theme::button(ui, "I have a pairing code", ButtonKind::Secondary).clicked() {
+            if theme::button(ui, "Pair with my home PC", ButtonKind::Secondary).clicked() {
                 self.join.open = true;
+                self.join.code = lightcraft_cloud_client::pairing::new_code();
             }
             return;
         }
-        theme::hint(ui, "On the home PC, open Status, then Add a device. Paste the text it shows (use Copy text for another PC), then type the code.");
+        theme::hint(ui, "On the home PC, open Status > Add a device and type this code");
+        ui.label(RichText::new(&self.join.code).monospace().size(32.0).color(t.text));
+        theme::hint(ui, "Then copy the text the home PC shows (Copy text for another PC) and paste it here.");
         let l = theme::field_label(ui, "Pairing text");
         let width = ui.available_width();
-        ui.add_sized([width, 30.0], theme::text_edit(&mut self.join.text).password(true).hint_text("LCP1…")).labelled_by(l.id);
-        let l = theme::field_label(ui, "Code");
-        ui.add_sized([200.0, 30.0], theme::text_edit(&mut self.join.code).hint_text("XXXXX-XXXXX")).labelled_by(l.id);
+        ui.add_sized([width, 30.0], theme::text_edit(&mut self.join.text).password(true).hint_text("LCP1\u{2026}")).labelled_by(l.id);
         ui.horizontal(|ui| {
             if theme::button(ui, "Use this pairing", ButtonKind::Primary).clicked() {
                 self.join_with_code();

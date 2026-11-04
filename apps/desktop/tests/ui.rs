@@ -459,11 +459,11 @@ fn being_offline_reads_as_a_calm_state_not_a_failure() {
 
 // ------------------------------------------------------------------ pairing (another PC)
 
-fn fake_pairing(remote: &str) -> (String, String) {
+fn fake_pairing(remote: &str, code: &str) -> String {
     // (synthetic values only)
     let conf = "[gdrive]\ntype = drive\nclient_id = FAKEID\nclient_secret = FAKESECRET\ntoken = {\"access_token\":\"\",\"token_type\":\"Bearer\",\"refresh_token\":\"FAKEREFRESH\",\"expiry\":\"2000-01-01T00:00:00Z\"}\n";
     let b = lightcraft_cloud_client::pairing::Bundle::new(remote, conf);
-    lightcraft_cloud_client::pairing::seal(&b).unwrap()
+    lightcraft_cloud_client::pairing::seal(&b, code).unwrap()
 }
 
 #[test]
@@ -473,16 +473,19 @@ fn a_pairing_code_fills_in_the_storage_and_writes_its_own_config_file() {
     lister.0.lock().unwrap().1 = Some(Ok(vec![folder("Lisbon", 3, 5)]));
     let mut p = other_panel(&r, &lister);
     p.form.storage = Storage::Rclone { remote: String::new(), path: String::new() };
-    let (text, code) = fake_pairing("gdrive:LightCraft Cloud");
-    // a wrong code says so, plainly, and writes nothing
-    p.join.text = text.clone();
-    p.join.code = "AAAAA-AAAAA".into();
+    // the box makes this PC's code when it is opened
+    p.join.code = lightcraft_cloud_client::pairing::new_code();
+    let code = p.join.code.clone();
+    let text = fake_pairing("gdrive:LightCraft Cloud", &code);
+    // a text locked with some other code says so, plainly, and writes nothing
+    let other = lightcraft_cloud_client::pairing::new_code();
+    p.join.text = fake_pairing("gdrive:LightCraft Cloud", &other);
     p.join_with_code();
     let err = p.join.error.clone().unwrap();
-    assert!(err.contains("does not match") && !err.contains("AAAAA") && !err.contains(&text[..20]), "{err}");
+    assert!(err.contains("does not match") && !err.contains(&code) && !err.contains(&text[..20]), "{err}");
     assert!(!r.dir.join("cfg/paired-rclone.conf").exists());
     // the right one
-    p.join.code = code.clone();
+    p.join.text = text.clone();
     p.join_with_code();
     assert!(p.join.error.is_none() && p.join.done, "{:?}", p.join.error);
     assert!(p.join.text.is_empty() && p.join.code.is_empty(), "the secrets are wiped");
@@ -498,7 +501,7 @@ fn a_pairing_code_fills_in_the_storage_and_writes_its_own_config_file() {
     h.run();
     h.get_by_label("Paired storage: gdrive:LightCraft Cloud");
     h.get_by_label("Lisbon  \u{2014}  3 photos, 5.0 MiB");
-    assert!(h.query_by_label("I have a pairing code").is_none());
+    assert!(h.query_by_label("Pair with my home PC").is_none());
     // saving keeps the paired config; going back to the user's own remotes drops it
     h.get_by_label("Save and start").click();
     h.run();
@@ -508,7 +511,7 @@ fn a_pairing_code_fills_in_the_storage_and_writes_its_own_config_file() {
     h.get_by_label("Use one of my rclone remotes instead").click();
     h.run();
     assert!(!h.state().form.is_paired());
-    h.get_by_label("I have a pairing code");
+    h.get_by_label("Pair with my home PC");
 }
 
 #[test]
@@ -519,14 +522,22 @@ fn the_pairing_box_is_offered_to_another_pc_and_hidden_for_the_text() {
     let mut h = settings_harness(p);
     h.run();
     h.get_by_label("One of my rclone remotes");
-    h.get_by_label("I have a pairing code").click();
+    h.get_by_label("Pair with my home PC").click();
     h.run();
+    // this PC's own code is shown, large, with the instruction; there is no code field
+    let code = h.state().join.code.clone();
+    assert_eq!(code.len(), 13);
+    h.get_by_label(&code);
+    h.get_by_label_contains("On the home PC, open Status > Add a device and type this code");
     h.get_by_label("Pairing text");
-    h.get_by_label("Code");
+    assert!(h.query_by_label("Code").is_none());
     h.get_by_label("Use this pairing");
     h.get_by_label("Cancel").click();
     h.run();
-    h.get_by_label("I have a pairing code");
+    assert!(h.state().join.code.is_empty());
+    h.get_by_label("Pair with my home PC").click();
+    h.run();
+    assert_ne!(h.state().join.code, code, "a new code each time");
 }
 
 #[derive(Clone, Default)]

@@ -116,20 +116,19 @@ file with mode 600 on Linux (on Windows, the permissions of your user folder), b
 ### Pairing
 
 Pairing gives another device (the phone, or another PC) the rclone settings for this library's remote, without copying config files by hand.
-On the home PC, Status has **Add a device**. It opens its own window, which says first what pairing hands over. **Show pairing code** then shows a QR code, a code such as `ABCDE-12345`,
-and **Copy text for another PC**. The QR code and the text are the same data: the one remote the `remote` setting names (a crypt, alias, chunker, compress or hasher remote also
+On the home PC, Status has **Add a device**. It opens its own window, which says first what pairing hands over, then asks for a code. The joining device (the phone, or another PC) makes the code and shows it; you type it into a password-style field here. **Show pairing QR** is enabled only for a valid code (otherwise: "That code has a typo; check it against the device."), and then shows a QR code and **Copy text for another PC**. This PC never displays the code, so a screen share or a photo of this window is useless without the code from the device. The QR code and the text are the same data: the one remote the `remote` setting names (a crypt, alias, chunker, compress or hasher remote also
 includes the remote it wraps, and nothing else), with the access token blanked and marked expired so that rclone refreshes it on first use, deflated and encrypted with
-ChaCha20-Poly1305. The key comes from the code with Argon2id (32 MiB, 3 passes), so the text alone cannot be opened, and the code alone is of no use. The text is `LCP1` followed by base45 (uppercase
-letters and digits, which a QR code stores compactly); a Google Drive remote fits a QR code of about version 13 to 15. The text and the code are kept in memory only and are cleared
+ChaCha20-Poly1305. The code is 10 random Crockford base32 characters plus one check character (the sum of `(2i+1) * value` over the 10, mod 32), shown as `XXXX-XXXX-XXX`; typed case, spaces and dashes are ignored, and I, L read as 1 and O as 0. The check catches every single wrong character and nearly every adjacent swap. The key comes from the whole normalised code (all 11 characters) with Argon2id (32 MiB, 3 passes), so the text alone cannot be opened, and the code alone is of no use. The text is `LCP1` followed by base45 (uppercase
+letters and digits, which a QR code stores compactly); a Google Drive remote fits a QR code of about version 13 to 15. The typed code and the text are kept in memory only and are cleared
 when you press Hide or close the window. The config is read from your rclone config when you press the button, and is never written to disk by this.
 
 What it hands over: the same access to your cloud storage account as this PC has. The token cannot be limited to the LightCraft folder. Use it only for devices you own, and do not share the screen
-or post the code. To cut off a lost device, sign this app out in the provider's account page; that signs out every device that uses this sign-in, this PC too. It is only tested with Google Drive.
+or post the picture. To cut off a lost device, sign this app out in the provider's account page; that signs out every device that uses this sign-in, this PC too. It is only tested with Google Drive.
 
 Remotes that cannot travel are refused with a reason shown in the window: a library in a folder on this PC, `union` and `combine`, a remote whose chain has no section in the config, and any remote that
 names a file on this PC (`key_file`, `service_account_file`, `pem_file`, `ca_cert`, `client_cert`, `client_key` and similar), since that file would not exist on the other device.
 
-On another PC, Setup and Settings have **I have a pairing code**: paste the text, type the code. The settings are written to `paired-rclone.conf` in the app's config folder, `remote` and `rclone_config` are
+On another PC, Setup and Settings have **Pair with my home PC**: it shows this PC's freshly made code in large type (a new one each time the box is opened, kept in memory only) with the instruction to type it into Status > Add a device on the home PC; then paste the text the home PC shows. The settings are written to `paired-rclone.conf` in the app's config folder, `remote` and `rclone_config` are
 set to it, and the folder list is read at once. **One of my rclone remotes** still works as before. If `inbox/<device>/` already exists in the library, a caution says a device of that name has already sent edits and
 suggests another name unless it is the same device. Existing configs load unchanged.
 

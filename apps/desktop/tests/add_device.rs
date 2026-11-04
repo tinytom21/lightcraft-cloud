@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use lightcraft_cloud_client::pairing;
 use lightcraft_cloud_desktop::ui::add_device::{AddDevicePanel, qr_image};
 
@@ -31,49 +31,63 @@ fn harness<'a>(p: AddDevicePanel) -> Harness<'a, AddDevicePanel> {
     Harness::builder().with_size(egui::vec2(700.0, 1300.0)).build_ui_state(|ui, p: &mut AddDevicePanel| p.show(ui), p)
 }
 
+const CODE: &str = "0123-4567-897";
+
 #[test]
-fn it_warns_first_then_shows_a_qr_the_code_and_a_text_that_opens_with_it() {
+fn it_warns_first_then_asks_for_the_code_and_shows_only_a_qr_and_a_text_that_opens_with_it() {
     let d = temp("a");
     let mut h = harness(AddDevicePanel::new("gdrive:LightCraft Cloud".into(), conf(&d)));
     h.run();
     h.get_by_label("Add a device");
     h.get_by_label_contains("This gives the device access to your cloud storage account, using the same sign-in as this PC");
+    h.get_by_label_contains("The device shows a code. Type it here.");
     h.get_by_label_contains("Do not share your screen");
     h.get_by_label("Only tested with Google Drive.");
     assert!(!h.state().is_showing());
     assert!(h.query_by_label_contains("Copy text for another PC").is_none());
-    h.get_by_label("Show pairing code").click();
+    // no valid code: the button is disabled, and a typo is named
+    assert!(h.get_by_label("Show pairing QR").accesskit_node().is_disabled());
+    h.state_mut().code = "0123-4567-898".into();
+    h.run();
+    h.get_by_label("That code has a typo; check it against the device.");
+    assert!(h.get_by_label("Show pairing QR").accesskit_node().is_disabled());
+    h.state_mut().code = CODE.into();
+    h.run();
+    assert!(h.query_by_label_contains("typo").is_none());
+    h.get_by_label("Show pairing QR").click();
     h.run();
     assert!(h.state().is_showing(), "{:?}", h.state().refusal());
-    let (text, code) = {
-        let (t, c) = h.state().pairing().unwrap();
-        (t.to_string(), c.to_string())
-    };
-    h.get_by_label(&code);
+    let text = h.state().pairing().unwrap().to_string();
     h.get_by_label("Copy text for another PC");
-    let bundle = pairing::open(&text, &code).unwrap();
+    // no code is displayed anywhere, and the field is gone
+    assert!(h.query_by_label_contains(CODE).is_none() && h.query_by_label_contains("01234567897").is_none());
+    assert!(h.query_by_label("Code from the device").is_none());
+    let bundle = pairing::open(&text, CODE).unwrap();
     assert_eq!(bundle.remote, "gdrive:LightCraft Cloud");
     assert!(bundle.config.contains("FAKEREFRESH") && bundle.config.contains("FAKEACCESS"), "the token travels unchanged");
     assert!(!bundle.config.contains("OTHERFAKESECRET") && !bundle.config.contains("keyed"));
     // the pairing is not in the Debug output
     let dbg = format!("{:?}", h.state());
-    assert!(!dbg.contains(&code) && !dbg.contains(&text[..30]), "{dbg}");
-    // Hide wipes it
+    assert!(!dbg.contains(CODE) && !dbg.contains(&text[..30]), "{dbg}");
+    // Hide wipes it, the code too
     h.get_by_label("Hide").click();
     h.run();
     assert!(!h.state().is_showing());
-    h.get_by_label("Show pairing code");
+    assert!(h.state().code.is_empty());
+    h.get_by_label("Show pairing QR");
     let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
 fn copying_puts_the_text_on_the_clipboard() {
     let d = temp("c");
-    let mut h = harness(AddDevicePanel::new("gdrive:x".into(), conf(&d)));
+    let mut p = AddDevicePanel::new("gdrive:x".into(), conf(&d));
+    p.code = CODE.into();
+    let mut h = harness(p);
     h.run();
-    h.get_by_label("Show pairing code").click();
+    h.get_by_label("Show pairing QR").click();
     h.run();
-    let text = h.state().pairing().unwrap().0.to_string();
+    let text = h.state().pairing().unwrap().to_string();
     h.get_by_label("Copy text for another PC").click();
     // (the commands of a frame are in that frame's output only, so look after every step)
     let mut copied = None;
@@ -96,17 +110,21 @@ fn remotes_that_cannot_travel_show_the_reason_and_no_code() {
         ("keyed:x", "service_account_file"),
         ("missing:x", "no remote of that name"),
     ] {
-        let mut h = harness(AddDevicePanel::new(remote.into(), conf(&d)));
+        let mut p = AddDevicePanel::new(remote.into(), conf(&d));
+        p.code = CODE.into();
+        let mut h = harness(p);
         h.run();
-        h.get_by_label("Show pairing code").click();
+        h.get_by_label("Show pairing QR").click();
         h.run();
         assert!(!h.state().is_showing());
         h.get_by_label_contains(expect);
     }
     // an unreadable config
-    let mut h = harness(AddDevicePanel::new("gdrive:x".into(), d.join("nope.conf")));
+    let mut p = AddDevicePanel::new("gdrive:x".into(), d.join("nope.conf"));
+    p.code = CODE.into();
+    let mut h = harness(p);
     h.run();
-    h.get_by_label("Show pairing code").click();
+    h.get_by_label("Show pairing QR").click();
     h.run();
     h.get_by_label_contains("Could not read the rclone config");
     let _ = std::fs::remove_dir_all(&d);
@@ -114,7 +132,7 @@ fn remotes_that_cannot_travel_show_the_reason_and_no_code() {
 
 #[test]
 fn the_qr_is_black_on_white_with_a_quiet_zone() {
-    let (text, _) = pairing::seal(&pairing::Bundle::new("gdrive:x", "[gdrive]\ntype = drive\n")).unwrap();
+    let text = pairing::seal(&pairing::Bundle::new("gdrive:x", "[gdrive]\ntype = drive\n"), CODE).unwrap();
     let img = qr_image(&text).unwrap();
     let [w, h] = img.size;
     assert_eq!(w, h);

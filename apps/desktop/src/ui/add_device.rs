@@ -1,7 +1,9 @@
-//! The "Add a device" panel (home PC): shows a pairing QR and a short code that hand this library's rclone remote to a phone or
-//! another PC. See `lightcraft_cloud_client::pairing`.
+//! The "Add a device" panel (home PC): the joining device shows a code, it is typed here (password-style field), and only then
+//! does this PC show the QR and text that hand this library's rclone remote to a phone or another PC. No code is ever displayed
+//! here, so a screen share or photo of this window is useless without the code from the device. See
+//! `lightcraft_cloud_client::pairing`.
 //!
-//! The pairing text and the code live in memory only, in [`Shown`], and are wiped when it is dropped (the window closing) or
+//! The typed code and the pairing text live in memory only, and are wiped when the panel is dropped (the window closing) or
 //! [`AddDevicePanel::clear`]ed. The rclone config is read when the button is pressed, is not written anywhere, and is not kept.
 //! Nothing here logs, and nothing derives `Debug`.
 
@@ -16,14 +18,12 @@ use crate::ui::theme::{self, Kind as ButtonKind};
 /// What is shown once the button was pressed.
 struct Shown {
     text: String,
-    code: String,
     qr: TextureHandle,
 }
 
 impl Drop for Shown {
     fn drop(&mut self) {
         self.text.zeroize();
-        self.code.zeroize();
     }
 }
 
@@ -33,8 +33,16 @@ pub struct AddDevicePanel {
     /// The rclone config the remote is defined in.
     rclone_config: PathBuf,
     shown: Option<Shown>,
+    /// The code typed from the other device (a secret; wiped with the panel).
+    pub code: String,
     /// Why nothing could be shown (words for the user, never the config's contents).
     refusal: Option<String>,
+}
+
+impl Drop for AddDevicePanel {
+    fn drop(&mut self) {
+        self.code.zeroize();
+    }
 }
 
 impl std::fmt::Debug for AddDevicePanel {
@@ -69,7 +77,7 @@ pub fn qr_image(text: &str) -> Option<ColorImage> {
 
 impl AddDevicePanel {
     pub fn new(remote: String, rclone_config: PathBuf) -> Self {
-        AddDevicePanel { remote, rclone_config, shown: None, refusal: None }
+        AddDevicePanel { remote, rclone_config, shown: None, code: String::new(), refusal: None }
     }
 
     /// Whether a code is on the screen.
@@ -77,21 +85,28 @@ impl AddDevicePanel {
         self.shown.is_some()
     }
 
-    /// The text and code (for tests and for the copy button; both are secrets).
-    pub fn pairing(&self) -> Option<(&str, &str)> {
-        self.shown.as_ref().map(|s| (s.text.as_str(), s.code.as_str()))
+    /// The pairing text (for tests and for the copy button; a secret).
+    pub fn pairing(&self) -> Option<&str> {
+        self.shown.as_ref().map(|s| s.text.as_str())
     }
 
     pub fn refusal(&self) -> Option<&str> {
         self.refusal.as_deref()
     }
 
-    /// Wipe the text and code.
-    pub fn clear(&mut self) {
-        self.shown = None;
+    /// Whether the typed code is a valid one (right length and check character).
+    pub fn code_ok(&self) -> bool {
+        pairing::check_code(&self.code).is_ok()
     }
 
-    /// Read the rclone config, keep only this library's remote, seal it, and draw the QR.
+    /// Wipe the text and the typed code.
+    pub fn clear(&mut self) {
+        self.shown = None;
+        self.code.zeroize();
+        self.code.clear();
+    }
+
+    /// Read the rclone config, keep only this library's remote, seal it with the typed code, and draw the QR.
     pub fn make(&mut self, ctx: &egui::Context) {
         self.shown = None;
         self.refusal = None;
@@ -108,10 +123,10 @@ impl AddDevicePanel {
         })?);
         let config = pairing::export_config(&conf, &self.remote).map_err(|e| e.to_string())?;
         let bundle = Bundle::new(self.remote.clone(), config);
-        let (text, code) = pairing::seal(&bundle).map_err(|e| e.to_string())?;
+        let text = pairing::seal(&bundle, &self.code).map_err(|e| e.to_string())?;
         let image = qr_image(&text).ok_or_else(|| "The pairing text is too long for a QR code.".to_string())?;
         let qr = ctx.load_texture("pairing-qr", image, TextureOptions::NEAREST);
-        Ok(Shown { text, code, qr })
+        Ok(Shown { text, qr })
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
@@ -119,12 +134,20 @@ impl AddDevicePanel {
         theme::title(ui, "Add a device");
         ui.add_space(10.0);
         theme::panel(ui, None, |ui| {
-            ui.add(egui::Label::new(RichText::new("This gives the device access to your cloud storage account, using the same sign-in as this PC. Only do this for devices you own. Do not share your screen and do not post the code or the picture anywhere.").color(t.caution)).wrap());
+            ui.add(egui::Label::new(RichText::new("This gives the device access to your cloud storage account, using the same sign-in as this PC. Only do this for devices you own. The device shows a code. Type it here. Do not share your screen and do not post the picture anywhere.").color(t.caution)).wrap());
             theme::hint(ui, "Only tested with Google Drive.");
         });
         theme::gap(ui);
         if self.shown.is_none() {
-            if theme::button(ui, "Show pairing code", ButtonKind::Primary).clicked() {
+            let l = theme::field_label(ui, "Code from the device");
+            ui.add_sized([220.0, 30.0], theme::text_edit(&mut self.code).password(true).hint_text("XXXX-XXXX-XXX")).labelled_by(l.id);
+            let ok = self.code_ok();
+            if !ok && !self.code.trim().is_empty() {
+                ui.add(egui::Label::new(RichText::new("That code has a typo; check it against the device.").color(t.reject)).wrap());
+            }
+            ui.add_space(6.0);
+            let clicked = ui.add_enabled_ui(ok, |ui| theme::button(ui, "Show pairing QR", ButtonKind::Primary).clicked()).inner;
+            if clicked {
                 let ctx = ui.ctx().clone();
                 self.make(&ctx);
             }
@@ -136,14 +159,12 @@ impl AddDevicePanel {
         }
         let mut copy = None;
         if let Some(s) = &self.shown {
-            theme::panel(ui, Some("Scan this with the phone, then type the code"), |ui| {
+            theme::panel(ui, Some("Scan this with the phone"), |ui| {
                 let side = ui.available_width().clamp(200.0, 520.0);
                 ui.vertical_centered(|ui| {
                     ui.add(egui::Image::new((s.qr.id(), vec2(side, side))));
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(&s.code).monospace().size(36.0).color(t.text));
                 });
-                theme::hint(ui, "The code is typed on the other device. It works only with this picture.");
+                theme::hint(ui, "This picture is locked with the code from the device. It is useless without it.");
             });
             theme::gap(ui);
             ui.horizontal(|ui| {
@@ -154,7 +175,7 @@ impl AddDevicePanel {
                     copy = Some(String::new());
                 }
             });
-            theme::hint(ui, "On another PC: Settings, I have a pairing code, paste the text and type the code. The text is copied to the clipboard; clear it when you are done.");
+            theme::hint(ui, "On another PC: Setup, Pair with my home PC, then paste the text. The text is copied to the clipboard; clear it when you are done.");
         }
         match copy {
             Some(t) if t.is_empty() => self.clear(),
