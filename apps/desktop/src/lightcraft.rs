@@ -7,10 +7,12 @@
 //! only `readMetadata` on, see [`crate::refresh`]).
 //! What this module will and will not do:
 //!
-//! * It sends four kinds of request and no others: `engine.commands` (to find out that what answers is LightCraft),
+//! * It sends seven kinds of request and no others: `engine.commands` (to find out that what answers is LightCraft),
 //!   `engine.execute` with `library.import` and `{paths, mode: "add"}`, `engine.execute` with `library.xmpPreferences` and
-//!   **no parameters** (so it only reads the setting), and `engine.execute` with `folder.synchronize` and exactly
-//!   `{path, importNew: false, relinkMoved: false, removeMissing: false, readMetadata: true}`. [`allowed`] checks every line before
+//!   **no parameters** (so it only reads the setting), `engine.execute` with `folder.synchronize` and exactly
+//!   `{path, importNew: false, relinkMoved: false, removeMissing: false, readMetadata: true}`, and three read-only queries that
+//!   publish the albums to the phone: `albums.list` with `{}`, `catalog.query` with exactly `{filter: {album: N}, offset, limit}`
+//!   (limit at most 1000, no `sort`) and `photo.inspect` with exactly `{id: N}`. [`allowed`] checks every line before
 //!   it is written and refuses anything else, so a change that adds a library-changing command fails there and in the tests.
 //! * It never names a library, never starts LightCraft and never passes `--library`: it only talks to a LightCraft someone
 //!   else started, with the library that LightCraft has open.
@@ -25,6 +27,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
+use lightcraft_cloud_client::home::{AlbumNode, MemberPage};
 use serde_json::{Value, json};
 
 /// The port LightCraft's documentation uses, and this app's default (`lightcraft_control_port`; 0 turns the feature off).
@@ -104,6 +107,18 @@ pub trait LightCraftLink {
     fn sync_folder(&mut self, _folder: &str) -> Result<SyncReply, LinkError> {
         Err(LinkError::Refused("this link cannot synchronize a folder".into()))
     }
+    /// LightCraft's albums (`albums.list`, a read): the tree, folders holding albums.
+    fn albums_list(&mut self) -> Result<Vec<AlbumNode>, LinkError> {
+        Err(LinkError::Refused("this link cannot list albums".into()))
+    }
+    /// A page of an album's photos (`catalog.query` with only the album filter, a read): `limit` at most 1000.
+    fn album_members(&mut self, _album: u64, _offset: u64, _limit: u64) -> Result<MemberPage, LinkError> {
+        Err(LinkError::Refused("this link cannot list an album's photos".into()))
+    }
+    /// The content hash of a catalog photo (`photo.inspect`, a read); `None` when LightCraft has no such photo or it has no hash yet.
+    fn photo_hash(&mut self, _id: u64) -> Result<Option<String>, LinkError> {
+        Err(LinkError::Refused("this link cannot inspect a photo".into()))
+    }
 }
 
 /// The requests this client can make.
@@ -112,6 +127,9 @@ enum Request<'a> {
     ImportAdd(&'a [String]),
     XmpPreferences,
     SyncFolder(&'a str),
+    AlbumsList,
+    AlbumMembers { album: u64, offset: u64, limit: u64 },
+    PhotoInspect(u64),
 }
 
 fn request_value(req: &Request, id: u64) -> Value {
@@ -123,13 +141,22 @@ fn request_value(req: &Request, id: u64) -> Value {
         Request::XmpPreferences => json!({"id": id, "method": "engine.execute", "params": {"command": "library.xmpPreferences", "params": {}}}),
         Request::SyncFolder(path) => json!({"id": id, "method": "engine.execute", "params": {"command": "folder.synchronize", "params": {
             "path": path, "importNew": false, "relinkMoved": false, "removeMissing": false, "readMetadata": true}}}),
+        Request::AlbumsList => json!({"id": id, "method": "engine.execute", "params": {"command": "albums.list", "params": {}}}),
+        Request::AlbumMembers { album, offset, limit } => json!({"id": id, "method": "engine.execute", "params": {"command": "catalog.query", "params": {
+            "filter": {"album": album}, "offset": offset, "limit": limit}}}),
+        Request::PhotoInspect(photo) => json!({"id": id, "method": "engine.execute", "params": {"command": "photo.inspect", "params": {"id": photo}}}),
     }
 }
 
-/// Whether a request line is one of the four this client may send: `engine.commands` with nothing else; `library.import` with
+/// The most photos one `catalog.query` for an album's members may ask for.
+pub const MAX_QUERY_LIMIT: u64 = 1000;
+
+/// Whether a request line is one of the seven this client may send: `engine.commands` with nothing else; `library.import` with
 /// only `paths` (a list of text) and `mode` `add`; `library.xmpPreferences` with **empty** parameters (any parameter could change
 /// the setting); `folder.synchronize` with exactly `path` (non-empty, absolute), `importNew`, `relinkMoved` and `removeMissing`
-/// false and `readMetadata` true. Everything that writes goes through this.
+/// false and `readMetadata` true; and the three reads for the albums: `albums.list` with empty parameters, `catalog.query` with exactly
+/// `filter` (an object with only `album`, a whole number), `offset` and `limit` (whole numbers, `limit` at most [`MAX_QUERY_LIMIT`]) and no
+/// `sort`, and `photo.inspect` with exactly `id` (a whole number). Everything that writes goes through this.
 pub fn allowed(line: &str) -> bool {
     let Ok(v) = serde_json::from_str::<Value>(line) else { return false };
     let Some(o) = v.as_object() else { return false };
@@ -157,6 +184,14 @@ pub fn allowed(line: &str) -> bool {
                         && ["importNew", "relinkMoved", "removeMissing"].iter().all(|k| q.get(*k) == Some(&Value::Bool(false)))
                         && q.get("readMetadata") == Some(&Value::Bool(true))
                 }
+                Some("albums.list") => q.is_empty(),
+                Some("catalog.query") => {
+                    q.len() == 3
+                        && q.get("offset").is_some_and(|v| v.as_u64().is_some())
+                        && q.get("limit").and_then(Value::as_u64).is_some_and(|n| n <= MAX_QUERY_LIMIT)
+                        && q.get("filter").and_then(Value::as_object).is_some_and(|f| f.len() == 1 && f.get("album").is_some_and(|a| a.as_u64().is_some()))
+                }
+                Some("photo.inspect") => q.len() == 1 && q.get("id").is_some_and(|v| v.as_u64().is_some()),
                 _ => false,
             }
         }
@@ -226,6 +261,54 @@ pub fn parse_sync_result(result: &Value) -> Result<SyncReply, LinkError> {
     Ok(SyncReply { read, imported: count("imported").unwrap_or(0), relinked: count("relinked").unwrap_or(0), removed: count("removed").unwrap_or(0), failed })
 }
 
+/// Read `albums.list`'s result: `[{id, name, folder, count, cover, children: [...], smart?: true, ...}]`. `id`, `name` and `children` must be
+/// there (a node without them is not trusted); `folder` and `smart` default to false.
+pub fn parse_albums(result: &Value) -> Result<Vec<AlbumNode>, LinkError> {
+    fn nodes(v: &Value, depth: usize) -> Result<Vec<AlbumNode>, LinkError> {
+        let bad = |what: &str| LinkError::Protocol(format!("the album list has no usable {what}"));
+        if depth > 64 {
+            return Err(bad("nesting (too deep)"));
+        }
+        v.as_array()
+            .ok_or_else(|| bad("list"))?
+            .iter()
+            .map(|a| {
+                Ok(AlbumNode {
+                    id: a.get("id").and_then(Value::as_u64).ok_or_else(|| bad("album id"))?,
+                    name: a.get("name").and_then(Value::as_str).ok_or_else(|| bad("album name"))?.to_string(),
+                    folder: a.get("folder").and_then(Value::as_bool).unwrap_or(false),
+                    smart: a.get("smart").and_then(Value::as_bool).unwrap_or(false),
+                    children: nodes(a.get("children").ok_or_else(|| bad("`children` list"))?, depth + 1)?,
+                })
+            })
+            .collect()
+    }
+    nodes(result, 0)
+}
+
+/// Read `catalog.query`'s result: `{total, photos: [{id, deleted, ...}]}`. Deleted photos (in the library's bin) are left out.
+pub fn parse_members(result: &Value) -> Result<MemberPage, LinkError> {
+    let bad = |what: &str| LinkError::Protocol(format!("the query reply has no usable {what}"));
+    let total = result.get("total").and_then(Value::as_u64).ok_or_else(|| bad("`total`"))?;
+    let mut ids = Vec::new();
+    for p in result.get("photos").and_then(Value::as_array).ok_or_else(|| bad("`photos` list"))? {
+        let id = p.get("id").and_then(Value::as_u64).ok_or_else(|| bad("photo id"))?;
+        if p.get("deleted").and_then(Value::as_bool) != Some(true) {
+            ids.push(id);
+        }
+    }
+    Ok(MemberPage { total, ids })
+}
+
+/// Read `photo.inspect`'s result: the catalog photo, whose `content_hash` is 32 hex (the manifest's photo id). A photo without one
+/// (not hashed yet) gives `None`.
+pub fn parse_content_hash(result: &Value) -> Result<Option<String>, LinkError> {
+    if !result.is_object() {
+        return Err(LinkError::Protocol("the inspect reply is not an object".into()));
+    }
+    Ok(result.get("content_hash").and_then(Value::as_str).filter(|h| h.len() == 32 && h.bytes().all(|b| b.is_ascii_hexdigit())).map(str::to_ascii_lowercase))
+}
+
 /// How long each step may take.
 #[derive(Debug, Clone, Copy)]
 pub struct Timeouts {
@@ -241,11 +324,14 @@ pub struct Timeouts {
     /// it is given longer than an import; giving up only means the folder is asked about again (reading the same sidecars twice
     /// changes nothing).
     pub sync: Duration,
+    /// The whole wait for the reply to one of the album reads (`albums.list`, `catalog.query`, `photo.inspect`): LightCraft answers on its
+    /// UI thread, and a smart album is worked out for the query.
+    pub query: Duration,
 }
 
 impl Default for Timeouts {
     fn default() -> Self {
-        Timeouts { connect: Duration::from_millis(800), identify: Duration::from_secs(5), import: Duration::from_secs(30), prefs: Duration::from_secs(10), sync: Duration::from_secs(60) }
+        Timeouts { connect: Duration::from_millis(800), identify: Duration::from_secs(5), import: Duration::from_secs(30), prefs: Duration::from_secs(10), sync: Duration::from_secs(60), query: Duration::from_secs(30) }
     }
 }
 
@@ -384,6 +470,34 @@ impl LightCraftLink for TcpLink {
         let v = self.call(&Request::SyncFolder(folder), self.timeouts.sync)?;
         parse_sync_result(&v)
     }
+
+    fn albums_list(&mut self) -> Result<Vec<AlbumNode>, LinkError> {
+        if self.conn.is_none() {
+            return Err(LinkError::Unreachable("not identified".into()));
+        }
+        let v = self.call(&Request::AlbumsList, self.timeouts.query)?;
+        parse_albums(&v)
+    }
+
+    fn album_members(&mut self, album: u64, offset: u64, limit: u64) -> Result<MemberPage, LinkError> {
+        if self.conn.is_none() {
+            return Err(LinkError::Unreachable("not identified".into()));
+        }
+        let v = self.call(&Request::AlbumMembers { album, offset, limit }, self.timeouts.query)?;
+        parse_members(&v)
+    }
+
+    fn photo_hash(&mut self, id: u64) -> Result<Option<String>, LinkError> {
+        if self.conn.is_none() {
+            return Err(LinkError::Unreachable("not identified".into()));
+        }
+        match self.call(&Request::PhotoInspect(id), self.timeouts.query) {
+            Ok(v) => parse_content_hash(&v),
+            // (LightCraft says there is no such photo: not worth stopping for. Any error drops the connection, so connect again)
+            Err(LinkError::Refused(_)) => self.identify().map(|()| None),
+            Err(e) => Err(e),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -452,7 +566,7 @@ mod tests {
     }
 
     fn quick() -> Timeouts {
-        Timeouts { connect: Duration::from_millis(300), identify: Duration::from_millis(400), import: Duration::from_millis(400), prefs: Duration::from_millis(400), sync: Duration::from_millis(400) }
+        Timeouts { connect: Duration::from_millis(300), identify: Duration::from_millis(400), import: Duration::from_millis(400), prefs: Duration::from_millis(400), sync: Duration::from_millis(400), query: Duration::from_millis(400) }
     }
 
     #[test]
@@ -764,6 +878,217 @@ mod tests {
         }
         let ok = parse_import_result(&json!({"imported": [1, 2], "duplicates": [], "failed": []})).unwrap();
         assert_eq!((ok.imported, ok.scanned), (2, None));
+    }
+
+    fn exec(command: &str, params: Value) -> String {
+        json!({"id": 5, "method": "engine.execute", "params": {"command": command, "params": params}}).to_string()
+    }
+
+    fn query(filter: Value, offset: Value, limit: Value) -> String {
+        exec("catalog.query", json!({"filter": filter, "offset": offset, "limit": limit}))
+    }
+
+    #[test]
+    fn the_gate_admits_the_three_album_reads_with_exactly_their_shapes() {
+        assert!(allowed(&exec("albums.list", json!({}))));
+        for limit in [0, 1, 200, 999, 1000] {
+            assert!(allowed(&query(json!({"album": 7}), json!(0), json!(limit))), "limit {limit}");
+        }
+        assert!(allowed(&query(json!({"album": 0}), json!(123456), json!(1000))));
+        assert!(allowed(&query(json!({"album": u64::MAX}), json!(u64::MAX), json!(10))));
+        assert!(allowed(&exec("photo.inspect", json!({"id": 42}))));
+        assert!(allowed(&exec("photo.inspect", json!({"id": 0}))));
+        // the exact wire requests the client builds pass, too
+        for req in [Request::AlbumsList, Request::AlbumMembers { album: 3, offset: 2000, limit: 1000 }, Request::PhotoInspect(9)] {
+            assert!(allowed(&request_value(&req, 1).to_string()));
+        }
+    }
+
+    #[test]
+    fn the_gate_refuses_every_near_miss_of_the_album_reads() {
+        // albums.list: any parameter at all
+        for p in [json!({"x": 1}), json!({"id": 1}), json!(null), json!([]), json!("{}"), json!(true)] {
+            assert!(!allowed(&exec("albums.list", p.clone())), "albums.list {p}");
+        }
+        assert!(!allowed(r#"{"id":4,"method":"engine.execute","params":{"command":"albums.list"}}"#), "no params object");
+        // catalog.query: a limit over 1000, other number types, a missing or extra key, a sort, a bigger filter
+        for limit in [json!(1001), json!(100000), json!(-1), json!(1.5), json!(10.0), json!("10"), json!(null), json!(true), json!([10])] {
+            assert!(!allowed(&query(json!({"album": 7}), json!(0), limit.clone())), "limit {limit}");
+        }
+        for offset in [json!(-1), json!(0.5), json!("0"), json!(null), json!(false)] {
+            assert!(!allowed(&query(json!({"album": 7}), offset.clone(), json!(10))), "offset {offset}");
+        }
+        for album in [json!(-1), json!(1.5), json!("7"), json!(null), json!([7]), json!({"id": 7})] {
+            assert!(!allowed(&query(json!({"album": album.clone()}), json!(0), json!(10))), "album {album}");
+        }
+        for filter in [
+            json!({}),
+            json!(null),
+            json!([]),
+            json!("album"),
+            json!({"album": 7, "rating": 3}),
+            json!({"album": 7, "deleted": true}),
+            json!({"album": 7, "text": "x"}),
+            json!({"rating": 3}),
+            json!({"Album": 7}),
+        ] {
+            assert!(!allowed(&query(filter.clone(), json!(0), json!(10))), "filter {filter}");
+        }
+        let good = || json!({"filter": {"album": 7}, "offset": 0, "limit": 10});
+        assert!(allowed(&exec("catalog.query", good())));
+        let with = |k: &str, v: Value| {
+            let mut p = good();
+            p[k] = v;
+            exec("catalog.query", p)
+        };
+        for (k, v) in [("sort", json!({"key": "captured"})), ("sort", json!(null)), ("extra", json!(1)), ("view", json!(true)), ("ids", json!([1]))] {
+            assert!(!allowed(&with(k, v.clone())), "{k} {v}");
+        }
+        for k in ["filter", "offset", "limit"] {
+            let mut p = good();
+            p.as_object_mut().unwrap().remove(k);
+            assert!(!allowed(&exec("catalog.query", p)), "without {k}");
+        }
+        assert!(!allowed(&exec("catalog.query", json!({}))), "the current view");
+        assert!(!allowed(&exec("catalog.query", json!([]))));
+        // photo.inspect: exactly an id
+        for p in [json!({}), json!({"id": -1}), json!({"id": 1.5}), json!({"id": "1"}), json!({"id": null}), json!({"id": [1]}), json!({"id": 1, "x": 1}), json!({"ids": [1]}), json!([]), json!(null)] {
+            assert!(!allowed(&exec("photo.inspect", p.clone())), "photo.inspect {p}");
+        }
+        // the envelope: an extra key beside command/params, another method, a method used as the command
+        assert!(!allowed(&json!({"id": 5, "method": "engine.execute", "params": {"command": "albums.list", "params": {}, "x": 1}}).to_string()));
+        assert!(!allowed(&json!({"id": 5, "method": "engine.execute", "params": {"command": "photo.inspect", "params": {"id": 1}}, "other": 1}).to_string()));
+        assert!(!allowed(&json!({"id": 5, "method": "ui.menu.invoke", "params": {"command": "photo.inspect", "params": {"id": 1}}}).to_string()));
+        assert!(!allowed(&json!({"id": 5, "method": "photo.inspect", "params": {"id": 1}}).to_string()));
+        assert!(!allowed(&json!({"id": 5, "method": "catalog.query", "params": {"filter": {"album": 1}, "offset": 0, "limit": 1}}).to_string()));
+    }
+
+    #[test]
+    fn the_gate_still_refuses_every_command_that_changes_an_album_or_a_photo() {
+        for (c, p) in [
+            ("album.create", json!({"name": "x"})),
+            ("album.create", json!({})),
+            ("album.createSmart", json!({"name": "x"})),
+            ("album.addPhotos", json!({"id": 1, "ids": [2]})),
+            ("album.removePhotos", json!({"id": 1, "ids": [2]})),
+            ("album.rename", json!({"id": 1, "name": "y"})),
+            ("album.delete", json!({"id": 1})),
+            ("album.move", json!({"id": 1, "parent": null})),
+            ("album.reorder", json!({"id": 1})),
+            ("album.sort", json!({})),
+            ("album.setRules", json!({"id": 1, "rules": {}})),
+            ("photo.delete", json!({"ids": [1]})),
+            ("photo.rate", json!({"ids": [1], "rating": 5})),
+            ("photo.saveMetadataToFile", json!({})),
+            ("library.select", json!({"ids": [1]})),
+            ("library.selectAll", json!({})),
+            ("catalog.stats", json!({})),
+            ("library.state", json!({})),
+            ("library.folders", json!({})),
+            ("albums.get", json!({"id": 1})),
+            ("photo.inspectAll", json!({"id": 1})),
+            ("catalog.query ", json!({"filter": {"album": 7}, "offset": 0, "limit": 10})),
+            ("Albums.list", json!({})),
+            ("app.openLibrary", json!({"path": "/x"})),
+        ] {
+            assert!(!allowed(&exec(c, p.clone())), "{c} {p}");
+        }
+        // (a delete or an add that borrows the shape of a read)
+        assert!(!allowed(&exec("album.delete", json!({"filter": {"album": 7}, "offset": 0, "limit": 10}))));
+        assert!(!allowed(&exec("photo.delete", json!({"id": 1}))));
+        assert!(!allowed(&exec("album.addPhotos", json!({"id": 1}))));
+        for bad in ["", "null", "[]", "{}", r#"{"method":"engine.execute"}"#, r#"{"id":1,"method":"engine.execute","params":{"command":"albums.list","params":{}}"#] {
+            assert!(!allowed(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_album_replies_are_read_as_lightcraft_0_17_sends_them() {
+        let tree = json!([
+            {"id": 1, "name": "Trips", "folder": true, "count": 0, "cover": null, "children": [
+                {"id": 2, "name": "Lisbon", "folder": false, "count": 3, "cover": 9, "children": []},
+                {"id": 3, "name": "Good", "folder": false, "count": 1, "cover": null, "children": [], "smart": true, "rules": {"rating": 3}, "rulesText": "3+ stars", "problems": []}]},
+            {"id": 4, "name": "Best", "folder": false, "count": 0, "cover": null, "children": []}
+        ]);
+        let n = parse_albums(&tree).unwrap();
+        assert_eq!((n.len(), n[0].folder, n[0].children.len(), n[0].children[1].smart, n[0].children[0].smart, n[1].name.as_str()), (2, true, 2, true, false, "Best"));
+        for bad in [json!(null), json!({}), json!([{"name": "x", "children": []}]), json!([{"id": 1, "children": []}]), json!([{"id": 1, "name": "x"}]), json!([{"id": "1", "name": "x", "children": []}])] {
+            assert!(matches!(parse_albums(&bad), Err(LinkError::Protocol(_))), "{bad}");
+        }
+        let page = parse_members(&json!({"total": 3, "photos": [{"id": 5, "deleted": false}, {"id": 6, "deleted": true}, {"id": 7}]})).unwrap();
+        assert_eq!((page.total, page.ids), (3, vec![5, 7]), "a deleted photo is not a member");
+        for bad in [json!(null), json!({"total": 1}), json!({"photos": []}), json!({"total": 1, "photos": [{"fileName": "x"}]}), json!({"total": "1", "photos": []})] {
+            assert!(matches!(parse_members(&bad), Err(LinkError::Protocol(_))), "{bad}");
+        }
+        let h = "0123456789abcdef0123456789ABCDEF";
+        assert_eq!(parse_content_hash(&json!({"id": 1, "content_hash": h, "source": {"path": "/p/a.jpg"}})).unwrap(), Some(h.to_ascii_lowercase()));
+        for none in [json!({"content_hash": null}), json!({}), json!({"content_hash": "abc"}), json!({"content_hash": "zz23456789abcdef0123456789abcdef"}), json!({"content_hash": 5})] {
+            assert_eq!(parse_content_hash(&none).unwrap(), None, "{none}");
+        }
+        assert!(parse_content_hash(&json!([1])).is_err());
+    }
+
+    #[test]
+    fn the_album_reads_go_over_the_wire_as_exactly_the_gated_requests_and_nothing_else_is_sent() {
+        let h = "ab".repeat(16);
+        let hh = h.clone();
+        let f = serve(move |v| {
+            let id = &v["id"];
+            Some(match (v["method"].as_str(), v["params"]["command"].as_str()) {
+                (Some("engine.commands"), _) => commands_reply(id, &[], true),
+                (_, Some("albums.list")) => json!({"id": id, "ok": true, "result": [
+                    {"id": 1, "name": "Trips", "folder": true, "count": 0, "cover": null, "children": [{"id": 2, "name": "Lisbon", "folder": false, "count": 2, "cover": null, "children": []}]}]})
+                .to_string(),
+                (_, Some("catalog.query")) => {
+                    let off = v["params"]["params"]["offset"].as_u64().unwrap();
+                    let photos: Vec<Value> = (off..2).map(|i| json!({"id": 100 + i, "fileName": "x.jpg", "deleted": false})).collect();
+                    json!({"id": id, "ok": true, "result": {"total": 2, "photos": photos}}).to_string()
+                }
+                (_, Some("photo.inspect")) if v["params"]["params"]["id"] == json!(404) => json!({"id": id, "ok": false, "error": "no such photo"}).to_string(),
+                (_, Some("photo.inspect")) => json!({"id": id, "ok": true, "result": {"id": v["params"]["params"]["id"], "content_hash": hh, "albums": []}}).to_string(),
+                _ => json!({"id": id, "ok": false, "error": "unknown"}).to_string(),
+            })
+        });
+        let mut l = TcpLink::with_timeouts(f.port, quick());
+        assert!(matches!(l.albums_list(), Err(LinkError::Unreachable(_))), "not identified: nothing is sent");
+        assert!(matches!(l.album_members(2, 0, 10), Err(LinkError::Unreachable(_))));
+        assert!(matches!(l.photo_hash(1), Err(LinkError::Unreachable(_))));
+        assert_eq!(f.seen.lock().unwrap().len(), 0);
+        l.identify().unwrap();
+        let tree = l.albums_list().unwrap();
+        assert_eq!(tree[0].children[0].name, "Lisbon");
+        let page = l.album_members(2, 0, 1000).unwrap();
+        assert_eq!((page.total, page.ids.clone()), (2, vec![100, 101]));
+        assert_eq!(l.album_members(2, 1, 1000).unwrap().ids, vec![101]);
+        assert_eq!(l.photo_hash(7).unwrap(), Some(h.clone()));
+        // LightCraft says there is no such photo: no hash, and the link carries on after connecting again
+        assert_eq!(l.photo_hash(404).unwrap(), None);
+        assert_eq!(l.photo_hash(8).unwrap(), Some(h), "the link connected again by itself");
+        // a limit over 1000 never leaves this process
+        let before = f.seen.lock().unwrap().len();
+        assert!(matches!(l.album_members(2, 0, 1001), Err(LinkError::Refused(_))));
+        assert_eq!(f.seen.lock().unwrap().len(), before);
+        let seen = f.seen.lock().unwrap().clone();
+        for line in &seen {
+            assert!(allowed(line), "{line}");
+        }
+        let sent: Vec<Value> = seen.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(sent[1], json!({"id": 2, "method": "engine.execute", "params": {"command": "albums.list", "params": {}}}));
+        assert_eq!(sent[2], json!({"id": 3, "method": "engine.execute", "params": {"command": "catalog.query", "params": {"filter": {"album": 2}, "offset": 0, "limit": 1000}}}));
+        assert_eq!(sent[4], json!({"id": 5, "method": "engine.execute", "params": {"command": "photo.inspect", "params": {"id": 7}}}));
+        // the default link refuses what it cannot do
+        struct Bare;
+        impl LightCraftLink for Bare {
+            fn identify(&mut self) -> Result<(), LinkError> {
+                Ok(())
+            }
+            fn import_add(&mut self, _: &[String]) -> Result<ImportReply, LinkError> {
+                Ok(ImportReply::default())
+            }
+        }
+        assert!(matches!(Bare.albums_list(), Err(LinkError::Refused(_))));
+        assert!(matches!(Bare.album_members(1, 0, 1), Err(LinkError::Refused(_))));
+        assert!(matches!(Bare.photo_hash(1), Err(LinkError::Refused(_))));
     }
 
     #[test]
