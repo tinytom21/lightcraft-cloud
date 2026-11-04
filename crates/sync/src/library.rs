@@ -12,7 +12,11 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard};
+
+mod uploads;
+pub use uploads::{EnqueueReport, PHONE_FOLDER, UPLOADS_DIR, UploadCandidate, UploadRejection, UploadStatus, UploadStep, is_heic, is_sendable};
 use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
@@ -147,6 +151,11 @@ pub struct CloudLibrary {
     inner: Mutex<Inner>,
     /// One refresh / push at a time.
     sync_lock: Mutex<()>,
+    /// One enqueue / upload step at a time (separate from `sync_lock`: a long upload never holds an edit back).
+    upload_lock: Mutex<()>,
+    /// An upload step is running (the status says "sending").
+    uploading: AtomicBool,
+    retry_delay: Duration,
     clock: Box<dyn Fn() -> SystemTime + Send + Sync>,
     /// path -> (modified, size, sha256) of sidecars already hashed.
     memo: Mutex<HashMap<PathBuf, (SystemTime, u64, String)>>,
@@ -200,6 +209,9 @@ impl CloudLibrary {
             device: device.to_string(),
             inner: Mutex::new(Inner { state, items, recovered, pending_hint: 0 }),
             sync_lock: Mutex::new(()),
+            upload_lock: Mutex::new(()),
+            uploading: AtomicBool::new(false),
+            retry_delay: Duration::from_secs(2),
             clock: Box::new(SystemTime::now),
             memo: Mutex::default(),
         })
@@ -208,6 +220,15 @@ impl CloudLibrary {
     /// Replace the clock (tests).
     pub fn set_clock(&mut self, clock: impl Fn() -> SystemTime + Send + Sync + 'static) {
         self.clock = Box::new(clock);
+    }
+
+    /// How long to wait between the three tries of an upload's network call (tests).
+    pub fn set_retry_delay(&mut self, d: Duration) {
+        self.retry_delay = d;
+    }
+
+    fn retrier(&self) -> crate::imports::Retrier {
+        crate::imports::Retrier { delay: self.retry_delay }
     }
 
     /// The local mirror: what `library.addRemote` is given as `root`.

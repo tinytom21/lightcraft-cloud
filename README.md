@@ -6,6 +6,7 @@ What you get:
 
 * Browse your library on your phone and edit photos there. The edits come back to LightCraft on your PC.
 * Keep a full copy of chosen folders on a second PC, edit there too, and import new photos there.
+* Send photos from your phone to the home PC: pick them in the app, or let the app send the new camera photos by itself.
 * Use any cloud storage that [rclone](https://rclone.org) supports: Google Drive, OneDrive, S3, WebDAV, SFTP and more.
 
 ## How the parts fit
@@ -61,6 +62,7 @@ The PC apps are one program, `lightcraft-cloud-desktop`, built two ways (the *ho
 
 * **Edits.** Edit a photo in LightCraft on any PC, or on the phone. The edit is saved as an XMP sidecar next to the photo, travels through the cloud and ends up on every device. If two devices changed the same photo, the edits are merged, as described below.
 * **Imports.** On another PC, import photos in LightCraft into the synced folder, in any folder structure you like. The app keeps your folder structure, sends the photos to the home PC, and they appear in LightCraft there.
+* **Photos from the phone.** In the phone app, on the Cloud library page, choose **Send photos to PC** and pick photos, or switch on **Send new camera photos automatically** (off by default; only photos taken after you switch it on; by default only on Wi-Fi). The photos go to the home PC through the same imports as above, into a folder `Phone/<date taken>` below your photo folder, and appear in LightCraft and on every device like any other photo. Photos stay on the phone, and the app deletes nothing from the gallery. HEIC photos are not sent yet: LightCraft cannot read them.
 * **Live progress.** While it works, the Status window and the tray tooltip show what it is doing, how far along it is and about how long is left, and say so if nothing has moved for a while.
 * **Refresh of LightCraft.** The app tells your running LightCraft about new photos and new edits, so you do not have to run Synchronize Folder. This needs LightCraft to be running and its control port to be on (see Quick start).
 
@@ -153,7 +155,7 @@ release; unpack the new archive and run `./install.sh` again. Nothing is ever in
 
 This is early software.
 
-* Albums and uploading photos from the phone are not built.
+* Albums are not built. Uploading from the phone sends JPEG, PNG, TIFF, DNG and the raw formats the home PC adopts; HEIC/HEIF and WebP are not sent, and neither are videos.
 * The Windows installers and programs are not code-signed, so Windows SmartScreen warns when you first run the installer. The update check compares the installer with a checksum file from the same GitHub release: that catches a damaged download, not a release published by someone who has taken over the GitHub account.
 * A Mac build does not exist. The home PC app runs on Linux and on Windows 10 or 11 (x86-64); there is no ARM build of either.
 * The Windows home PC app has been built and tested on a real Windows (a CI runner), but not yet used on a real home PC's tray and desktop. What differs from Linux

@@ -105,8 +105,8 @@ and contents. Nothing in the format changes. Names are longer underneath (a 12-b
 5. Applying (or merging) writes the sidecar atomically (temp file in the same folder + rename). Photo files are never
    modified. The user then runs Synchronize Folder in LightCraft to pick up the new sidecar.
 
-## Imports (other PC to home PC)
-A second PC can send photos to the home PC, which adds them to its photo folder (and publishes them with the next sync).
+## Imports (other PC or phone to home PC)
+A second PC, or a phone, can send photos to the home PC, which adds them to its photo folder (and publishes them with the next sync).
 The format stays 1: these are new files in new folders, which a client that does not know about them ignores.
 
 * The uploader puts the files first: `imports/<device>/<id>/<file name>` (the photo's bytes) and, optionally,
@@ -148,6 +148,13 @@ The format stays 1: these are new files in new folders, which a client that does
   uploader reads it to learn the final path.
 * The weekly purge removes `imports-done/` day folders like `inbox-done/` (same age limit, same backup check). `imports/`
   itself is never purged.
+* **A phone may write imports too.** It is an uploader like another PC: its device name is the one it files its edits under
+  (`imports/<device>/`), and the protocol above is unchanged. Differences in what it sends: no sidecar (`"sidecar": null`), and
+  `folder` is `Phone/<YYYY-MM-DD>`, the local date the photo was taken (the app uses this; the home PC accepts any folder that
+  passes the rules above, and creates nested folders as needed). `name` is the file name the phone has, made safe for the rules
+  above (characters that cannot be in a name become `_`); the `mtime` is when the photo was taken. The phone sends only the file
+  types the home PC adopts, and not HEIC / HEIF, which LightCraft cannot read yet. A photo the phone sees in the manifest
+  (same `id`) is never sent. After the home PC has added a photo, it is in the manifest like any other.
 
 ## A client that is a PC (another PC)
 A second PC keeps a full copy of some folders of the library in a photo folder of its own, with its own LightCraft library, and sends

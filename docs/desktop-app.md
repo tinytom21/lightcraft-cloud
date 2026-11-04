@@ -267,9 +267,15 @@ not code-signed. Where Windows differs from Linux, and what the app does about i
 What the Windows home PC cannot do: run on ARM Windows (no build), publish a photo folder on OneDrive "files on demand" without Windows downloading each file as it is read, or notice changes on a network
 drive that does not send change notifications (the 15-minute sync still runs). Everything else of the Linux home PC is there.
 
+### Photos from a phone
+
+The home PC does nothing different for a phone: the phone's photos arrive as imports under its device name and are added to the photo folder
+as `Phone/<date taken>/<file name>` (the folders are created; a name that is taken gets `-2`, `-3`, ...). Status counts them with the other
+imports. A "Folders to leave out" pattern that matches the `Phone` folder makes the home PC refuse them, and the phone shows that.
+
 ### Telling your LightCraft about new photos
 
-When another PC sends photos (FORMAT.md, "Imports") and the sync adds them to the photo folder, the app can ask the LightCraft
+When another PC or a phone sends photos (FORMAT.md, "Imports") and the sync adds them to the photo folder, the app can ask the LightCraft
 you have open to add them to its library, so they appear without a manual import. It does this through LightCraft's control
 channel, which is off until you turn it on. For the Flatpak:
 

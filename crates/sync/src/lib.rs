@@ -19,7 +19,7 @@ mod remote;
 mod util;
 
 pub use error::{Error, Result};
-pub use library::{CloudLibrary, DEFAULT_CACHE_CAP, PhotoState, PreviewState, PushSummary, RefreshSummary, State, Status, valid_device};
+pub use library::{CloudLibrary, EnqueueReport, PHONE_FOLDER, UPLOADS_DIR, UploadCandidate, UploadRejection, UploadStatus, UploadStep, is_heic, is_sendable, DEFAULT_CACHE_CAP, PhotoState, PreviewState, PushSummary, RefreshSummary, State, Status, valid_device};
 pub use albums::{FOLDER_NAME as ALBUM_FOLDER, Summary as AlbumsSummary};
 pub use manifest::{Album, FORMAT, Item};
 pub use progress::{Estimator, Progress, ProgressHook, STALL_MS, Stage, Summary, bytes_pair, describe, stalled_for, time_left, to_ms};

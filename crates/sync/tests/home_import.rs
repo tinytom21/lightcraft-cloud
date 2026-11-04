@@ -1218,3 +1218,21 @@ fn whatever_point_a_run_crashes_at_the_photo_was_announced_by_the_crashed_run_or
         assert!(all.len() <= 2, "{point}: {all:?}");
     }
 }
+
+#[test]
+fn a_phone_is_an_uploader_like_any_other_and_its_nested_phone_date_folder_is_created() {
+    let fx = Fx::new("phone-device");
+    seed(&fx);
+    let a = up("Phone/2026-03-14", "IMG_20260314_101500.jpg", &bytes_of("phone a")).device("Pixel_8.pro");
+    let b = up("Phone/2026-03-15", "IMG_20260315_090000.jpg", &bytes_of("phone b")).device("Pixel_8.pro");
+    for u in [&a, &b] {
+        upload(&fx, u);
+    }
+    let r = sync(&fx);
+    assert_eq!((r.imports.added.len(), r.imports.rejected), (2, 0), "{:?}", r.imports);
+    assert_eq!(read_src(&fx, "Phone/2026-03-14/IMG_20260314_101500.jpg"), bytes_of("phone a"));
+    assert_eq!(read_src(&fx, "Phone/2026-03-15/IMG_20260315_090000.jpg"), bytes_of("phone b"));
+    assert_eq!(status_of(&fx, &a.id()), "added");
+    assert!(fx.remote_tree().iter().any(|p| p.contains("/Pixel_8.pro/") && p.ends_with(&format!("{}.result.json", a.id()))), "{:?}", fx.remote_tree());
+    assert_eq!(fx.manifest()["photos"].as_array().unwrap().len(), 3, "published by the same sync");
+}
