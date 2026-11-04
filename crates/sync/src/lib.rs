@@ -5,6 +5,7 @@
 //! run time) and its engine as an [`Engine`] (a command id and JSON parameters, like the control protocol),
 //! and calls [`CloudLibrary`]. Nothing here keeps the engine locked while the network is busy.
 
+mod albums;
 mod error;
 pub mod home;
 mod library;
@@ -18,7 +19,8 @@ mod util;
 
 pub use error::{Error, Result};
 pub use library::{CloudLibrary, DEFAULT_CACHE_CAP, PhotoState, PreviewState, PushSummary, RefreshSummary, State, Status, valid_device};
-pub use manifest::{FORMAT, Item};
+pub use albums::{FOLDER_NAME as ALBUM_FOLDER, Summary as AlbumsSummary};
+pub use manifest::{Album, FORMAT, Item};
 pub use progress::{Estimator, Progress, ProgressHook, STALL_MS, Stage, Summary, bytes_pair, describe, stalled_for, time_left, to_ms};
 pub use rclone::{RcloneRemote, list_remotes};
 pub use util::{is_busy, replace_file};

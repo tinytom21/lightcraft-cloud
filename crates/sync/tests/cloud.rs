@@ -1,6 +1,6 @@
 //! The cloud client against a folder standing in for the remote, with a fake engine and with the real one.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -91,11 +91,13 @@ struct Entry {
 struct Pc {
     dir: PathBuf,
     entries: Vec<Entry>,
+    /// The manifest's `albums`, when the PC publishes any.
+    albums: Option<Value>,
 }
 
 impl Pc {
     fn new(dir: &Path) -> Pc {
-        Pc { dir: dir.to_path_buf(), entries: Vec::new() }
+        Pc { dir: dir.to_path_buf(), entries: Vec::new(), albums: None }
     }
     fn write(&self, rel: &str, bytes: &[u8]) {
         let p = self.dir.join(rel);
@@ -149,7 +151,10 @@ impl Pc {
                 v
             })
             .collect();
-        let m = json!({"format": 1, "generated": "2026-10-27T02:25:25Z", "publisher": "test", "photos": photos, "future": {"x": 1}});
+        let mut m = json!({"format": 1, "generated": "2026-10-27T02:25:25Z", "publisher": "test", "photos": photos, "future": {"x": 1}});
+        if let Some(a) = &self.albums {
+            m["albums"] = a.clone();
+        }
         self.write("mobile/manifest.json", m.to_string().as_bytes());
     }
     fn inbox(&self, device: &str) -> Vec<String> {
@@ -674,5 +679,138 @@ fn lru_with_a_fake_engine_counts_only_what_it_downloaded() {
     drop(lib);
     let lib = open(&base.join("state"), &spy, "phone");
     assert_eq!((lib.status().cache_bytes, lib.status().cache_cap), (2000, 2500));
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+// -------------------------------------------------------------------------------------------
+// the PC's albums, mirrored into the phone's library
+
+/// The phone's albums as `path -> member engine ids` ("A/B/Name": a folder is listed with a trailing `/`), and each one's id.
+fn phone_albums(eng: &mut Real) -> (BTreeMap<String, Vec<u64>>, BTreeMap<String, u64>) {
+    fn walk(eng: &mut Real, list: &[Value], prefix: &str, out: &mut BTreeMap<String, Vec<u64>>, ids: &mut BTreeMap<String, u64>) {
+        for a in list {
+            let name = a["name"].as_str().unwrap();
+            let kids = a["children"].as_array().unwrap().clone();
+            let id = a["id"].as_u64().unwrap();
+            if a["folder"].as_bool().unwrap() {
+                let path = format!("{prefix}{name}/");
+                out.insert(path.clone(), vec![]);
+                ids.insert(path.clone(), id);
+                walk(eng, &kids, &path, out, ids);
+            } else {
+                let q = eng.call("catalog.query", json!({"filter": {"album": id}, "limit": 1000})).unwrap();
+                let mut members: Vec<u64> = q["photos"].as_array().unwrap().iter().map(|p| p["id"].as_u64().unwrap()).collect();
+                members.sort_unstable();
+                out.insert(format!("{prefix}{name}"), members);
+                ids.insert(format!("{prefix}{name}"), id);
+            }
+        }
+    }
+    let list = eng.call("albums.list", json!({})).unwrap();
+    let (mut out, mut ids) = (BTreeMap::new(), BTreeMap::new());
+    walk(eng, list.as_array().unwrap(), "", &mut out, &mut ids);
+    (out, ids)
+}
+
+/// What the user does in the app: the engine wants a selection for these two, so the first photo is selected.
+fn user_call(eng: &mut Real, command: &str, params: Value) {
+    let first = params["ids"][0].as_u64().unwrap();
+    eng.call("library.select", json!({"ids": [first]})).unwrap();
+    eng.call(command, params).unwrap();
+}
+
+#[test]
+fn the_pcs_albums_become_ordinary_albums_in_a_from_pc_folder_and_follow_the_pc_but_never_touch_the_users_own() {
+    let base = temp_dir("albums");
+    let mut pc = Pc::new(&base.join("pc"));
+    pc.add(1, "A/one.jpg", "A/one.xmp");
+    pc.add_pair(2, "B/two.JPG", "B/two.JPG.xmp", 3, "B/two.ARW", "B/two.xmp");
+    pc.add(4, "C/four.jpg", "C/four.xmp");
+    pc.albums = Some(json!([
+        {"id": "7", "name": "Trip", "path": ["Europe"], "smart": false, "photos": [hex(1), hex(2)]},
+        {"id": "8", "name": "Best", "path": [], "smart": true, "photos": [hex(4), hex(1), hex(77)]},
+        {"id": "9", "name": "Deep", "path": ["Europe", "Spain"], "smart": false, "photos": []}
+    ]));
+    pc.publish();
+    let spy = Spy::new(&base.join("pc"));
+    let lib = open(&base.join("state"), &spy, "phone-1");
+    let mut eng = Real::new(&base.join("lib"));
+    // the user's own album, made before anything is mirrored
+    let mine = eng.call("album.create", json!({"name": "Mine"})).unwrap()["id"].as_u64().unwrap();
+    let r = lib.refresh(&mut eng).unwrap();
+    assert!(r.failures.is_empty(), "{:?}", r.failures);
+    let root = lib.root().to_path_buf();
+    let (one, two, four) = (eng.id_at(&root.join("A/one.jpg")), eng.id_at(&root.join("B/two.JPG")), eng.id_at(&root.join("C/four.jpg")));
+    let (tree, ids) = phone_albums(&mut eng);
+    let mut want = BTreeMap::new();
+    want.insert("Mine".to_string(), vec![]);
+    want.insert("From PC/".to_string(), vec![]);
+    want.insert("From PC/Europe/".to_string(), vec![]);
+    want.insert("From PC/Europe/Spain/".to_string(), vec![]);
+    want.insert("From PC/Europe/Trip".to_string(), { let mut v = vec![one, two]; v.sort_unstable(); v });
+    want.insert("From PC/Europe/Spain/Deep".to_string(), vec![]);
+    want.insert("From PC/Best".to_string(), { let mut v = vec![four, one]; v.sort_unstable(); v });
+    assert_eq!(tree, want, "a smart album comes as an ordinary album of its members; a photo the phone has no record of is left out");
+    assert_eq!((r.albums.created, r.albums.deleted), (6, 0), "{:?}", r.albums);
+    let selection = eng.call("library.state", json!({})).unwrap()["selection"].clone();
+    assert!(selection["ids"].as_array().unwrap().is_empty() && selection["active"].is_null(), "the user's (empty) selection is back: {selection}");
+    let state = lib.state();
+    assert_eq!(state.albums.get("7"), Some(&ids["From PC/Europe/Trip"]));
+    assert_eq!(state.album_folder, Some(ids["From PC/"]));
+    // the user album is an ordinary one: it has nothing of the PC's
+    assert_eq!(ids["Mine"], mine);
+
+    // a second refresh changes nothing
+    let r = lib.refresh(&mut eng).unwrap();
+    assert!(r.failures.is_empty(), "{:?}", r.failures);
+    assert!(!r.albums.changed(), "{:?}", r.albums);
+
+    // the user puts a photo in their own album, and edits mirrored ones: removes a photo, adds another, renames one, makes an album inside the folder
+    user_call(&mut eng, "album.addPhotos", json!({"id": mine, "ids": [one, four]}));
+    let trip = ids["From PC/Europe/Trip"];
+    user_call(&mut eng, "album.removePhotos", json!({"id": trip, "ids": [one]}));
+    user_call(&mut eng, "album.addPhotos", json!({"id": trip, "ids": [four]}));
+    eng.call("album.rename", json!({"id": ids["From PC/Best"], "name": "My best"})).unwrap();
+    eng.call("album.create", json!({"name": "Stray", "parent": ids["From PC/"]})).unwrap();
+    let r = lib.refresh(&mut eng).unwrap();
+    assert!(r.failures.is_empty(), "{:?}", r.failures);
+    let (tree2, ids2) = phone_albums(&mut eng);
+    let mut want2 = want.clone();
+    want2.insert("Mine".to_string(), { let mut v = vec![one, four]; v.sort_unstable(); v });
+    assert_eq!(tree2, want2, "put back, and the user's album kept what the user put in it");
+    assert_eq!(ids2["From PC/Europe/Trip"], trip, "the same album, not a new one");
+    assert_eq!(ids2["From PC/Best"], ids["From PC/Best"]);
+
+    // the PC renames an album, moves one to another folder, drops one and changes members
+    pc.albums = Some(json!([
+        {"id": "7", "name": "Lisbon", "path": ["Europe"], "smart": false, "photos": [hex(2)]},
+        {"id": "8", "name": "Best", "path": ["Favourites"], "smart": false, "photos": [hex(4), hex(1)]}
+    ]));
+    pc.publish();
+    let r = lib.refresh(&mut eng).unwrap();
+    assert!(r.failures.is_empty(), "{:?}", r.failures);
+    let (tree3, ids3) = phone_albums(&mut eng);
+    let mut want3 = BTreeMap::new();
+    want3.insert("Mine".to_string(), want2["Mine"].clone());
+    want3.insert("From PC/".to_string(), vec![]);
+    want3.insert("From PC/Europe/".to_string(), vec![]);
+    want3.insert("From PC/Europe/Lisbon".to_string(), vec![two]);
+    want3.insert("From PC/Favourites/".to_string(), vec![]);
+    want3.insert("From PC/Favourites/Best".to_string(), { let mut v = vec![four, one]; v.sort_unstable(); v });
+    assert_eq!(tree3, want3);
+    assert_eq!(ids3["From PC/Europe/Lisbon"], trip, "a rename keeps the album");
+    assert_eq!(ids3["From PC/Favourites/Best"], ids["From PC/Best"], "a move keeps the album");
+
+    // the PC stops publishing albums (an older publisher, or publish_albums off): the folder goes, the user's album stays
+    pc.albums = None;
+    pc.publish();
+    let r = lib.refresh(&mut eng).unwrap();
+    assert!(r.failures.is_empty(), "{:?}", r.failures);
+    let (tree4, _) = phone_albums(&mut eng);
+    assert_eq!(tree4, BTreeMap::from([("Mine".to_string(), want2["Mine"].clone())]));
+    assert_eq!(lib.state().album_folder, None);
+    assert!(lib.state().albums.is_empty());
+    // all the photos are still in the library
+    assert_eq!(eng.call("catalog.query", json!({"limit": 100})).unwrap()["total"], 4);
     let _ = std::fs::remove_dir_all(&base);
 }

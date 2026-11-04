@@ -48,6 +48,45 @@ fn item(v: &Value, alternate: bool) -> Result<Item> {
     })
 }
 
+/// One album of the manifest (`albums`, additive; FORMAT.md): the PC's album as a list of photo ids.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Album {
+    /// Stable on the PC (its catalog album id as text); a rename keeps it.
+    pub id: String,
+    pub name: String,
+    /// The folders above the album, outermost first.
+    pub path: Vec<String>,
+    pub smart: bool,
+    /// Manifest photo ids (primaries) in the PC's order.
+    pub photos: Vec<String>,
+}
+
+fn clean(s: &str) -> Option<String> {
+    let t = s.trim();
+    (!t.is_empty()).then(|| t.chars().filter(|c| !c.is_control()).collect::<String>().trim().to_string()).filter(|t| !t.is_empty())
+}
+
+/// The albums of a manifest; an entry without a usable id is skipped, a name that is blank becomes `Untitled`, a repeated id keeps the
+/// first. Absent or not a list: none.
+fn albums(m: &Value) -> Vec<Album> {
+    let mut out: Vec<Album> = Vec::new();
+    for a in m.get("albums").and_then(Value::as_array).into_iter().flatten() {
+        let Some(id) = text(a, "id") else { continue };
+        if out.iter().any(|o| o.id == id) {
+            continue;
+        }
+        let strings = |k: &str| -> Vec<String> { a.get(k).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect() };
+        out.push(Album {
+            name: text(a, "name").and_then(|n| clean(&n)).unwrap_or_else(|| "Untitled".into()),
+            path: strings("path").iter().map(|p| clean(p).unwrap_or_else(|| "Untitled".into())).collect(),
+            smart: a.get("smart").and_then(Value::as_bool).unwrap_or(false),
+            photos: strings("photos"),
+            id,
+        });
+    }
+    out
+}
+
 /// A parsed manifest: its files (primaries and alternates, flattened) and what `library.addRemote`
 /// is given for each.
 pub struct Parsed {
@@ -57,6 +96,8 @@ pub struct Parsed {
     pub photos: Vec<Value>,
     /// Same order as `items`: which shot (a photo of the manifest, with its alternates) each file belongs to.
     pub shots: Vec<usize>,
+    /// The PC's albums (empty when the manifest has none).
+    pub albums: Vec<Album>,
 }
 
 pub fn parse(bytes: &[u8]) -> Result<Parsed> {
@@ -97,5 +138,5 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed> {
             shots.push(shot);
         }
     }
-    Ok(Parsed { generated: text(&m, "generated").unwrap_or_default(), items, photos, shots })
+    Ok(Parsed { generated: text(&m, "generated").unwrap_or_default(), items, photos, shots, albums: albums(&m) })
 }

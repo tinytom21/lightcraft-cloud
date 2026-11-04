@@ -71,11 +71,15 @@ pub struct State {
     pub last_error: Option<String>,
     /// The `generated` stamp of the manifest last applied.
     pub generated: Option<String>,
+    /// The phone's id of the album folder the PC's albums are mirrored into.
+    pub album_folder: Option<u64>,
+    /// The manifest's album id -> the phone's album id, so a rename on the PC renames the album here.
+    pub albums: BTreeMap<String, u64>,
 }
 
 impl Default for State {
     fn default() -> Self {
-        State { format: 1, photos: BTreeMap::new(), previews: BTreeMap::new(), cache_cap: DEFAULT_CACHE_CAP, last_refresh: None, last_error: None, generated: None }
+        State { format: 1, photos: BTreeMap::new(), previews: BTreeMap::new(), cache_cap: DEFAULT_CACHE_CAP, last_refresh: None, last_error: None, generated: None, album_folder: None, albums: BTreeMap::new() }
     }
 }
 
@@ -105,6 +109,8 @@ pub struct RefreshSummary {
     pub blocked: Vec<u64>,
     /// Things that failed (a thumbnail, a sidecar); the rest went through and the next refresh retries.
     pub failures: Vec<String>,
+    /// What the PC's albums changed here (albums made, renamed or deleted, photos put in or taken out).
+    pub albums: crate::albums::Summary,
 }
 
 /// What [`CloudLibrary::push_edits`] did.
@@ -345,6 +351,7 @@ impl CloudLibrary {
         // 2. the photos. Rating, flag and label are the sidecar's to say once there is one (or the engine
         // has the photo): the manifest's copy is the PC's, so it would undo an edit made here and not sent yet.
         let mut photos = parsed.photos;
+        let albums = parsed.albums;
         {
             let g = lock(&self.inner);
             for (p, it) in photos.iter_mut().zip(&parsed.items) {
@@ -392,9 +399,38 @@ impl CloudLibrary {
         self.refresh_thumbs(&items, &mut summary, &engine_of);
         // 4. sidecars
         self.refresh_sidecars(engine, &items, &mut summary, &engine_of);
+        // 5. the PC's albums (view-only: put back the way the PC has them every time)
+        self.refresh_albums(engine, &albums, &mut summary);
         let pending = self.scan_pending(engine).map(|p| p.len()).unwrap_or(0);
         lock(&self.inner).pending_hint = pending;
         Ok(summary)
+    }
+
+    /// Mirror the manifest's albums into the engine's library (see [`crate::albums`]). Never fails the refresh: a problem is listed in
+    /// `summary.failures` and the next refresh finishes the job.
+    fn refresh_albums(&self, engine: &mut dyn Engine, albums: &[manifest::Album], summary: &mut RefreshSummary) {
+        let (mut mem, engine_ids) = {
+            let g = lock(&self.inner);
+            let mem = crate::albums::Memory { folder: g.state.album_folder, albums: g.state.albums.clone() };
+            let ids: HashMap<String, u64> = g.state.photos.iter().map(|(k, p)| (k.clone(), p.engine_id)).collect();
+            (mem, ids)
+        };
+        if albums.is_empty() && mem.folder.is_none() && mem.albums.is_empty() {
+            return; // (no albums, none mirrored before: the engine is not asked anything)
+        }
+        // (only the photos this library shows; a partner of a pair is not listed in an album)
+        let hidden: HashSet<u64> = self.hidden_ids().into_iter().collect();
+        let r = crate::albums::mirror(engine, albums, &|id| engine_ids.get(id).copied().filter(|e| *e != 0 && !hidden.contains(e)), &mut mem);
+        match r {
+            Ok(s) => summary.albums = s,
+            Err(e) => summary.failures.push(format!("albums: {e}")),
+        }
+        let mut g = lock(&self.inner);
+        g.state.album_folder = mem.folder;
+        g.state.albums = mem.albums;
+        if let Err(e) = self.save(&g) {
+            summary.failures.push(e.to_string());
+        }
     }
 
     fn refresh_thumbs(&self, items: &[Item], summary: &mut RefreshSummary, engine_of: &dyn Fn(&str) -> Option<u64>) {
