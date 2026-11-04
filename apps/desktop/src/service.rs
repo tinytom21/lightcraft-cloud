@@ -45,6 +45,8 @@ impl JobError {
 /// What a sync did (the numbers the Status window and the notifications use).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SyncOutcome {
+    /// The albums published with the manifest (the home PC, with `publish_albums` on); None: not published.
+    pub albums: Option<lightcraft_cloud_client::home::AlbumsReport>,
     /// Photos in the published manifest.
     pub photos: usize,
     /// Phone edits applied as they were (not counting merged ones).
@@ -489,6 +491,12 @@ impl<W: Worker> Service<W> {
                     }
                 }
                 self.status.active_problems = o.problems.iter().chain(&o.import_problems).cloned().collect();
+                self.status.albums = o.albums.as_ref().map(|a| crate::appstate::AlbumsView {
+                    published: a.published,
+                    last_read: a.last_read.clone(),
+                    problem: a.problem.clone(),
+                    unknown: a.unknown,
+                });
                 if let Some(mut view) = o.other.clone() {
                     let prev = self.status.other.as_ref();
                     view.received = prev.map_or(0, |v| v.received) + o.downloaded;

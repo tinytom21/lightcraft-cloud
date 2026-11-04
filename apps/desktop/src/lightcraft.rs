@@ -92,7 +92,7 @@ pub struct SyncReply {
 }
 
 /// What the bridge needs from LightCraft. The real one is [`TcpLink`]; tests use a fake or a fake server.
-pub trait LightCraftLink {
+pub trait LightCraftLink: Send {
     /// Connect and check that what answers is LightCraft (and that it can import). Must be called before [`import_add`].
     fn identify(&mut self) -> Result<(), LinkError>;
     /// Ask LightCraft to add these photos (absolute paths of files) to the library it has open, where they are.

@@ -12,6 +12,7 @@
 //! * [`update`]: the check for a newer version on GitHub and, on Windows, the one-click update;
 //! * [`ui`], [`tray`], [`app`]: the windows (egui, in a process of their own), the tray icon, and what ties them together.
 
+pub mod albums;
 pub mod app;
 pub mod appstate;
 pub mod autostart;

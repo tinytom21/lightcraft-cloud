@@ -64,6 +64,10 @@ impl HomeWorker {
         });
         pending::install_hook(&mut home, &cfg.state_dir, cfg.file.lightcraft_control_port);
         pending::install_sidecar_hook(&mut home, &cfg.state_dir, cfg.file.lightcraft_control_port, cfg.file.lightcraft_refresh_edits);
+        // (the albums are read from a running LightCraft over the same channel; with it off there is nothing to read)
+        if cfg.file.publish_albums && cfg.file.lightcraft_control_port != 0 {
+            home.set_album_source(crate::albums::LinkAlbums::new((self.link)(cfg.file.lightcraft_control_port)));
+        }
         if let Some(feed) = &self.progress {
             let feed = feed.clone();
             home.set_progress_hook(move |p| feed.report(p));
@@ -157,6 +161,7 @@ impl Worker for HomeWorker {
             }
         }
         Ok(SyncOutcome {
+            albums: report.albums.clone(),
             imported: report.imports.added.len(),
             import_devices,
             imports_left: report.imports.waiting,

@@ -201,6 +201,9 @@ fn build_home(cfg: &Config, log_to_file: bool) -> std::result::Result<Home, Fail
     // (photos adopted by the command line are queued too: the running app tells LightCraft about them)
     lightcraft_cloud_desktop::pending::install_hook(&mut home, &cfg.state_dir, cfg.file.lightcraft_control_port);
     lightcraft_cloud_desktop::pending::install_sidecar_hook(&mut home, &cfg.state_dir, cfg.file.lightcraft_control_port, cfg.file.lightcraft_refresh_edits);
+    if cfg.file.publish_albums && cfg.file.lightcraft_control_port != 0 {
+        home.set_album_source(lightcraft_cloud_desktop::albums::LinkAlbums::new(Box::new(lightcraft_cloud_desktop::lightcraft::TcpLink::new(cfg.file.lightcraft_control_port))));
+    }
     let logfile = cfg.state_dir.join("logs").join("lightcraft-cloud-desktop.log");
     home.set_logger(move |m| {
         let line = format!("{} {m}", utc_iso(SystemTime::now()));

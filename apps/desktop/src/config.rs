@@ -76,6 +76,11 @@ pub struct File {
     /// LightCraft writes its edits into sidecars itself. Needs the control port (`lightcraft_control_port`). Off: nothing is queued
     /// or sent for this; the warning that LightCraft is not saving sidecars still shows.
     pub lightcraft_refresh_edits: bool,
+    /// Publish LightCraft's albums to the phone (home PC): after each sync the app reads the albums, their photos and each photo's
+    /// content hash from the running LightCraft over the control channel (read-only queries; needs the control port and LightCraft open)
+    /// and writes them into the manifest's `albums`. Off: nothing is read and the manifest has no albums, so the phone's "From PC"
+    /// folder goes.
+    pub publish_albums: bool,
     /// Look on GitHub, shortly after the start and then once a day, for a newer release of this app (see [`crate::update`]). Only
     /// a note in the tray and Status; nothing is installed unless the user clicks.
     pub check_for_updates: bool,
@@ -103,6 +108,7 @@ impl Default for File {
             photo_backup: "restic".into(),
             lightcraft_control_port: crate::lightcraft::DEFAULT_PORT,
             lightcraft_refresh_edits: true,
+            publish_albums: true,
             check_for_updates: true,
         }
     }
@@ -129,6 +135,7 @@ const KNOWN_KEYS: &[&str] = &[
     "photo_backup",
     "lightcraft_control_port",
     "lightcraft_refresh_edits",
+    "publish_albums",
     "check_for_updates",
 ];
 
@@ -349,6 +356,8 @@ impl Config {
         c.thumb_px = self.file.thumb_px;
         c.thumb_quality = self.file.thumb_quality;
         c.previews_only = self.file.previews_only;
+        // (without the control port there is nothing to read the albums from)
+        c.publish_albums = self.file.publish_albums;
         c.publisher = format!("lightcraft-cloud-desktop {}", env!("CARGO_PKG_VERSION"));
         Ok(c)
     }
@@ -548,6 +557,22 @@ mod tests {
         assert_eq!(c.file.lightcraft_control_port, 0);
         c.file.save(&f).unwrap();
         assert_eq!(Config::load(Some(&f)).unwrap().file.lightcraft_control_port, 0, "saving the settings keeps it");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn publish_albums_is_on_unless_the_config_turns_it_off_and_saving_keeps_it() {
+        let d = std::env::temp_dir().join(format!("lc-desktop-cfg-albums-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("c.toml");
+        std::fs::write(&f, "remote = \"/tmp/r\"\nstate_dir = \"/tmp/lc-state-x\"\n").unwrap();
+        let c = Config::load(Some(&f)).unwrap();
+        assert!(c.file.publish_albums && c.home_config().unwrap().publish_albums, "an existing config without the key");
+        std::fs::write(&f, "remote = \"/tmp/r\"\nstate_dir = \"/tmp/lc-state-x\"\npublish_albums = false\n").unwrap();
+        let c = Config::load(Some(&f)).unwrap();
+        assert!(!c.file.publish_albums && !c.home_config().unwrap().publish_albums);
+        c.file.save(&f).unwrap();
+        assert!(!Config::load(Some(&f)).unwrap().file.publish_albums, "saving the settings keeps it");
         let _ = std::fs::remove_dir_all(&d);
     }
 

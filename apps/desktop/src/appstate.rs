@@ -144,6 +144,35 @@ pub struct OtherView {
     pub held_unchecked: usize,
 }
 
+/// What the last sync did about the albums (the home PC): shown as a quiet line in Status.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AlbumsView {
+    /// Albums in the manifest.
+    pub published: usize,
+    /// When LightCraft's albums were last read (UTC ISO); None: never.
+    pub last_read: Option<String>,
+    /// Why the last sync did not read them (for example `LightCraft was not open`).
+    pub problem: Option<String>,
+    /// Photos whose hash is not looked up yet (the next syncs finish it).
+    pub unknown: usize,
+}
+
+impl AlbumsView {
+    /// The line for Status, for example `3 published; last read 5 min ago` or `last read 2 h ago; LightCraft was not open`.
+    pub fn line(&self, now: SystemTime) -> String {
+        let read = match &self.last_read {
+            Some(t) => format!("last read {}", relative(t, now)),
+            None => "not read yet".to_string(),
+        };
+        match &self.problem {
+            Some(p) => format!("{read}; {p}"),
+            None if self.unknown > 0 => format!("{} published; {read}; {} photos still to look up, the next syncs finish it", self.published, self.unknown),
+            None => format!("{} published; {read}", self.published),
+        }
+    }
+}
+
 /// Everything the windows and the tray show.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -155,6 +184,8 @@ pub struct AppStatus {
     pub paused: bool,
     pub activity: Activity,
     pub last_sync: Option<LastSync>,
+    /// The albums of the last sync (the home PC); None: not published.
+    pub albums: Option<AlbumsView>,
     /// Phone edits applied since the app was first started (merged ones included).
     pub edits_applied: usize,
     /// Phone edits waiting in the remote's inbox, as the last check saw them.
@@ -678,6 +709,19 @@ mod tests {
         assert_eq!(s.health().kind, HealthKind::UpToDate);
         assert!(!s.lightcraft_sidecars_off());
         assert!(SIDECARS_OFF_LINE.contains("Automatically write changes into XMP sidecars") && SIDECARS_OFF_LINE.contains("Import tab"));
+    }
+
+    #[test]
+    fn the_albums_line_is_quiet_and_says_when_they_were_last_read() {
+        let now = parse_rfc3339("2026-11-01T12:00:00Z").unwrap();
+        let v = AlbumsView { published: 3, last_read: Some("2026-11-01T11:55:00Z".into()), problem: None, unknown: 0 };
+        assert_eq!(v.line(now), "3 published; last read 5 min ago");
+        let v = AlbumsView { problem: Some("LightCraft was not open".into()), last_read: Some("2026-11-01T10:00:00Z".into()), ..v };
+        assert_eq!(v.line(now), "last read 2 h ago; LightCraft was not open");
+        let v = AlbumsView { last_read: None, ..v };
+        assert_eq!(v.line(now), "not read yet; LightCraft was not open");
+        let v = AlbumsView { published: 2, last_read: Some("2026-11-01T11:59:50Z".into()), problem: None, unknown: 40 };
+        assert_eq!(v.line(now), "2 published; last read just now; 40 photos still to look up, the next syncs finish it");
     }
 
     #[test]

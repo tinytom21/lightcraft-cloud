@@ -352,6 +352,9 @@ pub fn show_with_actions(ui: &mut Ui, v: &StatusView, refused: &[(String, String
             },
         );
         row(ui, "Files from other PCs", format!("{} in the last sync; {} in all", s.last_imported, s.photos_imported));
+        if let Some(a) = &s.albums {
+            row(ui, "Albums", a.line(v.now));
+        }
         if let Some((text, hint)) = lightcraft_row(s) {
             row(ui, "LightCraft", text);
             if let Some(h) = hint {
