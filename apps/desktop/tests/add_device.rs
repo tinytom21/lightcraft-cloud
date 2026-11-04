@@ -59,9 +59,9 @@ fn it_warns_first_then_asks_for_the_code_and_shows_only_a_qr_and_a_text_that_ope
     assert!(h.state().is_showing(), "{:?}", h.state().refusal());
     let text = h.state().pairing().unwrap().to_string();
     h.get_by_label("Copy text for another PC");
-    // no code is displayed anywhere, and the field is gone
+    // no code is displayed anywhere; the (masked) field stays above the QR, so the pointer that clicked is not over the picture
     assert!(h.query_by_label_contains(CODE).is_none() && h.query_by_label_contains("01234567897").is_none());
-    assert!(h.query_by_label("Code from the device").is_none());
+    h.get_by_label("Code from the device");
     let bundle = pairing::open(&text, CODE).unwrap();
     assert_eq!(bundle.remote, "gdrive:LightCraft Cloud");
     assert!(bundle.config.contains("FAKEREFRESH") && bundle.config.contains("FAKEACCESS"), "the token travels unchanged");

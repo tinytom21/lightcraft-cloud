@@ -138,25 +138,33 @@ impl AddDevicePanel {
             theme::hint(ui, "Only tested with Google Drive.");
         });
         theme::gap(ui);
+        // The code row stays above the QR, with the button to the right of the field: the pointer that clicked it is then never
+        // over the picture (a pointer on the QR stops a phone reading it).
+        let l = theme::field_label(ui, "Code from the device");
+        let ok = self.code_ok();
+        let clicked = ui
+            .horizontal(|ui| {
+                let field = ui.add_sized([220.0, 30.0], theme::text_edit(&mut self.code).password(true).hint_text("XXXX-XXXX-XXX")).labelled_by(l.id);
+                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let button = ui.add_enabled_ui(ok, |ui| theme::button(ui, "Show pairing QR", ButtonKind::Primary).clicked()).inner;
+                button || (enter && ok)
+            })
+            .inner;
+        if !ok && !self.code.trim().is_empty() {
+            ui.add(egui::Label::new(RichText::new("That code has a typo; check it against the device.").color(t.reject)).wrap());
+        }
+        if clicked {
+            let ctx = ui.ctx().clone();
+            self.make(&ctx);
+        }
+        if let Some(r) = &self.refusal {
+            ui.add_space(8.0);
+            ui.add(egui::Label::new(RichText::new(r).color(t.reject)).wrap());
+        }
         if self.shown.is_none() {
-            let l = theme::field_label(ui, "Code from the device");
-            ui.add_sized([220.0, 30.0], theme::text_edit(&mut self.code).password(true).hint_text("XXXX-XXXX-XXX")).labelled_by(l.id);
-            let ok = self.code_ok();
-            if !ok && !self.code.trim().is_empty() {
-                ui.add(egui::Label::new(RichText::new("That code has a typo; check it against the device.").color(t.reject)).wrap());
-            }
-            ui.add_space(6.0);
-            let clicked = ui.add_enabled_ui(ok, |ui| theme::button(ui, "Show pairing QR", ButtonKind::Primary).clicked()).inner;
-            if clicked {
-                let ctx = ui.ctx().clone();
-                self.make(&ctx);
-            }
-            if let Some(r) = &self.refusal {
-                ui.add_space(8.0);
-                ui.add(egui::Label::new(RichText::new(r).color(t.reject)).wrap());
-            }
             return;
         }
+        theme::gap(ui);
         let mut copy = None;
         if let Some(s) = &self.shown {
             theme::panel(ui, Some("Scan this with the phone"), |ui| {
