@@ -108,9 +108,30 @@ damaged or cut-off download, not a release published by someone who controls the
 SmartScreen warns when it is run by hand from a browser download (a file the app downloads itself carries no browser mark, so SmartScreen is not expected to ask; this has not been checked on a real desktop yet). On Linux the app never replaces
 itself: it only shows that a newer version exists, with the link.
 
-**Secrets, for now**: the app uses your existing rclone config (`rclone_config`, default the standard one), like the Python tool.
-It lists remote names only and never shows, logs or copies the config's contents. Storing the cloud credentials in the system
-keyring arrives with sign-in / pairing.
+**Secrets**: the home PC uses your existing rclone config (`rclone_config`, default the standard one), like the Python tool.
+It lists remote names only and never logs the config's contents; only "Add a device" reads the one remote it hands over, in memory (see "Pairing").
+The system keyring is not used. A PC that joined by pairing keeps its cloud sign-in in `paired-rclone.conf` in the app's config folder, a plain
+file with mode 600 on Linux (on Windows, the permissions of your user folder), beside `config.toml`. Pairing never writes your own `rclone.conf`.
+
+### Pairing
+
+Pairing gives another device (the phone, or another PC) the rclone settings for this library's remote, without copying config files by hand.
+On the home PC, Status has **Add a device**. It opens its own window, which says first what pairing hands over. **Show pairing code** then shows a QR code, a code such as `ABCDE-12345`,
+and **Copy text for another PC**. The QR code and the text are the same data: the one remote the `remote` setting names (a crypt, alias, chunker, compress or hasher remote also
+includes the remote it wraps, and nothing else), with the access token blanked and marked expired so that rclone refreshes it on first use, deflated and encrypted with
+ChaCha20-Poly1305. The key comes from the code with Argon2id (32 MiB, 3 passes), so the text alone cannot be opened, and the code alone is of no use. The text is `LCP1` followed by base45 (uppercase
+letters and digits, which a QR code stores compactly); a Google Drive remote fits a QR code of about version 13 to 15. The text and the code are kept in memory only and are cleared
+when you press Hide or close the window. The config is read from your rclone config when you press the button, and is never written to disk by this.
+
+What it hands over: the same access to your cloud storage account as this PC has. The token cannot be limited to the LightCraft folder. Use it only for devices you own, and do not share the screen
+or post the code. To cut off a lost device, sign this app out in the provider's account page; that signs out every device that uses this sign-in, this PC too. It is only tested with Google Drive.
+
+Remotes that cannot travel are refused with a reason shown in the window: a library in a folder on this PC, `union` and `combine`, a remote whose chain has no section in the config, and any remote that
+names a file on this PC (`key_file`, `service_account_file`, `pem_file`, `ca_cert`, `client_cert`, `client_key` and similar), since that file would not exist on the other device.
+
+On another PC, Setup and Settings have **I have a pairing code**: paste the text, type the code. The settings are written to `paired-rclone.conf` in the app's config folder, `remote` and `rclone_config` are
+set to it, and the folder list is read at once. **One of my rclone remotes** still works as before. If `inbox/<device>/` already exists in the library, a caution says a device of that name has already sent edits and
+suggests another name unless it is the same device. Existing configs load unchanged.
 
 One photo folder per app for now (the sync, its state and the manifest are per folder).
 

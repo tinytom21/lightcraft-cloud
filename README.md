@@ -77,7 +77,7 @@ The version that gets replaced or loses is saved in the home PC's history (`hist
 
 ## Quick start
 
-Setup is manual today. You need an rclone remote for your cloud storage (`rclone config`). The phone connects with a config file exported from the PC. There is no QR pairing.
+The home PC needs an rclone remote for your cloud storage (`rclone config`). Other PCs and the phone do not: you pair them with the home PC (see [Pairing a device](#pairing-a-device)), and nobody copies config files by hand.
 
 Downloads are on the [Releases](https://github.com/tinytom21/lightcraft-cloud/releases) page (from v0.2.0; the Windows home PC one from v0.2.1):
 
@@ -118,14 +118,32 @@ The app only renders on the home PC: it works on a scratch library of its own in
 
 1. Windows: run `lightcraft-cloud-<version>-windows-setup.exe` from Releases (not the home one). Linux: unpack `lightcraft-cloud-<version>-linux-light.tar.gz` and run `./install.sh`.
 2. Start it. Setup opens on the first run. Choose **This is another PC**.
-3. Pick the cloud library, a photo folder on this PC, and tick the folders to keep.
-4. Add that photo folder to LightCraft, and set LightCraft's import destination to it.
+3. Pair it with the home PC: on the home PC open Status, then **Add a device**, then **Show pairing code**, and use **Copy text for another PC**. On this PC click **I have a pairing code**, paste the text and type the code. The storage is filled in. (If you already have your own rclone remote for the cloud storage on this PC, you can choose **One of my rclone remotes** instead.)
+4. Pick a photo folder on this PC and tick the folders to keep.
+5. Add that photo folder to LightCraft, and set LightCraft's import destination to it.
 
 **5. Phone.**
 
 1. Install the APK from the [phone app Releases](https://github.com/tinytom21/lightcraft-android/releases).
-2. On the home PC, export a phone-only rclone remote to a config file, and copy it to the phone.
-3. In the app's Preferences pick the file, the remote and a name for the phone. The [phone guide](https://github.com/tinytom21/lightcraft-android/blob/lightcraft-cloud/apps/lightcraft-android/docs/cloud-library.md) has the steps.
+2. On the home PC open Status, then **Add a device**, then **Show pairing code**.
+3. In the phone app, scan the QR code on the monitor and type the code shown under it. (The phone app's pairing screen comes with a later phone release; the QR and code format is described below.) The [phone guide](https://github.com/tinytom21/lightcraft-android/blob/lightcraft-cloud/apps/lightcraft-android/docs/cloud-library.md) has the steps.
+
+### Pairing a device
+
+Pairing hands the home PC's cloud sign-in to another device so you do not copy rclone config files by hand. The home PC shows a QR code, the same thing as text,
+and a short code such as `ABCDE-12345`. The QR code and the text are the rclone settings for the library's remote, encrypted with the code. The other device scans or pastes
+the text and you type the code; that is all. No server of ours is involved, no port is opened on the home PC, and nothing is sent anywhere, so it works from any network and there is nothing to keep running.
+
+What it hands over, in plain terms:
+
+* The device gets the same access to your cloud storage account as the home PC has, not only to the LightCraft folder. The sign-in token cannot be limited to one folder.
+* Only that one remote is included (and, for an encrypted remote, the remote it wraps). Your other rclone remotes are not.
+* Do it only for devices you own. Do not share your screen while the code is shown, and do not post the QR code or the code.
+* To cut off a lost device, sign this app out in your cloud provider's account page (for Google, the third-party access page of your Google account). That signs out every device that uses this sign-in, including the home PC, which then needs signing in again.
+* Remotes that cannot be handed over are refused with a reason: a library in a folder on the PC, union and combine remotes, and remotes that use a key file or other file on the PC.
+* Only tested with Google Drive so far.
+
+**4. Another PC** and **5. Phone** above say where to click. The pairing window shows the QR code only after you press **Show pairing code**, and forgets the code and text when it is closed.
 
 **Updates.** The app looks on GitHub once a day for a newer published release (the request carries only the app's name and version in its User-Agent, nothing about you or your library;
 switch it off with "Check for new versions" in Settings). When there is one, the tray menu and the Status window say so. On Windows, **Update now**
