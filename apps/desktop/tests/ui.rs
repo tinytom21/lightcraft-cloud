@@ -456,3 +456,104 @@ fn being_offline_reads_as_a_calm_state_not_a_failure() {
     h.get_by_label_contains("Cannot reach the cloud library right now");
     assert!(h.query_by_label("The last sync failed").is_none());
 }
+
+// ------------------------------------------------------------------ pairing (another PC)
+
+fn fake_pairing(remote: &str) -> (String, String) {
+    // (synthetic values only)
+    let conf = "[gdrive]\ntype = drive\nclient_id = FAKEID\nclient_secret = FAKESECRET\ntoken = {\"access_token\":\"\",\"token_type\":\"Bearer\",\"refresh_token\":\"FAKEREFRESH\",\"expiry\":\"2000-01-01T00:00:00Z\"}\n";
+    let b = lightcraft_cloud_client::pairing::Bundle::new(remote, conf);
+    lightcraft_cloud_client::pairing::seal(&b).unwrap()
+}
+
+#[test]
+fn a_pairing_code_fills_in_the_storage_and_writes_its_own_config_file() {
+    let r = rig("pair1");
+    let lister = FakeLister::default();
+    lister.0.lock().unwrap().1 = Some(Ok(vec![folder("Lisbon", 3, 5)]));
+    let mut p = other_panel(&r, &lister);
+    p.form.storage = Storage::Rclone { remote: String::new(), path: String::new() };
+    let (text, code) = fake_pairing("gdrive:LightCraft Cloud");
+    // a wrong code says so, plainly, and writes nothing
+    p.join.text = text.clone();
+    p.join.code = "AAAAA-AAAAA".into();
+    p.join_with_code();
+    let err = p.join.error.clone().unwrap();
+    assert!(err.contains("does not match") && !err.contains("AAAAA") && !err.contains(&text[..20]), "{err}");
+    assert!(!r.dir.join("cfg/paired-rclone.conf").exists());
+    // the right one
+    p.join.code = code.clone();
+    p.join_with_code();
+    assert!(p.join.error.is_none() && p.join.done, "{:?}", p.join.error);
+    assert!(p.join.text.is_empty() && p.join.code.is_empty(), "the secrets are wiped");
+    let conf = r.dir.join("cfg").join("paired-rclone.conf");
+    let written = std::fs::read_to_string(&conf).unwrap();
+    assert!(written.contains("FAKEREFRESH") && written.contains("[gdrive]"));
+    assert!(p.form.is_paired());
+    let file = p.form.to_file();
+    assert_eq!((file.remote.as_deref(), file.rclone_config.as_deref()), (Some("gdrive:LightCraft Cloud"), Some(conf.to_str().unwrap())));
+    assert_eq!(p.remotes, Ok(vec!["gdrive".to_string()]));
+    assert!(lister.0.lock().unwrap().0, "the folder list is read right away");
+    let mut h = settings_harness(p);
+    h.run();
+    h.get_by_label("Paired storage: gdrive:LightCraft Cloud");
+    h.get_by_label("Lisbon  \u{2014}  3 photos, 5.0 MiB");
+    assert!(h.query_by_label("I have a pairing code").is_none());
+    // saving keeps the paired config; going back to the user's own remotes drops it
+    h.get_by_label("Save and start").click();
+    h.run();
+    assert!(h.state().saved, "{:?}", h.state().problems);
+    let saved = Config::load(Some(&r.env.config_path)).unwrap().file;
+    assert_eq!(saved.rclone_config.as_deref(), Some(conf.to_str().unwrap()));
+    h.get_by_label("Use one of my rclone remotes instead").click();
+    h.run();
+    assert!(!h.state().form.is_paired());
+    h.get_by_label("I have a pairing code");
+}
+
+#[test]
+fn the_pairing_box_is_offered_to_another_pc_and_hidden_for_the_text() {
+    let r = rig("pair2");
+    let mut p = other_panel(&r, &FakeLister::default());
+    p.form.storage = Storage::Rclone { remote: String::new(), path: String::new() };
+    let mut h = settings_harness(p);
+    h.run();
+    h.get_by_label("One of my rclone remotes");
+    h.get_by_label("I have a pairing code").click();
+    h.run();
+    h.get_by_label("Pairing text");
+    h.get_by_label("Code");
+    h.get_by_label("Use this pairing");
+    h.get_by_label("Cancel").click();
+    h.run();
+    h.get_by_label("I have a pairing code");
+}
+
+#[derive(Clone, Default)]
+struct UsedDevice(FakeLister);
+impl FolderLister for UsedDevice {
+    fn start(&mut self, f: &lightcraft_cloud_desktop::config::File) {
+        self.0.start(f)
+    }
+    fn waiting(&self) -> bool {
+        false
+    }
+    fn poll(&mut self) -> Option<Result<Vec<FolderInfo>, String>> {
+        self.0.poll()
+    }
+    fn start_device_check(&mut self, _f: &lightcraft_cloud_desktop::config::File, _d: &str) {}
+    fn poll_device_check(&mut self) -> Option<bool> {
+        Some(true)
+    }
+}
+
+#[test]
+fn a_device_name_that_already_sent_edits_gets_a_caution_but_nothing_is_blocked() {
+    let r = rig("pair3");
+    let mut p = other_panel(&r, &FakeLister::default());
+    p.lister = Box::new(UsedDevice::default());
+    let mut h = settings_harness(p);
+    h.run();
+    h.get_by_label_contains("has already sent edits to this library");
+    assert!(h.state().problems.is_empty());
+}

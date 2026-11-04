@@ -50,6 +50,8 @@ lightcraft-raw = { workspace = true, optional = true }
 lightcraft-color = { workspace = true, optional = true }
 lightcraft-codecs = { workspace = true, optional = true }
 lightcraft-raster = { workspace = true, optional = true }
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
+qrcode = { version = "0.14", default-features = false }
 
 [dev-dependencies]
 egui_kittest = { workspace = true }

@@ -2607,6 +2607,7 @@ dependencies = [
  "log",
  "notify",
  "notify-rust",
+ "qrcode",
  "raw-window-handle",
  "rfd",
  "serde",
@@ -2617,6 +2618,7 @@ dependencies = [
  "ureq",
  "windows-sys 0.61.2",
  "winresource",
+ "zeroize",
 ]
 
 [[package]]

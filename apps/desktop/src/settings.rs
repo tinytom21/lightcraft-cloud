@@ -37,6 +37,9 @@ impl Storage {
     }
 }
 
+/// The rclone config a pairing code writes, in the app's config folder (never the user's own rclone.conf).
+pub const PAIRED_CONFIG: &str = "paired-rclone.conf";
+
 /// Where the Settings window saves to (tests point these at temporary folders).
 #[derive(Debug, Clone)]
 pub struct SaveEnv {
@@ -110,6 +113,31 @@ impl Form {
             self.source = usual;
         }
         self.role = role;
+    }
+
+    /// Whether the storage comes from a pairing code (the config's `rclone_config` is the file a pairing wrote).
+    pub fn is_paired(&self) -> bool {
+        self.base.rclone_config.as_deref().is_some_and(|c| std::path::Path::new(c).file_name().is_some_and(|n| n == PAIRED_CONFIG))
+    }
+
+    /// Use the config a pairing wrote at `conf`, and the remote (`name:folder`) it hands over. Err: the remote is not one the app can use.
+    pub fn set_paired(&mut self, conf: &std::path::Path, remote: &str) -> Result<(), String> {
+        match Storage::parse(remote) {
+            s @ Storage::Rclone { .. } => {
+                self.base.rclone_config = Some(conf.to_string_lossy().into_owned());
+                self.storage = s;
+                Ok(())
+            }
+            Storage::Local { .. } => Err("The pairing code names a folder on another PC, which this PC cannot use.".to_string()),
+        }
+    }
+
+    /// Go back to the user's own rclone config (the paired file stays on disk).
+    pub fn clear_paired(&mut self) {
+        if self.is_paired() {
+            self.base.rclone_config = None;
+            self.storage = Storage::Rclone { remote: String::new(), path: "LightCraft Cloud".into() };
+        }
     }
 
     pub fn is_other(&self) -> bool {
@@ -299,6 +327,30 @@ mod tests {
         assert_eq!(Storage::parse("/srv/lc"), Storage::Local { dir: "/srv/lc".into() });
         assert_eq!(Storage::Rclone { remote: "gd".into(), path: " /LC/ ".into() }.spec(), "gd:LC");
         assert_eq!(Storage::parse("a:b c").spec(), "a:b c");
+    }
+
+    #[test]
+    fn a_paired_config_is_set_and_cleared_and_old_configs_load_unchanged() {
+        let plain = File::default();
+        let mut f = Form::from_file(&plain, false);
+        assert!(!f.is_paired());
+        assert_eq!(f.to_file().rclone_config, None);
+        f.set_paired(std::path::Path::new("/cfg/app/paired-rclone.conf"), "gdrive:LightCraft Cloud").unwrap();
+        assert!(f.is_paired());
+        assert_eq!(f.storage, Storage::Rclone { remote: "gdrive".into(), path: "LightCraft Cloud".into() });
+        let out = f.to_file();
+        assert_eq!((out.rclone_config.as_deref(), out.remote.as_deref()), (Some("/cfg/app/paired-rclone.conf"), Some("gdrive:LightCraft Cloud")));
+        // a saved config that names it shows as paired again
+        assert!(Form::from_file(&out, false).is_paired());
+        // the user's own rclone config is not "paired"
+        let own = File { rclone_config: Some("/home/me/rclone.conf".into()), ..File::default() };
+        let mut g = Form::from_file(&own, false);
+        assert!(!g.is_paired());
+        g.clear_paired();
+        assert_eq!(g.to_file().rclone_config.as_deref(), Some("/home/me/rclone.conf"));
+        f.clear_paired();
+        assert_eq!(f.to_file().rclone_config, None);
+        assert!(f.set_paired(std::path::Path::new("/x/paired-rclone.conf"), "/some/dir").is_err());
     }
 
     #[cfg(feature = "home")]

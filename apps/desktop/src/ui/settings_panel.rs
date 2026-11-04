@@ -93,11 +93,18 @@ pub trait FolderLister {
     fn start(&mut self, file: &File);
     fn waiting(&self) -> bool;
     fn poll(&mut self) -> Option<Result<Vec<FolderInfo>, String>>;
+    /// Ask whether a device named `device` has already sent edits to the library (`inbox/<device>/` exists); the answer comes through
+    /// [`FolderLister::poll_device_check`]. A lister that cannot say does nothing.
+    fn start_device_check(&mut self, _file: &File, _device: &str) {}
+    fn poll_device_check(&mut self) -> Option<bool> {
+        None
+    }
 }
 
 #[derive(Default)]
 pub struct ThreadLister {
     rx: Option<Receiver<Result<Vec<FolderInfo>, String>>>,
+    device_rx: Option<Receiver<bool>>,
 }
 
 impl FolderLister for ThreadLister {
@@ -114,6 +121,36 @@ impl FolderLister for ThreadLister {
                 .and_then(|remote| lightcraft_cloud_client::other::list_folders(&*remote).map_err(|e| e.to_string()));
             let _ = tx.send(r);
         });
+    }
+
+    fn start_device_check(&mut self, file: &File, device: &str) {
+        let (tx, rx) = channel();
+        self.device_rx = Some(rx);
+        let (file, device) = (file.clone(), device.to_string());
+        std::thread::spawn(move || {
+            let used = Config::from_file(PathBuf::from("config.toml"), file)
+                .and_then(|c| c.open_remote())
+                .and_then(|remote| lightcraft_cloud_client::other::device_in_use(&*remote, &device).map_err(|e| e.to_string()));
+            // (no answer, no caution: the folder list shows the real trouble)
+            if let Ok(true) = used {
+                let _ = tx.send(true);
+            }
+        });
+    }
+
+    fn poll_device_check(&mut self) -> Option<bool> {
+        let rx = self.device_rx.as_ref()?;
+        match rx.try_recv() {
+            Ok(b) => {
+                self.device_rx = None;
+                Some(b)
+            }
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                self.device_rx = None;
+                None
+            }
+        }
     }
 
     fn waiting(&self) -> bool {
@@ -189,11 +226,42 @@ pub struct SettingsPanel {
     pub done: Vec<String>,
     /// Set when a save worked (the window tells the app through the config file; this is for the shell and tests).
     pub saved: bool,
+    /// "I have a pairing code" (another PC): the pasted text and the typed code live here until used, then are wiped.
+    pub join: Join,
+    /// The user's own rclone remotes, kept while a paired config's remotes are shown.
+    own_remotes: Result<Vec<String>, String>,
+    /// A device of this PC's name has already sent edits to the library.
+    pub device_in_use: bool,
+}
+
+/// The "I have a pairing code" box. No `Debug`: it holds secrets.
+#[derive(Default)]
+pub struct Join {
+    pub open: bool,
+    pub text: String,
+    pub code: String,
+    /// What went wrong, in words (never the text or the code).
+    pub error: Option<String>,
+    pub done: bool,
+}
+
+impl Join {
+    fn wipe(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.text);
+        zeroize::Zeroize::zeroize(&mut self.code);
+    }
+}
+
+impl Drop for Join {
+    fn drop(&mut self) {
+        self.wipe();
+    }
 }
 
 impl SettingsPanel {
     pub fn new(form: Form, remotes: Result<Vec<String>, String>, env: SaveEnv, setup: bool) -> Self {
-        SettingsPanel { form, remotes, env, setup, picker: Box::<RfdPicker>::default(), lister: Box::<ThreadLister>::default(), folders: Folders::NotRead, problems: Vec::new(), done: Vec::new(), saved: false }
+        let own_remotes = remotes.clone();
+        SettingsPanel { form, remotes, own_remotes, join: Join::default(), device_in_use: false, env, setup, picker: Box::<RfdPicker>::default(), lister: Box::<ThreadLister>::default(), folders: Folders::NotRead, problems: Vec::new(), done: Vec::new(), saved: false }
     }
 
     pub fn save(&mut self) {
@@ -210,6 +278,46 @@ impl SettingsPanel {
                 self.done.clear();
             }
         }
+    }
+
+    /// Open the pasted pairing text with the typed code: on success the config is written to `paired-rclone.conf` beside the app's
+    /// config (never the user's own rclone.conf), the form uses it, and the folder list is read.
+    pub fn join_with_code(&mut self) {
+        use lightcraft_cloud_client::pairing;
+        let result = pairing::open(&self.join.text, &self.join.code).and_then(|bundle| {
+            let dir = self.env.config_path.parent().map(PathBuf::from).unwrap_or_default();
+            let conf = dir.join(crate::settings::PAIRED_CONFIG);
+            pairing::write_config(&conf, &bundle.config)?;
+            let names = pairing::section_names(&bundle.config);
+            self.form.set_paired(&conf, &bundle.remote).map_err(lightcraft_cloud_client::Error::Invalid)?;
+            Ok(names)
+        });
+        match result {
+            Ok(names) => {
+                self.join.wipe();
+                self.join.text.clear();
+                self.join.code.clear();
+                self.join.error = None;
+                self.join.done = true;
+                self.join.open = false;
+                self.remotes = Ok(names);
+                self.problems.clear();
+                self.read_folders();
+            }
+            Err(e) => {
+                self.join.error = Some(e.to_string());
+                self.join.done = false;
+            }
+        }
+    }
+
+    /// Stop using the paired storage and go back to the user's own rclone remotes.
+    fn use_own_remotes(&mut self) {
+        self.form.clear_paired();
+        self.remotes = self.own_remotes.clone();
+        self.folders = Folders::NotRead;
+        self.device_in_use = false;
+        self.join.done = false;
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
@@ -230,6 +338,9 @@ impl SettingsPanel {
         // (settings that are already saved show the folders of the cloud library at once; a first setup waits for the button)
         if self.form.is_other() && !self.setup && matches!(self.folders, Folders::NotRead) && !self.form.storage.spec().trim_matches(':').is_empty() {
             self.read_folders();
+        }
+        if let Some(b) = self.lister.poll_device_check() {
+            self.device_in_use = b;
         }
         if self.picker.waiting() || self.lister.waiting() {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
@@ -275,6 +386,9 @@ impl SettingsPanel {
                 let label = theme::field_label(ui, "Shown to the home PC with the edits you send");
                 ui.add_sized([240.0, 30.0], theme::text_edit(&mut self.form.device).hint_text(crate::config::default_device())).labelled_by(label.id);
                 theme::hint(ui, "Leave it empty to use this PC's name. It must not be the name of a phone you use with this library.");
+                if self.device_in_use {
+                    ui.add(egui::Label::new(RichText::new("A device with this name has already sent edits to this library. Give this PC another name above, unless this is the same device.").color(t.caution)).wrap());
+                }
             });
         } else {
             theme::panel(ui, None, |ui| {
@@ -313,7 +427,13 @@ impl SettingsPanel {
             return;
         }
         self.folders = Folders::Reading;
-        self.lister.start(&self.form.to_file());
+        self.device_in_use = false;
+        let file = self.form.to_file();
+        self.lister.start(&file);
+        if self.form.is_other() {
+            let device = Some(self.form.device.trim().to_string()).filter(|d| !d.is_empty()).unwrap_or_else(crate::config::default_device);
+            self.lister.start_device_check(&file, &device);
+        }
     }
 
     /// The line with the photo folder and its Browse… button.
@@ -392,10 +512,46 @@ impl SettingsPanel {
         });
     }
 
+    /// "I have a pairing code": paste the text, type the code.
+    fn join_box(&mut self, ui: &mut Ui) {
+        let t = theme::CHARCOAL;
+        if !self.join.open {
+            if theme::button(ui, "I have a pairing code", ButtonKind::Secondary).clicked() {
+                self.join.open = true;
+            }
+            return;
+        }
+        theme::hint(ui, "On the home PC, open Status, then Add a device. Paste the text it shows (use Copy text for another PC), then type the code.");
+        let l = theme::field_label(ui, "Pairing text");
+        let width = ui.available_width();
+        ui.add_sized([width, 30.0], theme::text_edit(&mut self.join.text).password(true).hint_text("LCP1…")).labelled_by(l.id);
+        let l = theme::field_label(ui, "Code");
+        ui.add_sized([200.0, 30.0], theme::text_edit(&mut self.join.code).hint_text("XXXXX-XXXXX")).labelled_by(l.id);
+        ui.horizontal(|ui| {
+            if theme::button(ui, "Use this pairing", ButtonKind::Primary).clicked() {
+                self.join_with_code();
+            }
+            if theme::button(ui, "Cancel", ButtonKind::Secondary).clicked() {
+                self.join = Join::default();
+            }
+        });
+        if let Some(e) = &self.join.error {
+            ui.add(egui::Label::new(RichText::new(e).color(t.reject)).wrap());
+        }
+    }
+
     /// Where the cloud library is stored (both roles); the "previews only" choice is the home PC's.
     fn storage_panel(&mut self, ui: &mut Ui) {
         let t = theme::CHARCOAL;
         theme::panel(ui, Some(if self.form.is_other() { "Cloud library" } else { "Storage" }), |ui| {
+            if self.form.is_paired() {
+                ui.add(egui::Label::new(RichText::new(format!("Paired storage: {}", self.form.storage.spec())).color(t.text)).wrap());
+                theme::hint(ui, "From a pairing code. Its sign-in is kept in a file in this app's config folder, apart from your own rclone config.");
+                if theme::button(ui, "Use one of my rclone remotes instead", ButtonKind::Secondary).clicked() {
+                    self.use_own_remotes();
+                }
+                return;
+            }
             let mut kind = if matches!(self.form.storage, Storage::Rclone { .. }) { Kind::Rclone } else { Kind::Local };
             let before = kind;
             ui.horizontal_wrapped(|ui| {
@@ -409,6 +565,9 @@ impl SettingsPanel {
                     Kind::Local => Storage::Local { dir: String::new() },
                 };
                 self.folders = Folders::NotRead;
+            }
+            if self.form.is_other() {
+                self.join_box(ui);
             }
             let names: Vec<String> = self.remotes.clone().unwrap_or_default();
             match &mut self.form.storage {
