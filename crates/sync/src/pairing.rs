@@ -43,8 +43,6 @@ const MAX_LANES: u32 = 8;
 const MAX_PLAIN: u64 = 1 << 20;
 const CODE_LEN: usize = 10;
 const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-/// `expiry` written into a shrunken token: long past, so rclone refreshes it on first use.
-const PAST_EXPIRY: &str = "2000-01-01T00:00:00Z";
 
 /// What travels: the remote the library lives on and the rclone config text that defines it (and nothing else).
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,23 +149,6 @@ fn refuse<T>(why: &str) -> Result<T> {
     Err(Error::Invalid(why.to_string()))
 }
 
-/// Shrinks `token = {json}`: no access token, a past expiry, refresh token and type kept. Anything unexpected returns the value unchanged.
-fn shrink_token(value: &str) -> String {
-    let try_shrink = || -> Option<String> {
-        let mut v: serde_json::Value = serde_json::from_str(value).ok()?;
-        let o = v.as_object_mut()?;
-        // (without a refresh token the remote could not renew itself: leave it as it is)
-        if o.get("refresh_token")?.as_str()?.is_empty() {
-            return None;
-        }
-        o.get("access_token")?;
-        o.insert("access_token".into(), serde_json::Value::String(String::new()));
-        o.insert("expiry".into(), serde_json::Value::String(PAST_EXPIRY.into()));
-        serde_json::to_string(&v).ok()
-    };
-    try_shrink().unwrap_or_else(|| value.to_string())
-}
-
 /// The rclone config text for `remote` only: its section, and the sections of what it wraps (crypt, alias, chunker, compress, hasher).
 /// Never any other remote. Refuses what cannot travel, with a message for the person.
 pub fn export_config(conf_text: &str, remote: &str) -> Result<String> {
@@ -216,11 +197,8 @@ pub fn export_config(conf_text: &str, remote: &str) -> Result<String> {
     for sec in wanted {
         out.push_str(&format!("[{}]\n", sec.name));
         for (k, v) in &sec.lines {
-            if k == "token" {
-                out.push_str(&format!("{k} = {}\n", shrink_token(v)));
-            } else {
-                out.push_str(&format!("{k} = {v}\n"));
-            }
+            // (the token travels as it is: rclone will not renew a token whose access token was blanked, tested on Google Drive)
+            out.push_str(&format!("{k} = {v}\n"));
         }
         out.push('\n');
     }
@@ -559,24 +537,18 @@ mod tests {
         assert!(!out.contains("OTHERFAKE") && !out.contains("DBXFAKE") && !out.contains("[other]") && !out.contains("[dropbox]"));
         assert!(!out.contains("comment"));
         assert!(out.contains("root_folder_id = 1AbCdEfGhIjKlMnOpQrStUvWxYz0123456"));
-        // the token is shrunk: no access token, past expiry, refresh token and type kept
+        // the token travels unchanged
         let tok_line = out.lines().find(|l| l.starts_with("token = ")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&tok_line["token = ".len()..]).unwrap();
-        assert_eq!(v["access_token"], "");
-        assert_eq!(v["expiry"], PAST_EXPIRY);
-        assert_eq!(v["token_type"], "Bearer");
+        assert!(v["access_token"].as_str().unwrap().starts_with("ya29.FAKE"));
         assert!(v["refresh_token"].as_str().unwrap().starts_with("1//0gFAKE"));
-        assert!(!out.contains("ya29"));
         // a section name with spaces, and no path part
         let out = export_config("[my cloud]\ntype = drive\n[x]\ntype = drive\n", "my cloud:").unwrap();
         assert!(out.contains("[my cloud]") && !out.contains("[x]"));
     }
 
     #[test]
-    fn token_shrink_failures_keep_the_line() {
-        for t in ["not json", "{\"access_token\":\"a\"}", "{\"access_token\":\"a\",\"refresh_token\":\"\"}", "[1]"] {
-            assert_eq!(shrink_token(t), t);
-        }
+    fn odd_token_lines_travel_unchanged() {
         let out = export_config("[g]\ntype = drive\ntoken = not json\n", "g:").unwrap();
         assert!(out.contains("token = not json"));
     }

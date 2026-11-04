@@ -53,7 +53,7 @@ fn it_warns_first_then_shows_a_qr_the_code_and_a_text_that_opens_with_it() {
     h.get_by_label("Copy text for another PC");
     let bundle = pairing::open(&text, &code).unwrap();
     assert_eq!(bundle.remote, "gdrive:LightCraft Cloud");
-    assert!(bundle.config.contains("FAKEREFRESH") && !bundle.config.contains("FAKEACCESS"));
+    assert!(bundle.config.contains("FAKEREFRESH") && bundle.config.contains("FAKEACCESS"), "the token travels unchanged");
     assert!(!bundle.config.contains("OTHERFAKESECRET") && !bundle.config.contains("keyed"));
     // the pairing is not in the Debug output
     let dbg = format!("{:?}", h.state());
