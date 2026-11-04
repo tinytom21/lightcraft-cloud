@@ -2,6 +2,7 @@
 //! functions of a `&mut egui::Ui` and a small state each, so they are tested headlessly with `egui_kittest` and can move into
 //! LightCraft later. `window` is the eframe shell around them; the tray starts it in a process of its own.
 
+pub mod add_device;
 pub mod settings_panel;
 pub mod status;
 pub mod theme;

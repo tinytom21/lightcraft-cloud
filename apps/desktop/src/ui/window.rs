@@ -12,6 +12,7 @@ use crate::autostart;
 use crate::config::{self, Config, File};
 use crate::instance::InstanceLock;
 use crate::settings::{Form, SaveEnv};
+use crate::ui::add_device::AddDevicePanel;
 use crate::ui::settings_panel::SettingsPanel;
 use crate::ui::status::{self, StatusAction, StatusView};
 use lightcraft_cloud_client::other::ImportQueue;
@@ -22,6 +23,8 @@ use crate::update::{self, UpdateState, UpdateView};
 pub enum Tab {
     Status,
     Settings,
+    /// "Add a device" (home PC): its own window, in a process of its own, opened from Status.
+    AddDevice,
 }
 
 impl Tab {
@@ -29,6 +32,7 @@ impl Tab {
         match s {
             "status" => Some(Tab::Status),
             "settings" | "setup" => Some(Tab::Settings),
+            "add-device" => Some(Tab::AddDevice),
             _ => None,
         }
     }
@@ -62,6 +66,35 @@ struct Window {
     update: Option<UpdateView>,
     /// Without a config only Setup is offered.
     setup_only: bool,
+    /// The home PC can hand its library to another device (the Status window offers "Add a device").
+    can_add_device: bool,
+    /// The Add a device window, while it is open (one at a time).
+    add_device: Option<std::process::Child>,
+    config_arg: Option<PathBuf>,
+}
+
+impl Window {
+    /// Open the Add a device window: the same program, `ui add-device`, in a process of its own (the pairing text and code are gone
+    /// from memory when it closes).
+    fn open_add_device(&mut self) {
+        if let Some(c) = &mut self.add_device
+            && c.try_wait().ok().flatten().is_none()
+        {
+            return;
+        }
+        let Ok(exe) = std::env::current_exe() else { return };
+        let mut cmd = std::process::Command::new(exe);
+        cmd.arg("ui").arg("add-device").stdin(std::process::Stdio::null());
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000);
+        if let Some(c) = &self.config_arg {
+            cmd.arg("--config").arg(c);
+        }
+        match cmd.spawn() {
+            Ok(child) => self.add_device = Some(child),
+            Err(e) => log::warn!("cannot open the Add a device window: {e}"),
+        }
+    }
 }
 
 impl Window {
@@ -77,7 +110,7 @@ impl eframe::App for Window {
         self.refresh();
         ui.ctx().request_repaint_after(Duration::from_secs(1));
         let asked = self.pending.lock().unwrap_or_else(|e| e.into_inner()).take();
-        if let Some(t) = asked.filter(|_| !self.setup_only) {
+        if let Some(t) = asked.filter(|t| !self.setup_only && *t != Tab::AddDevice) {
             self.tab = t;
         }
         if !self.setup_only {
@@ -112,6 +145,12 @@ impl eframe::App for Window {
                     }
                     None => {}
                 }
+                if self.can_add_device {
+                    theme::gap(ui);
+                    if theme::button(ui, "Add a device", theme::Kind::Secondary).clicked() {
+                        self.open_add_device();
+                    }
+                }
                 ui.add_space(10.0);
                 theme::hint(ui, &version_line());
             }
@@ -137,6 +176,9 @@ pub fn version_line() -> String {
 
 /// Open the window. `config_path`: `--config`, else the default.
 pub fn run_window(tab: Tab, config_path: Option<PathBuf>) -> Result<(), String> {
+    if tab == Tab::AddDevice {
+        return run_add_device(config_path);
+    }
     let path = Config::resolve_path(config_path.as_deref())?;
     let (file, exists) = match std::fs::read_to_string(&path) {
         Ok(t) => (toml::from_str::<File>(&t).map_err(|e| format!("config {}: {e}", path.display()))?, true),
@@ -164,6 +206,9 @@ pub fn run_window(tab: Tab, config_path: Option<PathBuf>) -> Result<(), String> 
         running: false,
         update: None,
         setup_only,
+        can_add_device: cfg!(feature = "home") && exists && file.role == config::Role::Home,
+        add_device: None,
+        config_arg: config_path.clone(),
     };
     win.refresh();
     let options = eframe::NativeOptions {
@@ -183,6 +228,44 @@ pub fn run_window(tab: Tab, config_path: Option<PathBuf>) -> Result<(), String> 
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// The Add a device window: just that panel. Reads the config for the remote and the rclone config's path, nothing else.
+fn run_add_device(config_path: Option<PathBuf>) -> Result<(), String> {
+    let path = Config::resolve_path(config_path.as_deref())?;
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("config {}: {e}", path.display()))?;
+    let file = toml::from_str::<File>(&text).map_err(|e| format!("config {}: {e}", path.display()))?;
+    let remote = file.remote.as_deref().map(|r| r.trim_end_matches('/')).filter(|r| !r.is_empty()).ok_or("the config has no `remote` yet: set up the storage first")?.to_string();
+    let conf = match &file.rclone_config {
+        Some(c) => config::expand(c)?,
+        None => config::default_rclone_config()?,
+    };
+    let panel = AddDevicePanel::new(remote, conf);
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_title("Add a device").with_inner_size([560.0, 860.0]).with_min_inner_size([420.0, 480.0]),
+        ..eframe::NativeOptions::default()
+    };
+    eframe::run_native(
+        "Add a device",
+        options,
+        Box::new(move |cc| {
+            theme::install(&cc.egui_ctx);
+            Ok(Box::new(AddDeviceWindow { panel }))
+        }),
+    )
+    .map_err(|e| e.to_string())
+}
+
+struct AddDeviceWindow {
+    panel: AddDevicePanel,
+}
+
+impl eframe::App for AddDeviceWindow {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        theme::page(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| self.panel.show(ui));
+        });
+    }
 }
 
 /// The names of the rclone remotes (the config's contents are not read out).

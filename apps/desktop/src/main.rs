@@ -225,7 +225,7 @@ fn run(a: Args) -> std::result::Result<(), Failure> {
             };
         }
         "ui" => {
-            let tab = a.sub.as_deref().and_then(ui::Tab::parse).ok_or_else(|| Failure::Error("usage: ui status|settings".into()))?;
+            let tab = a.sub.as_deref().and_then(ui::Tab::parse).ok_or_else(|| Failure::Error("usage: ui status|settings|add-device".into()))?;
             return ui::run_window(tab, a.config).map_err(Failure::Error);
         }
         _ => {}
