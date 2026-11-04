@@ -1,8 +1,9 @@
 //! Pairing: hand the rclone remote of a cloud library to another device without copying config files by hand.
 //!
 //! The home PC [`export_config`]s the one remote (and what it wraps) out of its rclone config, [`seal`]s it into a
-//! piece of text (shown as a QR code and as copyable text) and a short code (shown on the screen). The other device
-//! [`open`]s the text with the code. The text IS the encrypted bundle: no server, no network, nothing to maintain.
+//! piece of text (shown as a QR code and as copyable text). The code is made by the JOINING device ([`new_code`]), shown on its
+//! own screen and typed into the home PC, so the home PC's screen only ever shows the locked text. The joining device
+//! [`open`]s the text with the code it made. The text IS the encrypted bundle: no server, no network, nothing to maintain.
 //!
 //! Text = `LCP1` + base45 (RFC 9285; upper case letters, digits and ` $%*+-./:`, which a QR code stores in its
 //! compact alphanumeric mode) of `header || ciphertext`. Header (41 bytes, authenticated as AAD):
@@ -259,18 +260,36 @@ fn base45_decode(text: &str) -> Option<Vec<u8>> {
 // ---------------------------------------------------------------------------------------------------------------------
 // Code
 
-fn new_code() -> String {
+/// A new pairing code, made by the JOINING device and typed into the home PC: 10 random Crockford base32 characters and one
+/// check character, shown as `XXXX-XXXX-XXX`. The check character is the sum of `(2*i + 1) * value(char i)` over the 10
+/// random characters, mod 32 (odd weights: every single wrong character changes it; an adjacent swap changes it unless the two
+/// characters differ by exactly 16 in value). The key is derived from the whole normalised code (all 11 characters).
+pub fn new_code() -> String {
     let mut raw = [0u8; CODE_LEN];
     OsRng.fill_bytes(&mut raw);
     // (32 symbols, so the low 5 bits of a random byte are uniform)
-    let s: String = raw.iter().map(|b| CROCKFORD[(*b & 31) as usize] as char).collect();
+    let mut body: Vec<u8> = raw.iter().map(|b| CROCKFORD[(*b & 31) as usize]).collect();
     raw.zeroize();
-    format!("{}-{}", &s[..5], &s[5..])
+    body.push(check_char(&body));
+    let s: String = body.iter().map(|b| *b as char).collect();
+    body.zeroize();
+    format!("{}-{}-{}", &s[..4], &s[4..8], &s[8..])
 }
 
-/// Upper case, no spaces or dashes, I and L read as 1, O as 0. None when it is not 10 symbols of the alphabet.
+/// The check character for the first `CODE_LEN` characters of `body` (already normalised, in the alphabet).
+fn check_char(body: &[u8]) -> u8 {
+    let sum: usize = body
+        .iter()
+        .take(CODE_LEN)
+        .enumerate()
+        .map(|(i, c)| (2 * i + 1) * CROCKFORD.iter().position(|a| a == c).unwrap_or(0))
+        .sum();
+    CROCKFORD[sum % 32]
+}
+
+/// Upper case, no spaces or dashes, I and L read as 1, O as 0. None when it is not 11 symbols of the alphabet with the right check.
 fn normalize_code(code: &str) -> Option<Zeroizing<Vec<u8>>> {
-    let mut out = Zeroizing::new(Vec::with_capacity(CODE_LEN));
+    let mut out = Zeroizing::new(Vec::with_capacity(CODE_LEN + 1));
     for c in code.chars() {
         if c == '-' || c.is_whitespace() {
             continue;
@@ -285,7 +304,18 @@ fn normalize_code(code: &str) -> Option<Zeroizing<Vec<u8>>> {
         }
         out.push(c as u8);
     }
-    (out.len() == CODE_LEN).then_some(out)
+    (out.len() == CODE_LEN + 1 && check_char(&out) == out[CODE_LEN]).then_some(out)
+}
+
+const TYPO: &str = "That code has a typo; check it against the device.";
+
+/// Checks a typed code (case, spaces, dashes ignored; I and L read as 1, O as 0) and returns it normalised (11 characters, no
+/// dashes). Err (a typo, a wrong length, a wrong check character) says so in words and never echoes what was typed.
+pub fn check_code(code: &str) -> Result<String> {
+    match normalize_code(code) {
+        Some(c) => Ok(String::from_utf8_lossy(&c).into_owned()),
+        None => Err(Error::Invalid(TYPO.to_string())),
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -309,7 +339,7 @@ fn derive_key(code: &[u8], salt: &[u8], kdf: Kdf) -> Option<Zeroizing<[u8; 32]>>
 
 fn seal_with(bundle: &Bundle, code: &str, kdf: Kdf) -> Result<String> {
     let bad = |what: &str| Error::Invalid(format!("Could not make the pairing text ({what})."));
-    let code = normalize_code(code).ok_or_else(|| bad("code"))?;
+    let code = normalize_code(code).ok_or_else(|| Error::Invalid(TYPO.to_string()))?;
     let json = Zeroizing::new(serde_json::to_vec(bundle).map_err(|_| bad("encode"))?);
     let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
     enc.write_all(&json).map_err(|_| bad("compress"))?;
@@ -336,11 +366,10 @@ fn seal_with(bundle: &Bundle, code: &str, kdf: Kdf) -> Result<String> {
     Ok(format!("{PREFIX}{}", base45_encode(&header)))
 }
 
-/// Seals the bundle: returns the pairing text and a fresh code (`XXXXX-XXXXX`) that opens it. Both are secrets.
-pub fn seal(bundle: &Bundle) -> Result<(String, String)> {
-    let code = new_code();
-    let text = seal_with(bundle, &code, DEFAULT_KDF)?;
-    Ok((text, code))
+/// Seals the bundle with the code the joining device showed (checked first; see [`check_code`]). The text is a secret.
+pub fn seal(bundle: &Bundle, code: &str) -> Result<String> {
+    check_code(code)?;
+    seal_with(bundle, code, DEFAULT_KDF)
 }
 
 /// Opens a pairing text with its code. The messages never echo what was typed.
@@ -351,8 +380,7 @@ pub fn open(text: &str, code: &str) -> Result<Bundle> {
     let Some(body) = cleaned.trim().strip_prefix(PREFIX) else {
         return Err(err("That is not a LightCraft pairing text. It should start with LCP1."));
     };
-    let code = normalize_code(code)
-        .ok_or_else(|| err("The code should be 10 letters and digits, like ABCDE-12345. Check what you typed."))?;
+    let code = normalize_code(code).ok_or_else(|| err(TYPO))?;
     let damaged = || err("The pairing text is damaged or incomplete. Copy it again, all of it.");
     let data = base45_decode(body).ok_or_else(damaged)?;
     if data.len() < HEADER_LEN + TAG_LEN {
@@ -422,6 +450,14 @@ mod tests {
 
     const FAST: Kdf = Kdf { memory_kib: 64, passes: 1, lanes: 1 };
 
+    /// A valid code from 10 chosen characters (adds the check character).
+    fn code_of(body: &str) -> String {
+        let mut b = body.as_bytes().to_vec();
+        b.push(check_char(&b));
+        let t = |r: std::ops::Range<usize>| std::str::from_utf8(&b[r]).unwrap().to_string();
+        format!("{}-{}-{}", t(0..4), t(4..8), t(8..11))
+    }
+
     fn drive_conf() -> String {
         // Synthetic values only.
         "[gdrive]\n\
@@ -449,10 +485,11 @@ mod tests {
     #[test]
     fn round_trip() {
         let b = Bundle::new("gdrive:LightCraft Cloud", drive_conf());
-        let (text, code) = seal(&b).unwrap();
+        let code = new_code();
+        let text = seal(&b, &code).unwrap();
         assert!(text.starts_with("LCP1"));
-        assert_eq!(code.len(), 11);
-        assert_eq!(code.as_bytes()[5], b'-');
+        assert_eq!(code.len(), 13);
+        assert_eq!((code.as_bytes()[4], code.as_bytes()[9]), (b'-', b'-'));
         assert_eq!(open(&text, &code).unwrap(), b);
         // case, spaces, dashes, I/L/O confusion
         let sloppy = code.to_lowercase().replace('-', " ").replace('1', "l").replace('0', "o");
@@ -465,58 +502,106 @@ mod tests {
     #[test]
     fn wrong_code_and_tamper_and_prefix() {
         let b = Bundle::new("gdrive:x", "[gdrive]\ntype = drive\n");
-        let text = seal_with(&b, "ABCDE-12345", FAST).unwrap();
-        let e = open(&text, "ABCDE-12346").unwrap_err().to_string();
+        let text = seal_with(&b, &code_of("ABCDE12345"), FAST).unwrap();
+        let e = open(&text, &code_of("ABCDE12346")).unwrap_err().to_string();
         assert!(e.contains("does not match"), "{e}");
-        assert!(!e.contains("ABCDE"), "{e}");
+        assert!(!e.contains("ABCD"), "{e}");
         let e = open(&text, "ABC").unwrap_err().to_string();
-        assert!(e.contains("10 letters"), "{e}");
-        let e = open("LCP2ABC", "ABCDE-12345").unwrap_err().to_string();
+        assert!(e.contains("typo"), "{e}");
+        let e = open("LCP2ABC", &code_of("ABCDE12345")).unwrap_err().to_string();
         assert!(e.contains("not a LightCraft pairing text"), "{e}");
         // flip a character in the ciphertext
         let mut chars: Vec<char> = text.chars().collect();
         let i = chars.len() - 5;
         chars[i] = if chars[i] == 'A' { 'B' } else { 'A' };
         let altered: String = chars.into_iter().collect();
-        let e = open(&altered, "ABCDE-12345").unwrap_err().to_string();
+        let e = open(&altered, &code_of("ABCDE12345")).unwrap_err().to_string();
         assert!(e.contains("does not match") || e.contains("damaged"), "{e}");
         // a header byte (a parameter) is authenticated too
         let mut data = base45_decode(&text[4..]).unwrap();
         data[13] ^= 1; // salt
-        let e = open(&format!("LCP1{}", base45_encode(&data)), "ABCDE-12345").unwrap_err().to_string();
+        let e = open(&format!("LCP1{}", base45_encode(&data)), &code_of("ABCDE12345")).unwrap_err().to_string();
         assert!(e.contains("does not match"), "{e}");
-        let e = open(&text[..text.len() - 6], "ABCDE-12345").unwrap_err().to_string();
+        let e = open(&text[..text.len() - 6], &code_of("ABCDE12345")).unwrap_err().to_string();
         assert!(e.contains("damaged") || e.contains("does not match"), "{e}");
-        let e = open("LCP1", "ABCDE-12345").unwrap_err().to_string();
+        let e = open("LCP1", &code_of("ABCDE12345")).unwrap_err().to_string();
         assert!(e.contains("damaged"), "{e}");
     }
 
     #[test]
     fn hostile_params_are_rejected_before_work() {
         let b = Bundle::new("a:b", "x");
-        let text = seal_with(&b, "ABCDE-12345", FAST).unwrap();
+        let text = seal_with(&b, &code_of("ABCDE12345"), FAST).unwrap();
         for (off, val) in [(1usize, u32::MAX), (1, 4 * 1024 * 1024), (5, u32::MAX), (5, 0), (9, u32::MAX), (9, 0)] {
             let mut data = base45_decode(&text[4..]).unwrap();
             data[off..off + 4].copy_from_slice(&val.to_le_bytes());
             let t0 = std::time::Instant::now();
-            let e = open(&format!("LCP1{}", base45_encode(&data)), "ABCDE-12345").unwrap_err().to_string();
+            let e = open(&format!("LCP1{}", base45_encode(&data)), &code_of("ABCDE12345")).unwrap_err().to_string();
             assert!(e.contains("more work"), "{off} {val}: {e}");
             assert!(t0.elapsed().as_secs() < 1);
         }
         let mut data = base45_decode(&text[4..]).unwrap();
         data[0] = 9;
-        let e = open(&format!("LCP1{}", base45_encode(&data)), "ABCDE-12345").unwrap_err().to_string();
+        let e = open(&format!("LCP1{}", base45_encode(&data)), &code_of("ABCDE12345")).unwrap_err().to_string();
         assert!(e.contains("newer version"), "{e}");
     }
 
     #[test]
     fn default_settings_round_trip() {
-        let (text, code) = seal(&Bundle::new("a:b", "c")).unwrap();
+        let code = new_code();
+        let text = seal(&Bundle::new("a:b", "c"), &code).unwrap();
         let data = base45_decode(&text[4..]).unwrap();
         assert_eq!(u32::from_le_bytes(data[1..5].try_into().unwrap()), 32 * 1024);
         assert_eq!(u32::from_le_bytes(data[5..9].try_into().unwrap()), 3);
         assert_eq!(u32::from_le_bytes(data[9..13].try_into().unwrap()), 1);
         assert_eq!(open(&text, &code).unwrap().config, "c");
+    }
+
+    #[test]
+    fn codes_have_a_format_and_a_check_that_catches_typos() {
+        for _ in 0..200 {
+            let c = new_code();
+            assert_eq!(c.len(), 13);
+            assert!(c.bytes().enumerate().all(|(i, b)| if i == 4 || i == 9 { b == b'-' } else { CROCKFORD.contains(&b) }), "{c}");
+            assert_eq!(check_code(&c.to_lowercase()).unwrap(), c.replace('-', ""));
+        }
+        assert_ne!(new_code(), new_code());
+        // a fixed one: sum of (2i+1)*i for i in 0..10 is 615, 615 mod 32 = 7
+        assert_eq!(code_of("0123456789"), "0123-4567-897");
+        // forgiving input
+        assert_eq!(check_code(" 0123 4567 897 ").unwrap(), "01234567897");
+        assert_eq!(check_code("oi23-4567-897").unwrap(), "01234567897");
+        assert_eq!(check_code("0l23-4567-897").unwrap(), "01234567897");
+        // every single substituted character is caught; adjacent swaps are caught unless the values differ by 16
+        let base: Vec<u8> = code_of("7M3QX0K9TB").bytes().filter(|b| *b != b'-').collect();
+        let s = |v: &[u8]| String::from_utf8(v.to_vec()).unwrap();
+        assert!(check_code(&s(&base)).is_ok());
+        for i in 0..11 {
+            for &c in CROCKFORD.iter() {
+                if c == base[i] {
+                    continue;
+                }
+                let mut v = base.clone();
+                v[i] = c;
+                assert!(check_code(&s(&v)).is_err(), "substitution at {i}");
+            }
+        }
+        let val = |c: u8| CROCKFORD.iter().position(|a| *a == c).unwrap() as i32;
+        for i in 0..9 {
+            let mut v = base.clone();
+            v.swap(i, i + 1);
+            let differ = (val(base[i]) - val(base[i + 1])).abs();
+            if differ != 0 && differ != 16 {
+                assert!(check_code(&s(&v)).is_err(), "swap at {i}");
+            }
+        }
+        // wrong length, wrong alphabet, empty
+        for bad in ["", "ABC", "0123-4567-8", "0123-4567-89XX", "UUUU-UUUU-UUU"] {
+            let e = check_code(bad).unwrap_err().to_string();
+            assert!(e.contains("typo"), "{e}");
+        }
+        // seal refuses a code with a typo
+        assert!(seal(&Bundle::new("a:b", "c"), "0123-4567-898").is_err());
     }
 
     #[test]
@@ -614,7 +699,7 @@ mod tests {
     #[test]
     fn realistic_drive_text_fits_a_small_qr() {
         let conf = export_config(&drive_conf(), "gdrive:LightCraft Cloud").unwrap();
-        let (text, _code) = seal(&Bundle::new("gdrive:LightCraft Cloud", conf.clone())).unwrap();
+        let text = seal(&Bundle::new("gdrive:LightCraft Cloud", conf.clone()), &new_code()).unwrap();
         let mut sizes = Vec::new();
         for (name, ec) in [("L", qrcode::EcLevel::L), ("M", qrcode::EcLevel::M)] {
             let qr = qrcode::QrCode::with_error_correction_level(text.as_bytes(), ec).unwrap();
