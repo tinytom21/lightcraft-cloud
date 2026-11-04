@@ -45,6 +45,9 @@ pub struct UploadCandidate {
     pub date: String,
     /// When it was taken, ms since 1970 (UTC), or 0 when unknown (the file's own time is used).
     pub taken_ms: i64,
+    /// Found by the automatic camera job (not picked by the person): held back while only a metered network is up and the app asks for
+    /// Wi-Fi (see [`CloudLibrary::upload_step`]).
+    pub automatic: bool,
 }
 
 /// What [`CloudLibrary::enqueue_uploads`] did.
@@ -77,6 +80,8 @@ pub struct UploadStatus {
     pub total: usize,
     /// Photos not sent yet (the one being sent included).
     pub waiting: usize,
+    /// Of those, the ones found by the automatic camera job (they wait for Wi-Fi when the app says so).
+    pub automatic_waiting: usize,
     /// Photos sent whose answer has not come yet (the home PC has not synchronized).
     pub awaiting_home: usize,
     /// A step is sending right now.
@@ -130,6 +135,8 @@ struct UploadEntry {
     size: u64,
     mtime: String,
     queued: String,
+    /// Queued by the automatic camera job (a photo the person picked is `false`; entries from before this field are picked).
+    automatic: bool,
     /// When the commit note was written.
     uploaded: Option<String>,
     result: Option<OutResult>,
@@ -343,9 +350,15 @@ impl CloudLibrary {
         }
         if let Some(old) = entries.iter_mut().find(|e| e.id == id) {
             if !old.rejected() {
+                // (picked by the person now: no longer held for Wi-Fi)
+                if old.automatic && !c.automatic && old.waiting() {
+                    old.automatic = false;
+                    self.save_entry(old)?;
+                }
                 rep.already_queued += 1;
                 return Ok(());
             }
+            old.automatic = c.automatic;
             // refused before and offered again: send it anew
             old.result = None;
             old.uploaded = None;
@@ -363,7 +376,7 @@ impl CloudLibrary {
         };
         // (the photo first: an entry never names bytes that are not there)
         move_file(&c.path, &self.entry_photo(&id)).map_err(|e| Error::io(c.path.display(), e))?;
-        let e = UploadEntry { id, name: name.to_string(), folder, size, mtime, queued: iso(self.now()), ..UploadEntry::default() };
+        let e = UploadEntry { id, name: name.to_string(), folder, size, mtime, queued: iso(self.now()), automatic: c.automatic, ..UploadEntry::default() };
         self.save_entry(&e)?;
         entries.push(e);
         rep.queued += 1;
@@ -393,6 +406,7 @@ impl CloudLibrary {
             s.bytes_total += e.size;
             if e.waiting() {
                 s.waiting += 1;
+                s.automatic_waiting += usize::from(e.automatic);
             } else if e.awaiting() {
                 s.awaiting_home += 1;
                 s.bytes_done += e.size;
@@ -429,7 +443,10 @@ impl CloudLibrary {
     /// Do a bounded amount of the queue's work: look for the home PC's answers to photos already sent, send photos (bytes, then the
     /// note last), tidy up. A network failure is an `Err(Error::Remote)` (what was sent stays recorded); anything else is a line in
     /// `problems`. Only one step runs at a time.
-    pub fn upload_step(&self, budget: &UploadBudget) -> Result<UploadStep> {
+    ///
+    /// `allow_automatic`: whether photos found by the automatic camera job may be sent now. The app passes `false` while "Only on Wi-Fi"
+    /// is on and the network is metered; those photos stay queued (`status.automatic_waiting`) and photos the person picked go.
+    pub fn upload_step(&self, budget: &UploadBudget, allow_automatic: bool) -> Result<UploadStep> {
         let _g = lock(&self.upload_lock);
         struct Flag<'a>(&'a std::sync::atomic::AtomicBool);
         impl Drop for Flag<'_> {
@@ -443,14 +460,14 @@ impl CloudLibrary {
             self.uploading.store(true, Ordering::SeqCst);
         }
         let _flag = Flag(&self.uploading);
-        let r = self.upload_inner(budget, &mut entries, &mut step);
+        let r = self.upload_inner(budget, allow_automatic, &mut entries, &mut step);
         self.uploading.store(false, Ordering::SeqCst);
         step.awaiting_home = entries.iter().filter(|e| e.awaiting()).count();
         step.status = self.upload_status();
         r.map(|()| step)
     }
 
-    fn upload_inner(&self, budget: &UploadBudget, entries: &mut [UploadEntry], step: &mut UploadStep) -> Result<()> {
+    fn upload_inner(&self, budget: &UploadBudget, allow_automatic: bool, entries: &mut [UploadEntry], step: &mut UploadStep) -> Result<()> {
         let rt = self.retrier();
         let outbox = self.dir.join("outbox");
         // a copy that vanished (nothing to send): refused here, with the reason
@@ -489,12 +506,13 @@ impl CloudLibrary {
             }
         }
         let started = Instant::now();
-        if !entries.iter().any(UploadEntry::waiting) {
+        let may = |e: &UploadEntry| e.waiting() && (allow_automatic || !e.automatic);
+        if !entries.iter().any(may) {
             return Ok(());
         }
         let listing = list_outgoing(&*self.remote, rt, &self.device)?;
         let mut taken = 0;
-        for e in entries.iter_mut().filter(|e| e.waiting()) {
+        for e in entries.iter_mut().filter(|e| may(e)) {
             if taken >= budget.max_files || step.bytes_sent >= budget.max_bytes || started.elapsed() >= budget.max_time {
                 step.more = true;
                 break;

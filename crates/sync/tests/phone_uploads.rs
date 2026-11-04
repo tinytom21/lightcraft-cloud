@@ -93,7 +93,7 @@ impl World {
         self.n += 1;
         let path = self.lib.upload_staging_dir().join(format!("{}-{name}", self.n));
         std::fs::write(&path, bytes).unwrap();
-        UploadCandidate { path, name: name.into(), date: date.into(), taken_ms: 1_773_500_000_000 }
+        UploadCandidate { path, name: name.into(), date: date.into(), taken_ms: 1_773_500_000_000, automatic: false }
     }
 
     fn home_sync(&self) {
@@ -106,7 +106,7 @@ impl World {
     }
 
     fn step(&self) -> lightcraft_cloud_client::UploadStep {
-        self.lib.upload_step(&UploadBudget::default()).unwrap_or_else(|e| panic!("upload step: {e}"))
+        self.lib.upload_step(&UploadBudget::default(), true).unwrap_or_else(|e| panic!("upload step: {e}"))
     }
 
     fn queue_files(&self) -> Vec<String> {
@@ -186,11 +186,11 @@ fn the_work_per_step_is_bounded_and_the_rest_waits_for_the_next() {
     let cands: Vec<_> = (0..5).map(|i| w.cand(&format!("IMG_{i}.jpg"), &photo(&format!("b{i}")), DATE)).collect();
     w.lib.enqueue_uploads(&cands).unwrap();
     let small = UploadBudget { max_files: 2, ..UploadBudget::default() };
-    let a = w.lib.upload_step(&small).unwrap();
+    let a = w.lib.upload_step(&small, true).unwrap();
     assert_eq!((a.committed, a.more), (2, true), "{a:?}");
-    let b = w.lib.upload_step(&small).unwrap();
+    let b = w.lib.upload_step(&small, true).unwrap();
     assert_eq!((b.committed, b.more), (2, true), "{b:?}");
-    let c = w.lib.upload_step(&small).unwrap();
+    let c = w.lib.upload_step(&small, true).unwrap();
     assert_eq!((c.committed, c.more), (1, false), "{c:?}");
     assert_eq!(c.status.waiting, 0);
     assert_eq!(c.status.awaiting_home, 5);
@@ -199,7 +199,7 @@ fn the_work_per_step_is_bounded_and_the_rest_waits_for_the_next() {
     let cands: Vec<_> = (0..3).map(|i| w.cand(&format!("IMG_{i}.jpg"), &photo(&format!("c{i}")), DATE)).collect();
     w.lib.enqueue_uploads(&cands).unwrap();
     let tiny = UploadBudget { max_bytes: 1, ..UploadBudget::default() };
-    let a = w.lib.upload_step(&tiny).unwrap();
+    let a = w.lib.upload_step(&tiny, true).unwrap();
     assert_eq!((a.committed, a.more), (1, true), "{a:?}");
 }
 
@@ -211,11 +211,11 @@ fn a_killed_upload_resumes_and_what_is_already_there_at_the_right_size_is_not_se
     w.lib.enqueue_uploads(&cands).unwrap();
     // the first photo's bytes and note go; the second photo's bytes fail (offline), the step fails with a remote error
     w.spy.fail_puts.store(0, Ordering::SeqCst);
-    let first = w.lib.upload_step(&UploadBudget { max_files: 1, ..UploadBudget::default() }).unwrap();
+    let first = w.lib.upload_step(&UploadBudget { max_files: 1, ..UploadBudget::default() }, true).unwrap();
     assert_eq!(first.committed, 1);
     w.spy.puts();
     w.spy.fail_puts.store(3, Ordering::SeqCst);
-    let err = w.lib.upload_step(&UploadBudget::default()).unwrap_err();
+    let err = w.lib.upload_step(&UploadBudget::default(), true).unwrap_err();
     assert!(matches!(err, lightcraft_cloud_client::Error::Remote(_)), "{err}");
     let s = w.lib.upload_status();
     assert_eq!((s.waiting, s.awaiting_home), (1, 1), "what was sent stays recorded: {s:?}");
@@ -388,7 +388,46 @@ fn a_refusal_is_shown_with_its_reason_and_offering_the_photo_again_sends_it_anew
 fn nothing_queued_is_nothing_to_show_and_a_step_does_no_network() {
     let w = World::new("pu-empty");
     assert!(w.lib.upload_status().is_empty());
-    let step = w.lib.upload_step(&UploadBudget::default()).unwrap();
+    let step = w.lib.upload_step(&UploadBudget::default(), true).unwrap();
     assert_eq!((step.committed, step.files_sent, step.awaiting_home), (0, 0, 0));
     assert!(w.spy.puts().is_empty());
+}
+
+#[test]
+fn automatic_photos_wait_for_wifi_while_picked_ones_go_and_then_both_are_sent() {
+    let mut w = World::new("pu-wifi");
+    let (auto1, auto2, picked) = (photo("auto1"), photo("auto2"), photo("picked"));
+    let mut a1 = w.cand("A1.jpg", &auto1, DATE);
+    a1.automatic = true;
+    let mut a2 = w.cand("A2.jpg", &auto2, DATE);
+    a2.automatic = true;
+    let p = w.cand("P.jpg", &picked, DATE);
+    w.lib.enqueue_uploads(&[a1, a2, p]).unwrap();
+    let s = w.lib.upload_status();
+    assert_eq!((s.waiting, s.automatic_waiting), (3, 2), "{s:?}");
+    // metered network with Wi-Fi only: the picked photo goes, the automatic ones stay
+    let step = w.lib.upload_step(&UploadBudget::default(), false).unwrap();
+    assert_eq!((step.committed, step.more), (1, false), "{step:?}");
+    assert!(w.fx.rfile(&format!("imports/pixel-7/{}.json", id_of(&picked))).is_some());
+    assert!(w.fx.rfile(&format!("imports/pixel-7/{}.json", id_of(&auto1))).is_none());
+    assert_eq!((step.status.waiting, step.status.automatic_waiting, step.status.awaiting_home), (2, 2, 1));
+    assert_eq!(w.lib.upload_step(&UploadBudget::default(), false).unwrap().committed, 0);
+    assert_eq!(w.lib.uploads_pending(), 3);
+    // picking an automatic photo by hand releases it
+    let again = w.cand("A2.jpg", &auto2, DATE);
+    assert_eq!(w.lib.enqueue_uploads(&[again]).unwrap().already_queued, 1);
+    assert_eq!(w.lib.upload_step(&UploadBudget::default(), false).unwrap().committed, 1);
+    // Wi-Fi: the rest goes
+    let step = w.lib.upload_step(&UploadBudget::default(), true).unwrap();
+    assert_eq!((step.committed, step.status.waiting, step.status.awaiting_home), (1, 0, 3));
+    // an entry written before the field existed counts as picked
+    let mut w2 = World::new("pu-wifi-old");
+    let c = w2.cand("O.jpg", &photo("old"), DATE);
+    w2.lib.enqueue_uploads(&[c]).unwrap();
+    let id = id_of(&photo("old"));
+    let path = w2.phone_dir.join(format!("uploads/{id}.json"));
+    let mut v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    v.as_object_mut().unwrap().remove("automatic");
+    std::fs::write(&path, serde_json::to_vec(&v).unwrap()).unwrap();
+    assert_eq!(w2.lib.upload_step(&UploadBudget::default(), false).unwrap().committed, 1);
 }
