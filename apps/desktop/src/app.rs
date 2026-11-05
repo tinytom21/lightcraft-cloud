@@ -66,6 +66,17 @@ pub fn quit_request_path(state_dir: &Path) -> PathBuf {
     state_dir.join("quit-request")
 }
 
+/// `<state>/sync-request`: how the Status window (a process of its own) asks the running app for "Sync now", like the tray menu. The
+/// app checks for it every two seconds and deletes it.
+pub fn sync_request_path(state_dir: &Path) -> PathBuf {
+    state_dir.join("sync-request")
+}
+
+/// Ask the running app for "Sync now" (see [`sync_request_path`]).
+pub fn request_sync(state_dir: &Path) -> Result<(), String> {
+    std::fs::write(sync_request_path(state_dir), "sync").map_err(|e| format!("cannot ask the app to sync: {e}"))
+}
+
 /// What asking the app to quit came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuitOutcome {
@@ -136,6 +147,7 @@ fn spawn_config_thread(config_path: PathBuf, cmd: Sender<Command>, stop: Receive
         // (the Status window changes the queue from another process: its queue folder changing wakes the upload job)
         let queue_dir = state_dir_for(&config_path).ok().map(|d| d.join(lightcraft_cloud_client::other::OUT_DIR));
         let quit_file = state_dir_for(&config_path).ok().map(|d| quit_request_path(&d));
+        let sync_file = state_dir_for(&config_path).ok().map(|d| sync_request_path(&d));
         let queue_mtime = || queue_dir.as_deref().and_then(|d| std::fs::metadata(d).ok()).and_then(|m| m.modified().ok());
         let mut queue_stamp = queue_mtime();
         loop {
@@ -144,6 +156,12 @@ fn spawn_config_thread(config_path: PathBuf, cmd: Sender<Command>, stop: Receive
                 && std::fs::remove_file(q).is_ok()
             {
                 let _ = cmd.send(Command::Quit);
+            }
+            if let Some(f) = sync_file.as_deref()
+                && f.exists()
+                && std::fs::remove_file(f).is_ok()
+            {
+                let _ = cmd.send(Command::SyncNow);
             }
             let now = queue_mtime();
             if now != queue_stamp {
@@ -275,6 +293,7 @@ pub fn run(opts: RunOptions) -> Result<Ended, String> {
     let Some(_instance) = InstanceLock::acquire(&state_dir)? else { return Ok(Ended::AlreadyRunning) };
     append_log(&state_dir, "app started");
     let _ = std::fs::remove_file(quit_request_path(&state_dir)); // (a request from before this start is not for this run)
+    let _ = std::fs::remove_file(sync_request_path(&state_dir));
 
     let (cmd_tx, cmd_rx) = channel::<Command>();
     let (msg_tx, msg_rx) = channel::<Msg>();

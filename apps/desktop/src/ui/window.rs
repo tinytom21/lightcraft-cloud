@@ -5,7 +5,7 @@
 use std::io::BufRead;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::appstate::AppStatus;
 use crate::autostart;
@@ -71,6 +71,8 @@ struct Window {
     /// The Add a device window, while it is open (one at a time).
     add_device: Option<std::process::Child>,
     config_arg: Option<PathBuf>,
+    /// When "Sync now" was clicked here, for a short note under the button.
+    sync_asked: Option<Instant>,
 }
 
 impl Window {
@@ -124,6 +126,22 @@ impl eframe::App for Window {
         }
         theme::page(ui, |ui| match self.tab {
             Tab::Status if !self.setup_only => {
+                // "Sync now", as in the tray menu: the running app picks the request up within two seconds
+                ui.horizontal(|ui| {
+                    let clicked = ui.add_enabled_ui(self.running, |ui| theme::button(ui, "Sync now", theme::Kind::Primary).clicked()).inner;
+                    if clicked {
+                        match crate::app::request_sync(&self.state_dir) {
+                            Ok(()) => self.sync_asked = Some(Instant::now()),
+                            Err(e) => log::warn!("{e}"),
+                        }
+                    }
+                    if !self.running {
+                        theme::hint(ui, "The app is not running.");
+                    } else if self.sync_asked.is_some_and(|t| t.elapsed() < Duration::from_secs(6)) {
+                        theme::hint(ui, "Asked. The sync starts in a moment.");
+                    }
+                });
+                theme::gap(ui);
                 let queue = ImportQueue::new(&self.state_dir);
                 let refused = status::refused_lines(&queue.refused());
                 match status::show_with_actions(ui, &StatusView { status: self.status.as_ref(), running: self.running, now: SystemTime::now(), update: self.update.as_ref() }, &refused) {
@@ -209,6 +227,7 @@ pub fn run_window(tab: Tab, config_path: Option<PathBuf>) -> Result<(), String> 
         can_add_device: cfg!(feature = "home") && exists && file.role == config::Role::Home,
         add_device: None,
         config_arg: config_path.clone(),
+        sync_asked: None,
     };
     win.refresh();
     let options = eframe::NativeOptions {
