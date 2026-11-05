@@ -91,7 +91,8 @@ impl World {
     /// A copy the app made of a picked photo.
     fn cand(&mut self, name: &str, bytes: &[u8], date: &str) -> UploadCandidate {
         self.n += 1;
-        let path = self.lib.upload_staging_dir().join(format!("{}-{name}", self.n));
+        // (the staged copy has a plain name of its own, as the app makes it: Windows refuses `:` and `?` in a file name, the photo's own name travels in `name`)
+        let path = self.lib.upload_staging_dir().join(format!("{}-staged", self.n));
         std::fs::write(&path, bytes).unwrap();
         UploadCandidate { path, name: name.into(), date: date.into(), taken_ms: 1_773_500_000_000, automatic: false }
     }

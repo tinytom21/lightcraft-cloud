@@ -511,13 +511,11 @@ impl CloudLibrary {
             return Ok(());
         }
         let listing = list_outgoing(&*self.remote, rt, &self.device)?;
-        let mut taken = 0;
-        for e in entries.iter_mut().filter(|e| may(e)) {
+        for (taken, e) in entries.iter_mut().filter(|e| may(e)).enumerate() {
             if taken >= budget.max_files || step.bytes_sent >= budget.max_bytes || started.elapsed() >= budget.max_time {
                 step.more = true;
                 break;
             }
-            taken += 1;
             let note = serde_json::to_vec(&import_note(&e.id, &e.folder, &e.name, e.size, &e.mtime, None)).map_err(|x| Error::Io(format!("note: {x}")))?;
             let photo = self.entry_photo(&e.id);
             let out = Outgoing { id: &e.id, name: &e.name, size: e.size, photo: &photo, sidecar: None, note: &note };

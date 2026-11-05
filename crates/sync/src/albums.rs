@@ -77,11 +77,10 @@ impl Tree {
                 );
                 match parent {
                     Some(p) => {
-                        if let Some(n) = t.nodes.get_mut(&p) {
-                            if !n.children.contains(&id) {
+                        if let Some(n) = t.nodes.get_mut(&p)
+                            && !n.children.contains(&id) {
                                 n.children.push(id);
                             }
-                        }
                     }
                     None => t.top.push(id),
                 }

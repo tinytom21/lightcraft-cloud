@@ -116,12 +116,11 @@ fn parse_ini(text: &str) -> Vec<Section> {
         if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
             continue;
         }
-        if let Some(rest) = line.strip_prefix('[') {
-            if let Some(name) = rest.strip_suffix(']') {
+        if let Some(rest) = line.strip_prefix('[')
+            && let Some(name) = rest.strip_suffix(']') {
                 out.push(Section { name: name.trim().to_string(), lines: Vec::new() });
                 continue;
             }
-        }
         if let (Some(cur), Some((k, v))) = (out.last_mut(), line.split_once('=')) {
             cur.lines.push((k.trim().to_string(), v.trim().to_string()));
         }
