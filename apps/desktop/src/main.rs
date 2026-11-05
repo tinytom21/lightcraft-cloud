@@ -218,9 +218,15 @@ fn build_home(cfg: &Config, log_to_file: bool) -> std::result::Result<Home, Fail
 fn run(a: Args) -> std::result::Result<(), Failure> {
     match a.cmd.as_str() {
         "" | "run" => {
-            let opts = app::RunOptions { config: a.config, headless: a.headless };
+            let headless = a.headless;
+            let opts = app::RunOptions { config: a.config.clone(), headless };
             return match app::run(opts)? {
                 app::Ended::Quit => Ok(()),
+                // (started again from the programs menu or Start menu: show the running app's Status rather than nothing)
+                app::Ended::AlreadyRunning if !headless => {
+                    println!("LightCraft Cloud is already running; opening its Status window.");
+                    ui::run_window(ui::Tab::Status, a.config).map_err(Failure::Error)
+                }
                 app::Ended::AlreadyRunning => {
                     println!("LightCraft Cloud is already running (look for its tray icon).");
                     Ok(())

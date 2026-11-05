@@ -243,6 +243,7 @@ jobs:
           cp LICENSE-APACHE "$name/LICENSE-APACHE.txt"
           cp apps/desktop/assets/fonts/OFL-Inter.txt "$name/LICENSE-Inter-OFL.txt"
           cp packaging/linux/install.sh "$name/install.sh"
+          cp packaging/linux/lightcraft-cloud.png "$name/lightcraft-cloud.png"
           chmod 755 "$name/install.sh" "$name/lightcraft-cloud-desktop"
           tar --owner=0 --group=0 --numeric-owner -czf "dist/$name.tar.gz" "$name"
           ls -l dist; tar -tzvf "dist/$name.tar.gz"
@@ -256,6 +257,8 @@ jobs:
           test -f "$t/home/.local/lib/lightcraft-cloud/librclone.so"
           test -f "$t/home/.local/lib/lightcraft-cloud/licenses/LICENSE-rclone.txt"
           test -f "$t/home/.local/lib/lightcraft-cloud/licenses/LICENSE-Inter-OFL.txt"
+          grep -q '^Exec=".*/.local/bin/lightcraft-cloud-desktop" run$' "$t/home/.local/share/applications/io.github.tinytom21.lightcraftcloud.desktop"
+          test -f "$t/home/.local/share/icons/hicolor/256x256/apps/io.github.tinytom21.lightcraftcloud.png"
           HOME="$t/home" "$t/home/.local/bin/lightcraft-cloud-desktop" --version | grep -q "lightcraft-cloud-desktop ${{ steps.ver.outputs.version }}"
           HOME="$t/home" "$t/home/.local/bin/lightcraft-cloud-desktop" --version | grep -q "edition: ${{ matrix.variant }}"
           "$t/home/.local/bin/lightcraft-cloud-desktop" --help | head -3
