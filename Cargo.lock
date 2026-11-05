@@ -2566,7 +2566,7 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-cloud-client"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -2590,7 +2590,7 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-cloud-desktop"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "eframe",
  "egui",
